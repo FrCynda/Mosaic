@@ -1,0 +1,260 @@
+//! The background indexing lifecycle, independent of any UI. Owns the shared
+//! [`Catalog`], scans/loads each fixed NTFS volume, keeps it live via USN
+//! watchers, and persists the on-disk cache. Used both by the in-process GUI
+//! ([`crate::presentation::state::AppState`]) and the background service, so it
+//! lives in `infrastructure` with no presentation dependency.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+use parking_lot::{Mutex, RwLock};
+
+use crate::application::{Catalog, IndexStatus, SearchIndex};
+use crate::infrastructure::cache;
+use crate::infrastructure::ntfs::{
+    catch_up, journal_state, ntfs_fixed_drives, volume_serial, CatchUp, MftReader, UsnWatcher,
+};
+
+/// How often the on-disk cache is refreshed while running.
+const CACHE_SAVE_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Where indexing is in its lifecycle.
+enum Phase {
+    Indexing,
+    Ready,
+    Error(String),
+}
+
+/// A volume that finished indexing, plus what the cache saver needs.
+struct IndexedVolume {
+    drive: char,
+    serial: u32,
+}
+
+/// Drives the index: builds it, keeps it live, and exposes it + a status
+/// snapshot. Cheap to clone the shared [`Catalog`] handle out for searching.
+pub struct Indexer {
+    catalog: Arc<RwLock<Catalog>>,
+    phase: Arc<RwLock<Phase>>,
+    /// Entries committed from volumes already finished.
+    committed: Arc<AtomicUsize>,
+    /// Running entry count of the volume currently being scanned.
+    progress: Arc<AtomicUsize>,
+    /// Label of the volume currently being scanned.
+    scanning: Arc<RwLock<String>>,
+    drives: Arc<RwLock<Vec<char>>>,
+    watchers: Arc<Mutex<Vec<UsnWatcher>>>,
+}
+
+impl Default for Indexer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Indexer {
+    pub fn new() -> Self {
+        Self {
+            catalog: Arc::new(RwLock::new(Catalog::default())),
+            phase: Arc::new(RwLock::new(Phase::Indexing)),
+            committed: Arc::new(AtomicUsize::new(0)),
+            progress: Arc::new(AtomicUsize::new(0)),
+            scanning: Arc::new(RwLock::new(String::new())),
+            drives: Arc::new(RwLock::new(Vec::new())),
+            watchers: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// The shared catalog handle, for running searches.
+    pub fn catalog(&self) -> Arc<RwLock<Catalog>> {
+        self.catalog.clone()
+    }
+
+    /// Bring every fixed NTFS volume online on a background thread: load its
+    /// cached index and replay journal changes where possible, otherwise scan
+    /// the MFT. Each volume starts its USN watcher as it completes.
+    pub fn start(&self) {
+        let catalog = self.catalog.clone();
+        let phase = self.phase.clone();
+        let committed = self.committed.clone();
+        let progress = self.progress.clone();
+        let scanning = self.scanning.clone();
+        let drives_slot = self.drives.clone();
+        let watchers = self.watchers.clone();
+
+        let (content_tx, content_rx) = std::sync::mpsc::channel();
+        crate::contentindex::spawn_consumer(content_rx);
+
+        thread::spawn(move || {
+            let drives = ntfs_fixed_drives();
+            *drives_slot.write() = drives.clone();
+
+            if drives.is_empty() {
+                *phase.write() = Phase::Error("no fixed NTFS volumes found".into());
+                return;
+            }
+
+            let mut indexed: Vec<IndexedVolume> = Vec::new();
+            let mut last_error = String::new();
+
+            for drive in drives {
+                *scanning.write() = format!("{drive}:");
+                progress.store(0, Ordering::Relaxed);
+                let serial = volume_serial(drive);
+
+                let outcome = bring_volume_online(drive, serial, &progress);
+                match outcome {
+                    Ok(volume) => {
+                        let count = volume.index.len();
+                        // Save before publishing so a cache exists immediately.
+                        if let Some(next_usn) = volume.resume_usn {
+                            let _ = cache::save(
+                                drive,
+                                serial,
+                                volume.journal_id,
+                                next_usn,
+                                volume.index.parts(),
+                            );
+                            let _ = crate::datestore::save();
+                        }
+                        catalog.write().upsert_volume(volume.index);
+                        watchers.lock().push(UsnWatcher::spawn(
+                            drive,
+                            catalog.clone(),
+                            volume.resume_usn,
+                            Some(content_tx.clone()),
+                        ));
+                        committed.fetch_add(count, Ordering::Relaxed);
+                        // Clear `progress` immediately so a concurrent status()
+                        // (committed + progress) can't briefly count this volume
+                        // twice while progress still holds its just-committed count.
+                        progress.store(0, Ordering::Relaxed);
+                        indexed.push(IndexedVolume { drive, serial });
+                    }
+                    Err(e) => last_error = e,
+                }
+            }
+
+            *scanning.write() = String::new();
+            progress.store(0, Ordering::Relaxed);
+            *phase.write() = if indexed.is_empty() {
+                // The usual cause now is an unelevated GUI with no service to
+                // read the volumes for it — point at both ways out.
+                Phase::Error(format!(
+                    "couldn't read the NTFS volumes ({last_error}) — install the background \
+                     service in Settings, or launch Mosaic as administrator"
+                ))
+            } else {
+                Phase::Ready
+            };
+
+            if !indexed.is_empty() {
+                let files: Vec<_> = catalog.read().all_files().collect();
+                thread::spawn(move || crate::contentindex::bulk_index(files));
+                spawn_cache_saver(catalog, indexed);
+            }
+        });
+    }
+
+    /// Current status snapshot for the UI / IPC.
+    pub fn status(&self) -> IndexStatus {
+        let count = self.committed.load(Ordering::Relaxed) + self.progress.load(Ordering::Relaxed);
+        let mut s = match &*self.phase.read() {
+            Phase::Indexing => {
+                let scanning = self.scanning.read();
+                let volume = if scanning.is_empty() {
+                    "volumes".to_string()
+                } else {
+                    scanning.clone()
+                };
+                IndexStatus::indexing(volume, count)
+            }
+            Phase::Ready => IndexStatus::ready(self.volume_label(), count),
+            Phase::Error(message) => IndexStatus::error(self.volume_label(), message.clone()),
+        };
+        s.changes = super::ntfs::CHANGES.load(Ordering::Relaxed);
+        if let Some((done, total)) = crate::contentindex::progress() {
+            (s.content_done, s.content_total) = (done, total);
+        }
+        s
+    }
+
+    fn volume_label(&self) -> String {
+        let drives = self.drives.read();
+        if drives.is_empty() {
+            return "—".into();
+        }
+        drives
+            .iter()
+            .map(|d| format!("{d}:"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// A volume brought online, with the journal position to resume the watcher.
+struct OnlineVolume {
+    index: SearchIndex,
+    journal_id: u64,
+    resume_usn: Option<i64>,
+}
+
+/// Load a volume from cache and catch it up, or scan its MFT from scratch.
+fn bring_volume_online(
+    drive: char,
+    serial: u32,
+    progress: &AtomicUsize,
+) -> Result<OnlineVolume, String> {
+    // Fast path: a valid cached index we can replay forward.
+    if let Some(snapshot) = cache::load(drive) {
+        if snapshot.volume_serial == serial {
+            let journal_id = snapshot.journal_id;
+            let mut index = SearchIndex::from_parts(drive, snapshot.recs, snapshot.names);
+            progress.store(index.len(), Ordering::Relaxed);
+            if let CatchUp::Caught { next_usn } =
+                catch_up(drive, journal_id, snapshot.next_usn, &mut index)
+            {
+                return Ok(OnlineVolume {
+                    index,
+                    journal_id,
+                    resume_usn: Some(next_usn),
+                });
+            }
+        }
+    }
+
+    // Full scan. Capture the journal position first so any change during the
+    // scan is replayed (idempotently) on the next load rather than lost.
+    let journal = journal_state(drive);
+    let mut reader = MftReader::open(drive).map_err(|e| e.to_string())?;
+    let index = SearchIndex::build_from(&mut reader, progress).map_err(|e| e.to_string())?;
+
+    Ok(OnlineVolume {
+        index,
+        journal_id: journal.map(|j| j.journal_id).unwrap_or(0),
+        resume_usn: journal.map(|j| j.next_usn),
+    })
+}
+
+/// Periodically refresh each volume's on-disk cache so future startups load
+/// fast and only a small journal tail needs replaying.
+fn spawn_cache_saver(catalog: Arc<RwLock<Catalog>>, indexed: Vec<IndexedVolume>) {
+    thread::spawn(move || loop {
+        thread::sleep(CACHE_SAVE_INTERVAL);
+        for vol in &indexed {
+            let Some(journal) = journal_state(vol.drive) else {
+                continue;
+            };
+            // written straight from the live index under a read lock: searches go on, no copy of the index. Saved
+            // with the position the watcher has applied, not the journal's end: the watcher trails the end, and
+            // changes in between (a delete) would never be replayed.
+            let catalog = catalog.read();
+            if let Some((index, usn)) = catalog.volume(vol.drive).and_then(|i| Some((i, i.usn?))) {
+                let _ = cache::save(vol.drive, vol.serial, journal.journal_id, usn, index.parts());
+                let _ = crate::datestore::save();
+            }
+        }
+    });
+}
