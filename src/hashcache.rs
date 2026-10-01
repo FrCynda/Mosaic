@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use md5::Md5;
 use parking_lot::{Mutex, RwLock};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -52,13 +51,6 @@ fn store() -> PathBuf {
 pub fn generation() -> usize {
     GEN.load(Ordering::Relaxed)
 }
-pub fn progress() -> Option<(usize, usize)> {
-    *PROGRESS.lock()
-}
-pub fn error() -> Option<String> {
-    ERROR.lock().clone()
-}
-
 /// Bring the cache up to date in the background: at most once a minute, never twice at a time.
 /// Only called when a query actually uses a hash/dupe function.
 pub fn sync(h: SearchHandle) {

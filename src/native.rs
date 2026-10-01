@@ -2321,12 +2321,10 @@ impl Ui {
     fn set_lang(&mut self, code: &str) {
         crate::i18n::set_lang(code);
         self.rtl = code == "ar";
-        unsafe {
-            if let Ok(g) = Gfx::new(self.scale, self.rtl) {
-                self.cm = Canvas::new(self.main, &g);
-                self.cl = Canvas::new(self.list, &g);
-                self.gfx = g;
-            }
+        if let Ok(g) = Gfx::new(self.scale, self.rtl) {
+            self.cm = Canvas::new(self.main, &g);
+            self.cl = Canvas::new(self.list, &g);
+            self.gfx = g;
         }
         self.save_settings();
         self.layout();

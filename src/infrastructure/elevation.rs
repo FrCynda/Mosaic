@@ -3,46 +3,16 @@
 //! relaunch this exe elevated via the UAC `runas` verb to run a one-shot
 //! `--svc-*` command, then wait for its result.
 
-use std::ffi::c_void;
 use std::iter::once;
 use std::mem::size_of;
-use std::ptr;
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
-use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-};
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
 use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 /// `GetLastError` value when the user declines the UAC prompt.
 const ERROR_CANCELLED: u32 = 1223;
-
-/// Whether the current process holds an elevated token. A failure to read the
-/// token is treated as "not elevated", so callers relaunch (and UAC decides).
-pub fn is_elevated() -> bool {
-    // SAFETY: standard token-query sequence; `token` is closed before returning.
-    unsafe {
-        let mut token: HANDLE = ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return false;
-        }
-        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut returned = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenElevation,
-            &mut elevation as *mut _ as *mut c_void,
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned,
-        );
-        CloseHandle(token);
-        ok != 0 && elevation.TokenIsElevated != 0
-    }
-}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(once(0)).collect()
