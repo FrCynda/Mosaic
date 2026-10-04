@@ -31,6 +31,7 @@ fn dir() -> PathBuf {
     PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into())).join("Mosaic").join("contentindex")
 }
 
+#[derive(Clone, Copy)]
 struct Fields {
     path: Field,
     mtime: Field,
@@ -137,15 +138,32 @@ impl Engine {
     }
 }
 
-fn engine() -> &'static Engine {
-    static E: OnceLock<Engine> = OnceLock::new();
+/// `None` only if the index truly can't be opened (e.g. the directory is unwritable) — callers
+/// treat that as "content search unavailable right now" rather than a fatal error.
+///
+/// The service (a separate process, possibly mid-commit on this same directory) and this one can
+/// race on the directory's first open; `Index::open_or_create`/`Engine::open` can transiently fail
+/// mid-merge, which used to be a hard `.expect()` — a single bad-timed open crashed the whole app.
+/// A few short retries ride out that window without surfacing it as a crash.
+fn engine() -> Option<&'static Engine> {
+    static E: OnceLock<Option<Engine>> = OnceLock::new();
     E.get_or_init(|| {
         let (schema, fields) = schema();
         let d = dir();
         let _ = std::fs::create_dir_all(&d);
-        let index = open_index(&d, schema).expect("open/create content index");
-        Engine::open(index, fields).expect("start content index writer/reader")
+        for attempt in 0..5 {
+            if let Ok(index) = open_index(&d, schema.clone()) {
+                if let Ok(engine) = Engine::open(index, fields) {
+                    return Some(engine);
+                }
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        None
     })
+    .as_ref()
 }
 
 fn open_index(dir: &Path, schema: Schema) -> tantivy::Result<Index> {
@@ -155,19 +173,25 @@ fn open_index(dir: &Path, schema: Schema) -> tantivy::Result<Index> {
 /// Re-indexes one file's already-extracted text. A no-op call still costs a delete+add (tantivy
 /// has no cheaper update path) — callers should skip files whose `mtime`/`size` haven't changed.
 pub fn upsert(path: &str, mtime: i64, size: i64, body: &str) {
-    let _ = engine().upsert(path, mtime, size, body);
+    if let Some(e) = engine() {
+        let _ = e.upsert(path, mtime, size, body);
+    }
 }
 
 pub fn remove(path: &str) {
-    let _ = engine().remove(path);
+    if let Some(e) = engine() {
+        let _ = e.remove(path);
+    }
 }
 
 pub fn commit() {
-    let _ = engine().commit();
+    if let Some(e) = engine() {
+        let _ = e.commit();
+    }
 }
 
 pub fn search(query: &str, limit: usize) -> Vec<(String, f32)> {
-    engine().search(query, limit).unwrap_or_default()
+    engine().and_then(|e| e.search(query, limit).ok()).unwrap_or_default()
 }
 
 /// Bulk-scan progress, for the status line's "building index" message — `None` once the initial
@@ -213,7 +237,7 @@ pub fn bulk_index(files: Vec<(String, i64, i64)>) {
     BULK_TOTAL.store(files.len(), Relaxed);
     BULK_DONE.store(0, Relaxed);
     files.par_iter().for_each(|(path, mtime, size)| {
-        if engine().get(path) != Some((*mtime, *size)) {
+        if engine().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
             index_file(path, *mtime, *size);
         }
         let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
