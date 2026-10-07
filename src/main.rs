@@ -746,6 +746,15 @@ fn main() {
         }
         std::process::exit(0);
     }
+    if let Some(k) = std::env::args().position(|a| a == "--debug-content") {
+        let q = std::env::args().nth(k + 1).unwrap_or_default();
+        let hits = contentindex::search(&q, 20);
+        eprintln!("DEBUG_CONTENT_HITS={}", hits.len());
+        for (p, s) in &hits {
+            eprintln!("  {s:.3}  {p}");
+        }
+        std::process::exit(0);
+    }
     if let Some(k) = std::env::args().position(|a| a == "--cli") {
         let args: Vec<String> = std::env::args().skip(k + 1).collect();
         std::process::exit(cli::run(&args));

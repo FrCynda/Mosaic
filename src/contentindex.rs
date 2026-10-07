@@ -123,6 +123,11 @@ impl Engine {
 
     /// Paths of the best `limit` matches for `query` against `body`, best first.
     fn search(&self, query: &str, limit: usize) -> tantivy::Result<Vec<(String, f32)>> {
+        // `ReloadPolicy::Manual` only reloads from inside `commit()` — fine for the process that's
+        // actually indexing, but a read-only process (the GUI, when a service does the indexing)
+        // never calls that, so without this its reader would stay frozen on the snapshot from
+        // whenever it first opened the index, never seeing anything the other process commits later.
+        let _ = self.reader.reload();
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(&self.index, vec![self.fields.body]);
         let q = parser.parse_query(query)?;
