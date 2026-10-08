@@ -18,7 +18,7 @@ use windows_sys::Win32::System::DataExchange::{
 };
 use windows_sys::Win32::Foundation::GlobalFree;
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW};
+use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, SW_SHOW};
 
 fn wide(s: &str) -> Vec<u16> {
@@ -92,6 +92,7 @@ pub fn helper_main() {
 
 fn thumbnail_here(path: &str, size: i32, icon_only: bool) -> Option<Vec<u8>> {
     unsafe {
+        let path = path.strip_prefix("shell:").filter(|p| p.starts_with("::")).unwrap_or(path); // "shell:::{CLSID}" is parsed as "::{CLSID}"
         let w = wide(path);
         let f: IShellItemImageFactory = SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None).ok()?;
         let flags = SIIGBF(if icon_only { 0x1 | 0x4 } else { 0x1 }); // BIGGERSIZEOK [| ICONONLY]
@@ -239,6 +240,38 @@ pub unsafe fn global(data: &[u8]) -> *mut c_void {
 
 pub fn open(path: &str) {
     let _ = Command::new("cmd").args(["/c", "start", "", path]).creation_flags(0x0800_0000).spawn();
+}
+
+/// A shell location with no path (This PC, Network, …) by its `shell:::{CLSID}` name.
+pub fn open_special(target: &str) {
+    let _ = Command::new("explorer").arg(target).spawn();
+}
+
+/// A console in `dir`: PowerShell or cmd, optionally elevated (the UAC prompt; the shell is told the folder too,
+/// since an elevated process doesn't always inherit the starting directory).
+pub fn terminal(powershell: bool, admin: bool, dir: &str) {
+    let exe = if powershell { "powershell.exe" } else { "cmd.exe" };
+    if !admin {
+        let _ = Command::new(exe).current_dir(dir).creation_flags(0x0000_0010).spawn(); // CREATE_NEW_CONSOLE
+        return;
+    }
+    let args = if powershell { format!("-NoExit -Command \"Set-Location -LiteralPath '{}'\"", dir.replace('\'', "''")) } else { format!("/K cd /d \"{dir}\"") };
+    std::thread::spawn({
+        let dir = dir.to_string();
+        move || unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let (verb, file, params, d) = (wide("runas"), wide(exe), wide(&args), wide(&dir));
+            let mut sei: SHELLEXECUTEINFOW = zeroed();
+            sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+            sei.fMask = SEE_MASK_NOASYNC;
+            sei.lpVerb = verb.as_ptr();
+            sei.lpFile = file.as_ptr();
+            sei.lpParameters = params.as_ptr();
+            sei.lpDirectory = d.as_ptr();
+            sei.nShow = SW_SHOW;
+            ShellExecuteExW(&mut sei);
+        }
+    });
 }
 
 pub fn reveal(path: &str) {

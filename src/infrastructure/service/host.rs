@@ -247,6 +247,13 @@ fn handle_connection(conn: &mut PipeConnection, indexer: &Indexer) -> std::io::R
             options.limit = options.limit.min(MAX_SERVICE_HITS);
             Response::Search(indexer.catalog().read().search(&options))
         }
+        Request::Content { query, limit } => {
+            LAST_SEARCH.store(uptime_s(), Ordering::Relaxed);
+            match crate::contentindex::search(&query, limit.min(MAX_SERVICE_HITS)) {
+                Ok(hits) => Response::Content(hits.into_iter().map(|(p, _)| p).collect()),
+                Err(e) => Response::Error(e),
+            }
+        }
         Request::Status => Response::Status(indexer.status()),
         Request::Ping => Response::Pong {
             protocol_version: PROTOCOL_VERSION,

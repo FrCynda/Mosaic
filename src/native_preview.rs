@@ -6,16 +6,17 @@
 //! - pictures, and anything else, come from the shell's thumbnail helper at the pane's size (else the file's icon)
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 
-use windows::core::{Interface, PCWSTR, PROPVARIANT, PWSTR};
+use windows::core::{Interface, BSTR, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{BOOL, COLORREF, HWND as WinHwnd, RECT as WinRect};
 use windows::Win32::Media::MediaFoundation::{
-    IMFPMediaPlayer, IMFPMediaPlayerCallback, MFPCreateMediaPlayer, MFStartup, MFP_CREATION_OPTIONS, MFP_MEDIAPLAYER_STATE_PLAYING,
-    MFP_MEDIAPLAYER_STATE_STOPPED, MFP_POSITIONTYPE_100NS,
+    IMFMediaEngine, IMFMediaEngineClassFactory, IMFMediaEngineEx, IMFMediaEngineNotify, MFCreateAttributes, MFStartup, CLSID_MFMediaEngineClassFactory, MF_MEDIA_ENGINE_CALLBACK,
+    MF_MEDIA_ENGINE_PLAYBACK_HWND,
 };
-use windows::Win32::System::Com::{CLSIDFromString, CoCreateInstance, IStream, CLSCTX_LOCAL_SERVER};
+use windows::Win32::System::Com::{CLSIDFromString, CoCreateInstance, IStream, CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
 use windows::Win32::UI::Shell::{
     AssocQueryStringW, IInitializeWithItem, IPreviewHandler, IPreviewHandlerVisuals, IShellItem, SHCreateItemFromParsingName, SHCreateStreamOnFileEx,
@@ -25,11 +26,12 @@ use windows61::Win32::Graphics::DirectWrite::*;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, GetStockObject, InvalidateRect, BLACK_BRUSH, PAINTSTRUCT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::gfx::{self, Bitmap, Canvas, Gfx};
-use super::{gdi, inside, pixels, png_pixels, put_mid, theme, w, wz, xy};
+use super::{gdi, inside, pixels, png_pixels, put, put_mid, shell, theme, w, wz, xy};
 
 const VIDEO: &[&str] = &["mp4", "m4v", "mkv", "webm", "avi", "wmv", "asf", "mov", "mpg", "mpeg", "m2ts", "mts", "3gp", "3g2"];
 const AUDIO: &[&str] = &["mp3", "m4a", "aac", "wav", "flac", "wma", "ogg", "oga", "opus", "aif", "aiff", "amr", "ac3"];
@@ -40,6 +42,11 @@ use crate::extract::{looks_text, OFFICE, TEXTS};
 const TEXT_MAX: usize = 256 * 1024;
 const T_MEDIA: usize = 1;
 const T_GIF: usize = 2;
+const T_AUTO: usize = 3;
+const WM_ICON: u32 = WM_APP + 11;
+/// Folder and archive listings are cut after this many entries.
+const LIST_MAX: usize = 2000;
+const ARCHIVES: &[&str] = &["zip", "jar", "war", "apk", "vsix", "nupkg", "whl", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "zst", "iso", "cab"];
 /// Width (CSS px) of the divider strip at the pane's left.
 pub const GAP: i32 = 8;
 
@@ -52,6 +59,7 @@ enum Body {
     Note(&'static str),
     Picture,
     Text,
+    Dir, // a folder's contents as clickable rows with icons
     Media,
     Handler,
     Anim, // animated GIF, decoded and played frame-by-frame ourselves
@@ -76,7 +84,7 @@ pub struct Preview {
     text_h: f32,
     scroll: f32,
     cut: bool,
-    player: Option<IMFPMediaPlayer>,
+    player: Option<IMFMediaEngine>, // the media engine (Edge's player): MFPlay can't open AV1, this can
     audio: bool,
     started: Instant,
     drag: Option<Bar>, // dragging the seek or volume bar
@@ -89,13 +97,81 @@ pub struct Preview {
     gif: Vec<(Vec<u8>, i32, i32, u32)>, // decoded frames: premultiplied BGRA, width, height, delay (ms)
     gif_i: usize,
     gif_bmp: Option<(Bitmap, u32)>, // current frame's bitmap, and the canvas `gen` it was made for
+    grab: i32,          // dragging the scrollbar thumb: where it was grabbed, from its top
+    auto: Option<Auto>, // middle-click autoscroll
+    rows: Vec<Entry>,   // Body::Dir: the folder's entries
+    ent_png: HashMap<String, Vec<u8>>, // shell icons by `Entry::key`
+    ent_bmp: HashMap<String, (Bitmap, u32)>,
+    ent_asked: HashSet<String>,
+    hot: Option<usize>,
+    press: Option<usize>,
+    tracking: bool,
+}
+
+struct Entry {
+    name: String,
+    path: String,
+    dir: bool,
+    size: u64,
+}
+
+impl Entry {
+    /// What the icon is cached under: one per folder/extension, except types whose icon is the file's own.
+    fn key(&self) -> String {
+        let ext = std::path::Path::new(&self.name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if self.dir {
+            "\\dir".into()
+        } else if matches!(ext.as_str(), "" | "exe" | "lnk" | "ico" | "url" | "scr" | "msi" | "cur" | "appx") {
+            self.path.clone()
+        } else {
+            format!(".{ext}")
+        }
+    }
+}
+
+struct Auto {
+    x: i32,
+    y: i32,
+    t0: Instant,
+    moved: bool,
+    last: Instant,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Bar {
     Seek,
     Volume,
+    Thumb,
 }
+
+/// The media engine's event sink, by hand: a static object that only notes that the file failed to open
+/// (`MF_MEDIA_ENGINE_EVENT_ERROR`, from any thread); `tick` looks at the flag.
+#[repr(C)]
+struct EngineNotify(*const NotifyVtbl);
+unsafe impl Sync for EngineNotify {}
+#[repr(C)]
+struct NotifyVtbl {
+    query: unsafe extern "system" fn(*mut std::ffi::c_void, *const windows::core::GUID, *mut *mut std::ffi::c_void) -> windows::core::HRESULT,
+    add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    event: unsafe extern "system" fn(*mut std::ffi::c_void, u32, usize, u32) -> windows::core::HRESULT,
+}
+static PLAY_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+unsafe extern "system" fn notify_query(this: *mut std::ffi::c_void, _: *const windows::core::GUID, out: *mut *mut std::ffi::c_void) -> windows::core::HRESULT {
+    *out = this;
+    windows::core::HRESULT(0)
+}
+unsafe extern "system" fn notify_ref(_: *mut std::ffi::c_void) -> u32 {
+    2 // a static: never freed
+}
+unsafe extern "system" fn notify_event(_: *mut std::ffi::c_void, event: u32, _: usize, _: u32) -> windows::core::HRESULT {
+    if event == 5 {
+        PLAY_FAILED.store(true, std::sync::atomic::Ordering::Relaxed); // MF_MEDIA_ENGINE_EVENT_ERROR
+    }
+    windows::core::HRESULT(0)
+}
+static NOTIFY_VTBL: NotifyVtbl = NotifyVtbl { query: notify_query, add_ref: notify_ref, release: notify_ref, event: notify_event };
+static NOTIFY: EngineNotify = EngineNotify(&NOTIFY_VTBL);
 
 thread_local!(static PV: RefCell<Option<Preview>> = const { RefCell::new(None) });
 
@@ -158,6 +234,15 @@ pub unsafe fn create(parent: HWND, scale: f64) -> HWND {
             gif: Vec::new(),
             gif_i: 0,
             gif_bmp: None,
+            grab: 0,
+            auto: None,
+            rows: Vec::new(),
+            ent_png: HashMap::new(),
+            ent_bmp: HashMap::new(),
+            ent_asked: HashSet::new(),
+            hot: None,
+            press: None,
+            tracking: false,
         };
         PV.with(|c| *c.borrow_mut() = Some(p));
     }
@@ -224,6 +309,9 @@ pub fn rescale(scale: f64) {
             p.icons = icons(&g, scale);
             p.gfx = g;
             p.pic = None;
+            p.ent_png.clear();
+            p.ent_bmp.clear();
+            p.ent_asked.clear();
             p.relayout();
         }
     });
@@ -268,6 +356,69 @@ fn clock(s: f64) -> String {
     }
 }
 
+/// Folders first, then files, each sorted by name (the first `LIST_MAX`).
+fn folder_listing(path: &str) -> Option<Vec<Entry>> {
+    let mut v: Vec<Entry> = std::fs::read_dir(path)
+        .ok()?
+        .flatten()
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let (dir, size) = e.metadata().map_or((false, 0), |m| (m.is_dir(), m.len()));
+            Entry { path: e.path().to_string_lossy().into_owned(), name, dir, size }
+        })
+        .collect();
+    v.sort_by_cached_key(|e| (!e.dir, e.name.to_lowercase()));
+    v.truncate(LIST_MAX);
+    Some(v)
+}
+
+/// The first `LIST_MAX` lines, then how many were left out ("(empty)" for none).
+fn capped(lines: impl Iterator<Item = String>, total: usize, exact: bool) -> String {
+    if total == 0 {
+        return "(empty)".into();
+    }
+    let mut out: String = lines.take(LIST_MAX).map(|l| l + "\n").collect();
+    if total > LIST_MAX {
+        out.push_str(&if exact { format!("… and {} more\n", total - LIST_MAX) } else { "… and more\n".into() });
+    }
+    out
+}
+
+/// An archive's entries: zip files are read in-process, everything else (7z, rar, tar.*, iso, cab…) by the `tar`
+/// that ships with Windows 10+, which reads them all. Names only, as stored.
+fn archive_listing(path: &str, ext: &str) -> Option<String> {
+    use std::io::BufRead;
+    let mut names: Vec<String> = Vec::new();
+    let (mut total, mut exact) = (0, true);
+    if matches!(ext, "zip" | "jar" | "war" | "apk" | "vsix" | "nupkg" | "whl") {
+        if let Ok(mut z) = std::fs::File::open(path).map_err(|_| ()).and_then(|f| zip::ZipArchive::new(f).map_err(|_| ())) {
+            total = z.len();
+            names = (0..z.len().min(LIST_MAX)).filter_map(|i| Some(z.by_index_raw(i).ok()?.name().to_string())).collect();
+        }
+    }
+    if names.is_empty() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("tar").args(["-tf", path]).creation_flags(0x0800_0000).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+        for line in std::io::BufReader::new(child.stdout.take()?).lines().map_while(Result::ok) {
+            total += 1;
+            if names.len() < LIST_MAX {
+                names.push(line);
+            } else {
+                exact = false; // ponytail: past the cap the count is only "more than"; reading a huge archive to the end isn't worth it
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if names.is_empty() {
+        return None;
+    }
+    let count = if exact { total.to_string() } else { format!("{}+", LIST_MAX) };
+    Some(format!("{count} {}\n\n{}", if count == "1" { "entry" } else { "entries" }, capped(names.into_iter(), total, exact)))
+}
+
 impl Preview {
     fn px(&self, v: i32) -> i32 {
         (v as f64 * self.scale).round() as i32
@@ -309,8 +460,10 @@ impl Preview {
             ShowWindow(self.video, SW_HIDE);
             KillTimer(self.hwnd, T_MEDIA);
             KillTimer(self.hwnd, T_GIF);
+            KillTimer(self.hwnd, T_AUTO);
             InvalidateRect(self.hwnd, null(), 0);
         }
+        self.auto = None;
         self.key.clear();
         self.title.clear();
         self.detail.clear();
@@ -319,6 +472,8 @@ impl Preview {
         self.png = None;
         self.pic = None;
         self.text.clear();
+        self.rows.clear();
+        self.hot = None;
         self.layout = None;
         self.scroll = 0.0;
         self.cut = false;
@@ -334,6 +489,22 @@ impl Preview {
         let (body, _) = self.rects();
         let fetch = Some((path.to_string(), (body.right - body.left).max(body.bottom - body.top).clamp(64, 1600)));
         let e = ext.as_str();
+        if std::path::Path::new(path).is_dir() {
+            match folder_listing(path) {
+                Some(v) => {
+                    self.rows = v;
+                    self.hot = None;
+                    self.body = Body::Dir;
+                    self.text_h = self.rows.len() as f32 * self.row_h() as f32;
+                }
+                None => {
+                    self.note = "Can't read this folder";
+                    self.body = Body::Picture;
+                    return fetch;
+                }
+            }
+            return None;
+        }
         if e == "gif" {
             // Media Foundation has no real GIF source, so this is decoded and animated by hand
             if self.load_gif(path) {
@@ -355,12 +526,25 @@ impl Preview {
             self.body = Body::Picture;
             return fetch;
         }
+        if ARCHIVES.contains(&e) {
+            if let Some(t) = archive_listing(path, e) {
+                self.list(t);
+                return None;
+            }
+        }
         if (TEXTS.contains(&e) && self.load_text(path, true)) || self.open_handler(path, e) || (OFFICE.contains(&e) && self.load_office_text(path, e)) || self.load_text(path, false) {
             return None;
         }
         self.note = "No preview for this type of file";
         self.body = Body::Picture;
         fetch
+    }
+
+    /// Show generated text (a folder's or an archive's contents) as a scrollable page.
+    fn list(&mut self, text: String) {
+        self.text = text.encode_utf16().collect();
+        self.cut = false;
+        self.body = Body::Text;
     }
 
     fn load_text(&mut self, path: &str, force: bool) -> bool {
@@ -476,14 +660,25 @@ impl Preview {
             MF.call_once(|| {
                 let _ = MFStartup(0x0002_0070, 0); // MF_VERSION, MFSTARTUP_FULL
             });
-            let p = wz(path);
-            let mut player = None;
-            let made = MFPCreateMediaPlayer(PCWSTR(p.as_ptr()), BOOL(1), MFP_CREATION_OPTIONS(0), None::<&IMFPMediaPlayerCallback>, WinHwnd(self.video as _), Some(&mut player));
-            let (Ok(()), Some(player)) = (made, player) else { return false };
-            let _ = player.SetBorderColor(COLORREF(0));
-            let _ = player.SetVolume(self.vol);
-            let _ = player.SetMute(BOOL(self.muted as i32));
-            self.player = Some(player);
+            PLAY_FAILED.store(false, std::sync::atomic::Ordering::Relaxed);
+            let make = || -> windows::core::Result<IMFMediaEngine> {
+                let mut at = None;
+                MFCreateAttributes(&mut at, 3)?;
+                let at = at.ok_or_else(windows::core::Error::empty)?;
+                let notify = IMFMediaEngineNotify::from_raw(&NOTIFY as *const EngineNotify as *mut std::ffi::c_void);
+                at.SetUnknown(&MF_MEDIA_ENGINE_CALLBACK, &notify)?;
+                at.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, self.video as usize as u64)?;
+                let factory: IMFMediaEngineClassFactory = CoCreateInstance(&CLSID_MFMediaEngineClassFactory, None, CLSCTX_INPROC_SERVER)?;
+                let engine = factory.CreateInstance(0, &at)?;
+                engine.SetSource(&BSTR::from(path))?;
+                let _ = engine.SetLoop(BOOL(!self.audio as i32)); // a video repeats, audio just ends
+                let _ = engine.SetVolume(self.vol as f64);
+                let _ = engine.SetMuted(BOOL(self.muted as i32));
+                engine.Play()?;
+                Ok(engine)
+            };
+            let Ok(engine) = make() else { return false };
+            self.player = Some(engine);
             self.body = Body::Media;
             self.started = Instant::now();
             SetTimer(self.hwnd, T_MEDIA, 250, None);
@@ -494,26 +689,27 @@ impl Preview {
     /// Seconds played and in total, once the file is open.
     fn times(&self) -> Option<(f64, f64)> {
         let pl = self.player.as_ref()?;
-        let secs = |v: &PROPVARIANT| u64::try_from(v).map(|t| t as f64).or_else(|_| i64::try_from(v).map(|t| t as f64)).ok().map(|t| t / 1e7);
         unsafe {
-            let d = secs(&pl.GetDuration(&MFP_POSITIONTYPE_100NS).ok()?)?;
-            let p = secs(&pl.GetPosition(&MFP_POSITIONTYPE_100NS).ok()?)?;
-            Some((p.min(d), d))
+            let d = pl.GetDuration();
+            (d.is_finite() && d > 0.0).then(|| (pl.GetCurrentTime().min(d), d)) // NaN until the metadata is read
         }
     }
 
     fn playing(&self) -> bool {
-        self.player.as_ref().is_some_and(|p| unsafe { p.GetState() }.is_ok_and(|s| s == MFP_MEDIAPLAYER_STATE_PLAYING))
+        self.player.as_ref().is_some_and(|p| unsafe { !p.IsPaused().as_bool() && !p.IsEnded().as_bool() })
     }
 
-    /// Distinct from a user's pause: MFPlay reaches this state on its own once playback runs off the end.
+    /// Distinct from a user's pause: played to the end (audio only: a video loops).
     fn stopped(&self) -> bool {
-        self.player.as_ref().is_some_and(|p| unsafe { p.GetState() }.is_ok_and(|s| s == MFP_MEDIAPLAYER_STATE_STOPPED))
+        self.player.as_ref().is_some_and(|p| unsafe { p.IsEnded().as_bool() })
     }
 
     fn toggle(&mut self) {
         if let Some(p) = &self.player {
             unsafe {
+                if p.IsEnded().as_bool() {
+                    let _ = p.SetCurrentTime(0.0);
+                }
                 let _ = if self.playing() { p.Pause() } else { p.Play() };
                 InvalidateRect(self.hwnd, null(), 0);
             }
@@ -525,7 +721,7 @@ impl Preview {
         let t = self.track();
         let f = ((x - t.left) as f64 / (t.right - t.left).max(1) as f64).clamp(0.0, 1.0);
         unsafe {
-            let _ = p.SetPosition(&MFP_POSITIONTYPE_100NS, &PROPVARIANT::from((f * d * 1e7) as i64));
+            let _ = p.SetCurrentTime(f * d);
             InvalidateRect(self.hwnd, null(), 0);
         }
     }
@@ -543,8 +739,8 @@ impl Preview {
     fn apply_volume(&self) {
         if let Some(p) = &self.player {
             unsafe {
-                let _ = p.SetVolume(self.vol);
-                let _ = p.SetMute(BOOL(self.muted as i32));
+                let _ = p.SetVolume(self.vol as f64);
+                let _ = p.SetMuted(BOOL(self.muted as i32));
             }
         }
         unsafe { InvalidateRect(self.hwnd, null(), 0) };
@@ -557,7 +753,7 @@ impl Preview {
             return;
         }
         match self.times() {
-            None if !self.playing() && self.started.elapsed() > Duration::from_secs(4) => {
+            None if PLAY_FAILED.load(std::sync::atomic::Ordering::Relaxed) || self.started.elapsed() > Duration::from_secs(8) => {
                 if let Some(p) = self.player.take() {
                     unsafe {
                         let _ = p.Shutdown();
@@ -566,11 +762,11 @@ impl Preview {
                 }
                 self.body = Body::Note("This file can't be played");
             }
-            // video ran off the end: MFPlay doesn't loop on its own, so restart it (audio just stops, as before)
+            // a video that ended despite looping (some sources): restart it; audio just stops
             Some((_, dur)) if !self.audio && dur > 0.0 && self.stopped() => {
                 if let Some(p) = &self.player {
                     unsafe {
-                        let _ = p.SetPosition(&MFP_POSITIONTYPE_100NS, &PROPVARIANT::from(0i64));
+                        let _ = p.SetCurrentTime(0.0);
                         let _ = p.Play();
                     }
                 }
@@ -629,8 +825,9 @@ impl Preview {
             if self.player.is_some() && !self.audio {
                 MoveWindow(self.video, body.left, body.top, body.right - body.left, body.bottom - body.top, 1);
                 ShowWindow(self.video, SW_SHOWNA);
-                if let Some(p) = &self.player {
-                    let _ = p.UpdateVideo();
+                if let Some(ex) = self.player.as_ref().and_then(|p| p.cast::<IMFMediaEngineEx>().ok()) {
+                    let dst = WinRect { left: 0, top: 0, right: body.right - body.left, bottom: body.bottom - body.top };
+                    let _ = ex.UpdateVideoStream(None, Some(&dst), None);
                 }
             } else {
                 ShowWindow(self.video, SW_HIDE);
@@ -654,14 +851,171 @@ impl Preview {
         self.layout.clone()
     }
 
+    fn line(&self) -> f32 {
+        if matches!(self.body, Body::Dir) {
+            return self.row_h() as f32;
+        }
+        (12.0 * 1.17 * self.scale) as f32 // Consolas' line
+    }
+
+    fn row_h(&self) -> i32 {
+        self.gfx.f.lh + self.px(8)
+    }
+
+    fn max_scroll(&self) -> f32 {
+        let (body, _) = self.rects();
+        let slack = if matches!(self.body, Body::Dir) { 0.0 } else { self.line() };
+        (self.text_h - (body.bottom - body.top) as f32 + slack).max(0.0)
+    }
+
+    /// The row under a client point, for `Body::Dir`.
+    fn row_at(&self, x: i32, y: i32) -> Option<usize> {
+        let (body, _) = self.rects();
+        if !matches!(self.body, Body::Dir) || x < body.left || x >= body.right || y < body.top || y >= body.bottom {
+            return None;
+        }
+        let i = ((y - body.top) as f32 + self.scroll) / self.row_h() as f32;
+        (i >= 0.0).then_some(i as usize).filter(|&i| i < self.rows.len())
+    }
+
+    /// Ask the shell helper for the icons of the rows on screen (once per kind), decode what has arrived.
+    fn dir_icons(&mut self, body: &RECT) {
+        let rh = self.row_h() as f32;
+        let a = ((self.scroll / rh) as usize).min(self.rows.len());
+        let b = (((self.scroll + (body.bottom - body.top) as f32) / rh).ceil() as usize + 1).min(self.rows.len());
+        let (size, hw, gen) = (self.px(16), self.hwnd as isize, self.cv.gen);
+        for i in a..b.max(a) {
+            let key = self.rows[i].key();
+            if !self.ent_png.contains_key(&key) && self.ent_asked.insert(key.clone()) {
+                let (path, k) = (self.rows[i].path.clone(), key.clone());
+                shell::shell_spawn(Box::new(move |dropped| {
+                    let png = if dropped { None } else { shell::thumbnail(&path, size, true) };
+                    let m: Box<(String, Option<Vec<u8>>)> = Box::new((k, png));
+                    unsafe { PostMessageW(hw as HWND, WM_ICON, 0, Box::into_raw(m) as isize) };
+                }));
+            }
+            if self.ent_bmp.get(&key).is_none_or(|x| x.1 != gen) {
+                if let Some((px, w, h)) = self.ent_png.get(&key).and_then(|p| png_pixels(p, size)) {
+                    if let Some(bm) = self.cv.make_bitmap(&px, w, h) {
+                        self.ent_bmp.insert(key, (bm, gen));
+                    }
+                }
+            }
+        }
+    }
+
+    fn got_icon(&mut self, (key, png): (String, Option<Vec<u8>>)) {
+        if let Some(p) = png {
+            self.ent_png.insert(key.clone(), p);
+            self.ent_bmp.remove(&key);
+        }
+        self.ent_asked.remove(&key);
+        unsafe { InvalidateRect(self.hwnd, null(), 0) };
+    }
+
+    fn thumb_len(&self, bh: f32) -> f32 {
+        (bh * bh / self.text_h).max(self.px(24) as f32)
+    }
+
+    /// The scrollbar's thumb: only for text that doesn't fit, wider while it's dragged.
+    fn thumb(&self) -> Option<RECT> {
+        let (body, _) = self.rects();
+        let bh = (body.bottom - body.top) as f32;
+        if !matches!(self.body, Body::Text | Body::Dir) || self.text_h <= bh {
+            return None;
+        }
+        let len = self.thumb_len(bh);
+        let top = body.top as f32 + (bh - len) * self.scroll / self.max_scroll().max(1.0);
+        let right = self.card().right - self.px(3);
+        let w = self.px(if self.drag == Some(Bar::Thumb) { 7 } else { 4 });
+        Some(RECT { left: right - w, top: top as i32, right, bottom: (top + len) as i32 })
+    }
+
+    /// A press on the scrollbar's strip (wider than the thumb): grab the thumb, or page towards the pointer.
+    fn sb_down(&mut self, x: i32, y: i32) -> bool {
+        let Some(t) = self.thumb() else { return false };
+        let (body, _) = self.rects();
+        if x < self.card().right - self.px(16) || y < body.top || y >= body.bottom {
+            return false;
+        }
+        if y >= t.top && y < t.bottom {
+            self.grab = y - t.top;
+            self.drag = Some(Bar::Thumb);
+            unsafe { SetCapture(self.hwnd) };
+        } else {
+            let page = (body.bottom - body.top) as f32 - self.line();
+            self.scroll = (self.scroll + if y < t.top { -page } else { page }).clamp(0.0, self.max_scroll());
+        }
+        unsafe { InvalidateRect(self.hwnd, null(), 0) };
+        true
+    }
+
+    fn drag_thumb(&mut self, y: i32) {
+        let (body, _) = self.rects();
+        let bh = (body.bottom - body.top) as f32;
+        let free = (bh - self.thumb_len(bh)).max(1.0);
+        let t = ((y - self.grab - body.top) as f32 / free).clamp(0.0, 1.0);
+        self.scroll = t * self.max_scroll();
+        unsafe { InvalidateRect(self.hwnd, null(), 0) };
+    }
+
     fn wheel(&mut self, delta: i32) {
-        if !matches!(self.body, Body::Text) {
+        self.stop_auto();
+        if !matches!(self.body, Body::Text | Body::Dir) {
             return;
         }
-        let (body, _) = self.rects();
-        let line = (12.0 * 1.17 * self.scale) as f32; // Consolas' line
-        let max = (self.text_h - (body.bottom - body.top) as f32 + line).max(0.0);
-        self.scroll = (self.scroll - delta as f32 / 120.0 * 3.0 * line).clamp(0.0, max);
+        self.scroll = (self.scroll - delta as f32 / 120.0 * 3.0 * self.line()).clamp(0.0, self.max_scroll());
+        unsafe { InvalidateRect(self.hwnd, null(), 0) };
+    }
+
+    // -- middle-click autoscroll, as in the list: press to start, the pointer's distance from the anchor is the speed
+    fn stop_auto(&mut self) {
+        if self.auto.take().is_some() {
+            unsafe {
+                KillTimer(self.hwnd, T_AUTO);
+                ReleaseCapture();
+                InvalidateRect(self.hwnd, null(), 0);
+            }
+        }
+    }
+
+    fn mdown(&mut self, x: i32, y: i32) {
+        if self.auto.is_some() {
+            return self.stop_auto();
+        }
+        if self.thumb().is_some() {
+            let now = Instant::now();
+            self.auto = Some(Auto { x, y, t0: now, moved: false, last: now });
+            unsafe {
+                SetCapture(self.hwnd);
+                SetTimer(self.hwnd, T_AUTO, 15, None);
+                InvalidateRect(self.hwnd, null(), 0);
+            }
+        }
+    }
+
+    /// Held and dragged: stop on release. A quick click keeps scrolling until the next click.
+    fn mup(&mut self) {
+        if self.auto.as_ref().is_some_and(|a| a.moved || a.t0.elapsed() > Duration::from_millis(400)) {
+            self.stop_auto();
+        }
+    }
+
+    fn auto_tick(&mut self) {
+        let Some(a) = &mut self.auto else { return };
+        let now = Instant::now();
+        let dt = (now - a.last).as_secs_f32().min(0.05);
+        a.last = now;
+        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        unsafe {
+            GetCursorPos(&mut pt);
+            windows_sys::Win32::Graphics::Gdi::ScreenToClient(self.hwnd, &mut pt);
+        }
+        let d = (pt.y - a.y) as f32 / self.scale as f32;
+        let e = if d.abs() < 12.0 { 0.0 } else { d - 12.0 * d.signum() };
+        a.moved |= e != 0.0;
+        let v = (e * e.abs() * 0.05 + e * 4.0) * self.scale as f32 * dt;
+        self.scroll = (self.scroll + v).clamp(0.0, self.max_scroll());
         unsafe { InvalidateRect(self.hwnd, null(), 0) };
     }
 
@@ -678,6 +1032,9 @@ impl Preview {
             if let Some((px, w, h, _)) = self.gif.get(self.gif_i) {
                 self.gif_bmp = self.cv.make_bitmap(px, *w, *h).map(|b| (b, self.cv.gen));
             }
+        }
+        if matches!(self.body, Body::Dir) {
+            self.dir_icons(&body);
         }
         let layout = if matches!(self.body, Body::Text) { self.text_layout(body.right - body.left) } else { None };
         if !self.cv.begin() {
@@ -710,14 +1067,46 @@ impl Preview {
                     cv.clip(&body);
                     cv.text(l, body.left, body.top - self.scroll.round() as i32, theme().text);
                     cv.unclip();
-                    // a thin scrollbar when it doesn't fit
-                    let bh = (body.bottom - body.top) as f32;
-                    if self.text_h > bh {
-                        let len = (bh * bh / self.text_h).max(px(24) as f32);
-                        let top = body.top as f32 + (bh - len) * self.scroll / (self.text_h - bh + (12.0 * 1.17 * s) as f32).max(1.0);
-                        let r = RECT { left: c.right - px(7), top: top as i32, right: c.right - px(3), bottom: (top + len) as i32 };
-                        cv.rrect_a(&r, rad(2.0), Some(theme().muted), None, 0.45);
+                }
+                if let Some(r) = self.thumb() {
+                    let a = if self.drag == Some(Bar::Thumb) { 0.9 } else { 0.45 };
+                    cv.rrect_a(&r, (r.right - r.left) as f32 / 2.0, Some(theme().muted), None, a);
+                }
+            }
+            Body::Dir => {
+                cv.clip(&body);
+                if self.rows.is_empty() {
+                    put_mid(g, cv, "(empty)", &g.f.reg, &body, body.top + px(8), theme().muted);
+                }
+                let (rh, off) = (self.row_h(), self.scroll.round() as i32);
+                let first = (off / rh).max(0) as usize;
+                for (i, e) in self.rows.iter().enumerate().skip(first) {
+                    let top = body.top + i as i32 * rh - off;
+                    if top >= body.bottom {
+                        break;
                     }
+                    let r = RECT { left: body.left, top, right: body.right - px(10), bottom: top + rh };
+                    if self.hot == Some(i) {
+                        cv.rrect(&r, rad(5.0), Some(theme().hl), None);
+                    }
+                    let ty = top + (rh - lh) / 2;
+                    if let Some((bm, _)) = self.ent_bmp.get(&e.key()) {
+                        let iy = top + (rh - px(16)) / 2;
+                        cv.bitmap(bm, &RECT { left: r.left + px(6), top: iy, right: r.left + px(22), bottom: iy + px(16) }, 1.0);
+                    }
+                    let size = if e.dir { String::new() } else { super::fmt_size(e.size as i64) };
+                    let sw = if size.is_empty() { 0 } else { g.layout(&w(&size), &g.f.reg, 1e4, 1e4).map_or(0, |t| gfx::metrics(&t).width.ceil() as i32) };
+                    if sw > 0 {
+                        put(g, cv, &size, &g.f.reg, r.right - px(8) - sw, ty, theme().muted);
+                    }
+                    cv.clip(&RECT { left: r.left + px(28), right: r.right - px(16) - sw, ..r });
+                    put(g, cv, &e.name, &g.f.reg, r.left + px(30), ty, theme().text);
+                    cv.unclip();
+                }
+                cv.unclip();
+                if let Some(r) = self.thumb() {
+                    let a = if self.drag == Some(Bar::Thumb) { 0.9 } else { 0.45 };
+                    cv.rrect_a(&r, (r.right - r.left) as f32 / 2.0, Some(theme().muted), None, a);
                 }
             }
             Body::Picture | Body::Media => {
@@ -744,6 +1133,13 @@ impl Preview {
                     cv.bitmap(b, &RECT { left: x, top: y, right: x + dw, bottom: y + dh }, 1.0);
                 }
             }
+        }
+        if let Some(a) = &self.auto {
+            let (x, y) = (a.x as f32, a.y as f32);
+            cv.circle(x, y, rad(13.0), theme().card, 0.95);
+            cv.circle_line(x, y, rad(13.0), theme().muted, 1.0);
+            cv.chevron(x, y - rad(5.0), rad(4.0), false, theme().text, rad(1.5));
+            cv.chevron(x, y + rad(5.0), rad(4.0), true, theme().text, rad(1.5));
         }
         if matches!(self.body, Body::Media) {
             // ▶ / ❚❚, the seek bar, the time, then the speaker (mute) and the volume
@@ -810,13 +1206,59 @@ unsafe extern "system" fn preview_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -
             with(|p| p.gif_tick());
             return 0;
         }
+        WM_TIMER if wp == T_AUTO => {
+            with(|p| p.auto_tick());
+            return 0;
+        }
+        WM_ICON => {
+            let p = l as *mut (String, Option<Vec<u8>>);
+            if with(|p2| p2.got_icon(*Box::from_raw(p))).is_none() {
+                PostMessageW(h, m, wp, l); // busy: try again in a moment
+            }
+            return 0;
+        }
+        WM_MOUSELEAVE => {
+            with(|p| {
+                p.tracking = false;
+                if p.hot.take().is_some() {
+                    InvalidateRect(p.hwnd, null(), 0);
+                }
+            });
+            return 0;
+        }
+        WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|p| p.hot.is_some() && p.auto.is_none()) == Some(true) => {
+            SetCursor(LoadCursorW(null_mut(), IDC_HAND));
+            return 1;
+        }
         WM_MOUSEWHEEL => {
             with(|p| p.wheel(((wp >> 16) & 0xffff) as i16 as i32));
             return 0;
         }
+        WM_MBUTTONDOWN => {
+            let (x, y) = xy(l);
+            with(|p| p.mdown(x, y));
+            return 0;
+        }
+        WM_MBUTTONUP => {
+            with(|p| p.mup());
+            return 0;
+        }
+        WM_RBUTTONDOWN => {
+            with(|p| p.stop_auto());
+            return 0;
+        }
+        WM_SETCURSOR if with(|p| p.auto.is_some()) == Some(true) => {
+            SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
+            return 1;
+        }
         WM_LBUTTONDOWN => {
             let (x, y) = xy(l);
             with(|p| {
+                p.stop_auto();
+                if p.sb_down(x, y) {
+                    return;
+                }
+                p.press = p.row_at(x, y);
                 if p.player.is_none() {
                     return;
                 }
@@ -834,17 +1276,48 @@ unsafe extern "system" fn preview_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -
             return 0;
         }
         WM_MOUSEMOVE => {
-            let (x, _) = xy(l);
+            let (x, y) = xy(l);
             with(|p| match p.drag {
                 Some(Bar::Seek) => p.seek(x),
                 Some(Bar::Volume) => p.volume(x),
-                None => {}
+                Some(Bar::Thumb) => p.drag_thumb(y),
+                None => {
+                    let hot = p.row_at(x, y);
+                    if hot != p.hot {
+                        p.hot = hot;
+                        InvalidateRect(p.hwnd, null(), 0);
+                    }
+                    if hot.is_some() && !p.tracking {
+                        p.tracking = true;
+                        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: p.hwnd, dwHoverTime: 0 };
+                        TrackMouseEvent(&mut t);
+                    }
+                }
             });
             return 0;
         }
         WM_LBUTTONUP | WM_CAPTURECHANGED => {
-            if with(|p| p.drag.take().is_some()) == Some(true) && m == WM_LBUTTONUP {
-                ReleaseCapture();
+            if m == WM_LBUTTONUP {
+                let (x, y) = xy(l);
+                // a click on the row that was pressed opens it, outside `with`: it may start a search, which re-enters the pane
+                if let Some(path) = with(|p| p.press.take().filter(|&i| p.row_at(x, y) == Some(i)).map(|i| p.rows[i].path.clone())).flatten() {
+                    super::open_item(&path);
+                    return 0;
+                }
+            }
+            if with(|p| p.drag.take().is_some()) == Some(true) {
+                if m == WM_LBUTTONUP {
+                    ReleaseCapture();
+                }
+                with(|p| unsafe { InvalidateRect(p.hwnd, null(), 0) }); // the thumb narrows again
+            }
+            if m == WM_CAPTURECHANGED {
+                with(|p| {
+                    if p.auto.take().is_some() {
+                        KillTimer(p.hwnd, T_AUTO); // something else took the pointer
+                        InvalidateRect(p.hwnd, null(), 0);
+                    }
+                });
             }
             return 0;
         }
@@ -853,13 +1326,12 @@ unsafe extern "system" fn preview_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -
     DefWindowProcW(h, m, wp, l)
 }
 
-/// The video's window: MFPlay repaints it; a click pauses or plays.
+/// The video's window: the media engine draws into it; a click pauses or plays.
 unsafe extern "system" fn video_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
     match m {
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             BeginPaint(h, &mut ps);
-            with(|p| p.player.as_ref().map(|pl| pl.UpdateVideo()));
             EndPaint(h, &ps);
             return 0;
         }

@@ -617,8 +617,16 @@ impl Parser<'_> {
                 Ok(inner)
             }
             Some(Token::Word(word)) => {
-                let word = word.clone();
+                let mut word = word.clone();
                 self.pos += 1;
+                // `child:"C:\Program Files"`: the tokenizer splits at the quote, so a relation operator left
+                // without a value takes the quoted phrase right after it (paths with spaces)
+                if RELATIONS.iter().any(|r| word.eq_ignore_ascii_case(r)) {
+                    if let Some(Token::Phrase(path)) = self.tokens.get(self.pos) {
+                        word.push_str(path);
+                        self.pos += 1;
+                    }
+                }
                 Ok(parse_word(&word, self.opts, &mut self.needs_path)?.map(Expr::Pred))
             }
             Some(Token::Phrase(phrase)) => {
@@ -675,6 +683,8 @@ fn filter_pred(value: &str, parsed: Option<Pred>) -> Option<Pred> {
         None => Some(Pred::Never),
     }
 }
+
+const RELATIONS: [&str; 5] = ["parent:", "child:", "sibling:", "ancestor:", "descendant:"];
 
 /// Parse a bare word into a predicate: a function (`ext:`/`size:`/`file:`/
 /// `folder:`/`path:`) or a text match.
@@ -733,13 +743,7 @@ fn parse_word(
         *needs_path = true;
         return Ok(Some(Pred::Exists));
     }
-    for (prefix, wrap) in [
-        ("parent:", Pred::Parent as fn(String) -> Pred),
-        ("child:", Pred::Child),
-        ("sibling:", Pred::Sibling),
-        ("ancestor:", Pred::Ancestor),
-        ("descendant:", Pred::Descendant),
-    ] {
+    for (prefix, wrap) in RELATIONS.into_iter().zip([Pred::Parent as fn(String) -> Pred, Pred::Child, Pred::Sibling, Pred::Ancestor, Pred::Descendant]) {
         if let Some(v) = strip_prefix_ci(word, prefix) {
             if v.trim().is_empty() {
                 return Ok(None);
@@ -1879,6 +1883,23 @@ mod tests {
         assert!(!path_hits(&m, r"C:\Users\bob\Documents\report.pdf")); // wrong folder
     }
 
+    #[test]
+    fn quoted_relation_path_may_contain_spaces() {
+        let m = matcher(r#"child:"C:\Program Files""#);
+        assert!(path_hits(&m, r"C:\Program Files\app.exe"));
+        assert!(!path_hits(&m, r"C:\Program Files\App\x.dll"));
+        assert!(!path_hits(&m, r"C:\Windows\app.exe"));
+    }
+
+
+    #[test]
+    fn child_of_a_drive_root_lists_the_top_level() {
+        let m = matcher(r#"child:"C:""#);
+        assert!(path_hits(&m, r"C:\Windows"));
+        assert!(!path_hits(&m, r"C:\Windows\System32"));
+        let bare = matcher("child:C:");
+        assert!(path_hits(&bare, r"C:\Windows"));
+    }
     #[test]
     fn parent_finds_the_single_containing_folder() {
         let m = matcher(r"parent:C:\Users\bob\Downloads\report.pdf");

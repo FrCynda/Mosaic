@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 use tantivy::collector::TopDocs;
+use tantivy::directory::error::{DeleteError, LockError, OpenReadError, OpenWriteError};
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{QueryParser, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, OwnedValue, Schema, FAST, STORED, STRING, TEXT};
@@ -123,11 +124,8 @@ impl Engine {
 
     /// Paths of the best `limit` matches for `query` against `body`, best first.
     fn search(&self, query: &str, limit: usize) -> tantivy::Result<Vec<(String, f32)>> {
-        // `ReloadPolicy::Manual` only reloads from inside `commit()` — fine for the process that's
-        // actually indexing, but a read-only process (the GUI, when a service does the indexing)
-        // never calls that, so without this its reader would stay frozen on the snapshot from
-        // whenever it first opened the index, never seeing anything the other process commits later.
-        let _ = self.reader.reload();
+        // no reload needed: searches run in the process that indexes (the service, or a local
+        // indexer), and its own `commit()` reloads the reader
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(&self.index, vec![self.fields.body]);
         let q = parser.parse_query(query)?;
@@ -143,60 +141,104 @@ impl Engine {
     }
 }
 
-/// `None` only if the index truly can't be opened (e.g. the directory is unwritable) — callers
-/// treat that as "content search unavailable right now" rather than a fatal error.
+/// Opened on first use. A failure isn't cached: the next call tries again, rather than leaving
+/// content search (or, in the indexing process, all indexing) dead for the rest of the session.
 ///
-/// The service (a separate process, possibly mid-commit on this same directory) and this one can
-/// race on the directory's first open; `Index::open_or_create`/`Engine::open` can transiently fail
-/// mid-merge, which used to be a hard `.expect()` — a single bad-timed open crashed the whole app.
-/// A few short retries ride out that window without surfacing it as a crash.
-fn engine() -> Option<&'static Engine> {
-    static E: OnceLock<Option<Engine>> = OnceLock::new();
-    E.get_or_init(|| {
-        let (schema, fields) = schema();
-        let d = dir();
-        let _ = std::fs::create_dir_all(&d);
-        for attempt in 0..5 {
-            if let Ok(index) = open_index(&d, schema.clone()) {
-                if let Ok(engine) = Engine::open(index, fields) {
-                    return Some(engine);
-                }
-            }
-            if attempt < 4 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-        None
-    })
-    .as_ref()
+/// Only the process that owns the index should open it: tantivy takes a write lock on
+/// `.tantivy-meta.lock` even to read, and files the service creates under `%ProgramData%` are
+/// read-only to plain users — an unelevated GUI searches through the service instead
+/// (`backend::SearchHandle::content`).
+fn engine() -> Result<&'static Engine, String> {
+    static E: OnceLock<Engine> = OnceLock::new();
+    static OPENING: Mutex<()> = Mutex::new(());
+    if let Some(e) = E.get() {
+        return Ok(e);
+    }
+    let _g = OPENING.lock(); // one opener at a time: bulk_index calls this from every pool thread
+    if let Some(e) = E.get() {
+        return Ok(e);
+    }
+    let (schema, fields) = schema();
+    let d = dir();
+    let _ = std::fs::create_dir_all(&d);
+    let engine = open_index(&d, schema).and_then(|i| Engine::open(i, fields)).map_err(|e| format!("content index unavailable: {e}"))?;
+    Ok(E.get_or_init(|| engine))
 }
 
 fn open_index(dir: &Path, schema: Schema) -> tantivy::Result<Index> {
-    Index::open_or_create(MmapDirectory::open(dir)?, schema)
+    Index::open_or_create(Dir { inner: MmapDirectory::open(dir)?, root: dir.to_path_buf() }, schema)
+}
+
+/// `MmapDirectory`, except for how `meta.json` (and `.managed.json`) gets replaced. Tantivy's own
+/// `atomic_write` renames with plain `MoveFileExW`, which fails with "access denied" whenever
+/// anything else has the target open at that instant — the reader reloading on another thread,
+/// a merge, an antivirus scan. That fails the whole commit, and its documents are lost.
+/// `std::fs::rename` retries such a failure as a POSIX-semantics rename, which can replace a file
+/// that's still open (for reading, with delete sharing — how std and tantivy open it).
+#[derive(Clone, Debug)]
+struct Dir {
+    inner: MmapDirectory,
+    root: PathBuf,
+}
+
+impl tantivy::Directory for Dir {
+    fn get_file_handle(&self, p: &Path) -> Result<std::sync::Arc<dyn tantivy::directory::FileHandle>, OpenReadError> {
+        self.inner.get_file_handle(p)
+    }
+    fn delete(&self, p: &Path) -> Result<(), DeleteError> {
+        self.inner.delete(p)
+    }
+    fn exists(&self, p: &Path) -> Result<bool, OpenReadError> {
+        self.inner.exists(p)
+    }
+    fn open_write(&self, p: &Path) -> Result<tantivy::directory::WritePtr, OpenWriteError> {
+        self.inner.open_write(p)
+    }
+    fn atomic_read(&self, p: &Path) -> Result<Vec<u8>, OpenReadError> {
+        self.inner.atomic_read(p)
+    }
+    fn atomic_write(&self, p: &Path, data: &[u8]) -> std::io::Result<()> {
+        let path = self.root.join(p);
+        let tmp = path.with_extension("tmp-write");
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, data)?;
+        f.sync_data()?;
+        drop(f);
+        std::fs::rename(&tmp, &path)
+    }
+    fn acquire_lock(&self, lock: &tantivy::directory::Lock) -> Result<tantivy::directory::DirectoryLock, LockError> {
+        self.inner.acquire_lock(lock)
+    }
+    fn watch(&self, cb: tantivy::directory::WatchCallback) -> tantivy::Result<tantivy::directory::WatchHandle> {
+        self.inner.watch(cb)
+    }
+    fn sync_directory(&self) -> std::io::Result<()> {
+        self.inner.sync_directory()
+    }
 }
 
 /// Re-indexes one file's already-extracted text. A no-op call still costs a delete+add (tantivy
 /// has no cheaper update path) — callers should skip files whose `mtime`/`size` haven't changed.
 pub fn upsert(path: &str, mtime: i64, size: i64, body: &str) {
-    if let Some(e) = engine() {
+    if let Ok(e) = engine() {
         let _ = e.upsert(path, mtime, size, body);
     }
 }
 
 pub fn remove(path: &str) {
-    if let Some(e) = engine() {
+    if let Ok(e) = engine() {
         let _ = e.remove(path);
     }
 }
 
 pub fn commit() {
-    if let Some(e) = engine() {
+    if let Ok(e) = engine() {
         let _ = e.commit();
     }
 }
 
-pub fn search(query: &str, limit: usize) -> Vec<(String, f32)> {
-    engine().and_then(|e| e.search(query, limit).ok()).unwrap_or_default()
+pub fn search(query: &str, limit: usize) -> Result<Vec<(String, f32)>, String> {
+    engine()?.search(query, limit).map_err(|e| format!("content search failed: {e}"))
 }
 
 /// Bulk-scan progress, for the status line's "building index" message — `None` once the initial
@@ -241,15 +283,25 @@ pub fn bulk_index(files: Vec<(String, i64, i64)>) {
     use std::sync::atomic::Ordering::Relaxed;
     BULK_TOTAL.store(files.len(), Relaxed);
     BULK_DONE.store(0, Relaxed);
-    files.par_iter().for_each(|(path, mtime, size)| {
-        if engine().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
-            index_file(path, *mtime, *size);
-        }
-        let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
-        if n % 200 == 0 {
-            commit();
-        }
-    });
+    let scan = || {
+        files.par_iter().for_each(|(path, mtime, size)| {
+            if !is_own(path) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
+                index_file(path, *mtime, *size);
+            }
+            let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
+            if n.is_multiple_of(200) {
+                commit();
+            }
+        })
+    };
+    // its own pool, not rayon's global one: this keeps every worker busy with blocking file reads for
+    // minutes (hours on a fresh index), and rayon only serves a job from outside its pool once a worker
+    // runs out of work — so a name search, or the USN watcher's re-sort, would wait out the whole scan
+    // (holding the catalog lock, which stalls the watcher and with it every live update)
+    match rayon::ThreadPoolBuilder::new().thread_name(|i| format!("content-scan-{i}")).build() {
+        Ok(pool) => pool.install(scan),
+        Err(_) => scan(),
+    }
     commit();
     BULK_TOTAL.store(0, Relaxed); // done: progress() reports nothing more
 }
@@ -257,24 +309,43 @@ pub fn bulk_index(files: Vec<(String, i64, i64)>) {
 /// Drives the content index from live file-change events (see [`crate::infrastructure::ntfs::usn::ChangeEvent`]).
 /// Runs on its own thread so extraction (a subprocess spawn per file) never blocks the USN watcher.
 pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<crate::infrastructure::ntfs::ChangeEvent>) {
-    fn apply(ev: crate::infrastructure::ntfs::ChangeEvent) {
-        use crate::infrastructure::ntfs::ChangeEvent;
+    use crate::infrastructure::ntfs::ChangeEvent;
+    /// Whether `ev` touched the index at all (anything but the index's own files).
+    fn apply(ev: ChangeEvent) -> bool {
         match ev {
-            ChangeEvent::Upserted { path, mtime, size } => index_file(&path, mtime, size),
-            ChangeEvent::Deleted { path } => remove(&path),
+            ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
+            ChangeEvent::Upserted { path, mtime, size } => {
+                index_file(&path, mtime, size);
+                true
+            }
+            ChangeEvent::Deleted { path } => {
+                remove(&path);
+                true
+            }
         }
     }
     std::thread::spawn(move || {
         for ev in rx.iter() {
-            apply(ev);
+            let mut any = apply(ev);
             // drain whatever's already queued before committing: a lone change is searchable right
             // away, a burst of many (e.g. a git checkout) still lands in one commit instead of one per file
             while let Ok(ev) = rx.try_recv() {
-                apply(ev);
+                any |= apply(ev);
             }
-            commit();
+            if any {
+                commit();
+            }
         }
     });
+}
+
+/// A file inside the index's own directory. Never indexed: opening one while tantivy renames a new
+/// `meta.json` over it (Windows can't replace a file someone has open) fails that whole commit and
+/// drops its documents — and each commit's own writes would queue another commit, forever.
+fn is_own(path: &str) -> bool {
+    static OWN: OnceLock<String> = OnceLock::new();
+    let own = OWN.get_or_init(|| format!("{}\\", dir().display()));
+    path.get(..own.len()).is_some_and(|p| p.eq_ignore_ascii_case(own))
 }
 
 #[cfg(test)]
@@ -313,6 +384,31 @@ mod tests {
         let hits = e.search("bread", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, "C:/notes/todo.txt");
+    }
+
+    #[test]
+    fn meta_json_can_be_replaced_while_a_reader_has_it_open() {
+        use tantivy::Directory;
+        let root = std::env::temp_dir().join(format!("contentindex_test_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let d = Dir { inner: MmapDirectory::open(&root).unwrap(), root: root.clone() };
+        let meta = Path::new("meta.json");
+        d.atomic_write(meta, b"one").unwrap();
+        let held = std::fs::File::open(root.join(meta)).unwrap(); // a reader mid-reload
+        assert!(d.inner.atomic_write(meta, b"x").is_err(), "tantivy's own write is what fails here");
+        d.atomic_write(meta, b"two").unwrap();
+        drop(held);
+        assert_eq!(d.atomic_read(meta).unwrap(), b"two");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn own_files_are_recognized_case_insensitively() {
+        let d = dir().display().to_string();
+        assert!(is_own(&format!(r"{d}\meta.json")));
+        assert!(is_own(&format!(r"{}\.tmpAB12", d.to_uppercase())));
+        assert!(!is_own(&format!(r"{d}x\meta.json")));
+        assert!(!is_own(r"C:\Users\me\notes.txt"));
     }
 
     #[test]

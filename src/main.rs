@@ -94,7 +94,7 @@ const OPS: &[&str] = &["ext:", "size:", "dm:", "dc:", "da:", "date:", "path:", "
 
 /// Turn the UI's query + chip + metadata mode into an engine query.
 fn build_query(q: &str, cat: &str, meta: &str) -> String {
-    let re = regex::Regex::new(r#""[^"]*"|\S+"#).unwrap();
+    let re = regex::Regex::new(r#"[^\s"]*"[^"]*"|\S+"#).unwrap();
     let mut parts: Vec<String> = Vec::new();
     for m in re.find_iter(q) {
         let t = m.as_str();
@@ -246,9 +246,9 @@ fn options(a: &SearchArgs, offset: usize, limit: usize) -> SearchOptions {
 const CONTENT_MAX: usize = 5000;
 
 /// Files matching `query` in the content index that still exist, as index hits.
-fn content_query(query: &str) -> Result<Vec<application::index::Hit>, String> {
+fn content_query(query: &str, h: &backend::SearchHandle) -> Result<Vec<application::index::Hit>, String> {
     let mut hits = Vec::new();
-    for (p, _score) in contentindex::search(query, CONTENT_MAX) {
+    for p in h.content(query, CONTENT_MAX)? {
         let Ok(m) = std::fs::metadata(&p) else { continue }; // gone since it was indexed
         let modified = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as i64);
         hits.push(application::index::Hit {
@@ -337,7 +337,7 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
     let (hits, error) = cached.unwrap_or_else(|| {
         let (mut v, mut error) = (Vec::new(), None);
         if a.content && !clean_q.trim().is_empty() {
-            match content_query(&clean_q) {
+            match content_query(&clean_q, h) {
                 Ok(r) => v = r,
                 Err(e) => error = Some(e),
             }
@@ -748,10 +748,18 @@ fn main() {
     }
     if let Some(k) = std::env::args().position(|a| a == "--debug-content") {
         let q = std::env::args().nth(k + 1).unwrap_or_default();
-        let hits = contentindex::search(&q, 20);
+        // the same route the GUI takes: through the service when one is running, else in-process
+        let hits = match infrastructure::service::client::ServiceClient::probe() {
+            Some(c) => backend::SearchHandle::Service(c).content(&q, 20),
+            None => contentindex::search(&q, 20).map(|v| v.into_iter().map(|(p, _)| p).collect()),
+        };
+        let hits = hits.unwrap_or_else(|e| {
+            eprintln!("DEBUG_CONTENT_ERROR={e}");
+            std::process::exit(1);
+        });
         eprintln!("DEBUG_CONTENT_HITS={}", hits.len());
-        for (p, s) in &hits {
-            eprintln!("  {s:.3}  {p}");
+        for p in &hits {
+            eprintln!("  {p}");
         }
         std::process::exit(0);
     }

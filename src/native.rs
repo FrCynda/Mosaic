@@ -4,6 +4,8 @@
 
 #[path = "native_gfx.rs"]
 mod gfx;
+#[path = "native_side.rs"]
+mod side;
 #[path = "native_preview.rs"]
 mod preview;
 
@@ -69,10 +71,10 @@ pub(super) struct Theme {
     sel: u32,
 }
 impl Theme {
-    // Both palettes are tinted off the app icon's tile colors (icons/mosaic.svg) — a navy-blue family
-    // (#183962 darkest tile to #6ABAF1 lightest) rather than a generic neutral slate/grey UI.
+    // Dark: neutral graphite with one muted steel-blue accent (selection and hover are low-contrast tints of
+    // it), so the content stands out rather than the chrome. Light: white, with the icon's blue as accent.
     const fn dark() -> Theme {
-        Theme { bg: 0x0d1420, card: 0x141d2c, text: 0xe8edf5, muted: 0x8a97ac, accent: 0x62b2f0, green: 0x3fb950, line: 0x22304a, hl: 0x1c2c4a, row: 0x172032, sel: 0x24406b }
+        Theme { bg: 0x0f1216, card: 0x181c22, text: 0xe6e8eb, muted: 0x8b93a0, accent: 0x7aa2ff, green: 0x3fb950, line: 0x262b33, hl: 0x1f2a44, row: 0x1c2129, sel: 0x243257 }
     }
     const fn light() -> Theme {
         // pure white, kept flat/uniform — separation comes from `line` borders, not grey fills
@@ -300,6 +302,8 @@ enum Hit {
     View(usize), // List | Grid
     Preview,     // status bar: the preview pane on / off (Alt+P)
     Smooth,      // status bar: smooth scrolling on / off (off: the wheel moves in steps)
+    Browse(u8),  // status bar [Browse|Subfolders]: 1 / 2 lists a folder's contents / everything below it here; neither opens folders in Explorer (Alt+Up goes up)
+    Side,        // status bar: the places panel at the left on / off (Alt+B)
     MatchCase,   // toolbar: case-sensitive search (Alt+M)
     WholeWord,   // toolbar: whole-word search (Alt+W)
     Regex,       // toolbar: regex search (Alt+E)
@@ -308,9 +312,10 @@ enum Hit {
     Split,       // the gap between the list and the preview pane: drag to resize the pane
     Col(usize),
     Search,
-    Lang,  // header: UI language dropdown
-    Theme, // header: color theme dropdown
+    Lang,  // no button of its own now: names the language picker `drop_menu` opens from Tools
     Menu(usize), // the File/Edit/View/Search strip above the tab row
+    Back,        // toolbar: previous folder / search (Alt+Left, mouse back button)
+    Fwd,         // toolbar: next one (Alt+Right, mouse forward button)
 }
 
 enum Press {
@@ -350,6 +355,8 @@ struct Ui {
     list: HWND,
     pane: HWND,      // the preview pane right of the list
     show_pv: bool,   // … shown
+    side: HWND,      // the places panel left of the list
+    show_side: bool, // … shown
     pv_key: String,  // what it was last asked to show (a path, or the note)
     pv_w: i32,       // … its width (CSS px) as dragged; 0 = 40% of the window
     split: Option<i32>, // dragging the divider left of the pane: the pointer's offset from its left edge
@@ -407,6 +414,8 @@ struct Ui {
     thousands: Vec<u16>,
     wheel_lines: f64,
     smooth: bool, // glide on wheel / scrollbar paging, else jump
+    hist: std::cell::RefCell<(Vec<String>, usize)>, // folders / searches visited (browse_to) and where we are in them
+    browse: u8, // 0: open folders in Explorer; 1: list what's directly inside (child:); 2: list everything below (descendant:)
     timestamps: bool, // index created/accessed times for dc:/da: and their sort columns (Alt+T)
     rtl: bool, // Arabic UI: columns and icon/text order mirror right-to-left (see `col_positions`)
     grid: bool,
@@ -653,6 +662,7 @@ pub fn run() {
         crate::datestore::set_enabled(get("timestamps") == "1");
         let scale = GetDpiForWindow(main) as f64 / 96.0;
         let pane = preview::create(main, scale);
+        let side = side::create(main, scale);
         // language is fixed for the process's lifetime (set from settings above, no in-app switcher), so RTL fonts
         // can be built once here rather than needing a rebuild-on-switch path.
         let rtl = crate::i18n::lang() == "ar";
@@ -687,6 +697,8 @@ pub fn run() {
             list,
             pane,
             show_pv: get("preview") == "1",
+            side,
+            show_side: get("side") != "0", // on unless switched off
             pv_key: String::new(),
             pv_w: get("pvw").parse().unwrap_or(0),
             split: None,
@@ -744,6 +756,8 @@ pub fn run() {
             thousands: thousands(),
             wheel_lines: lines.max(1) as f64,
             smooth: get("smooth") != "0",
+            hist: Default::default(),
+            browse: get("browse").parse().unwrap_or(0).min(2),
             timestamps: get("timestamps") == "1",
             rtl,
             grid: get("view") == "grid",
@@ -824,7 +838,27 @@ unsafe fn pump() {
     }
 }
 
+/// Opens `p` like double-click / Enter: with Browse on, a folder is listed in Mosaic; anything else (and every
+/// folder with Browse off) goes to the shell, i.e. Explorer for a folder.
+fn open_item(p: &str) {
+    if with(|u| u.browse > 0).unwrap_or(false) && std::fs::metadata(p).is_ok_and(|m| m.is_dir()) {
+        with(|u| u.browse_to(p));
+    } else {
+        shell::open(p);
+    }
+}
+
 unsafe fn dispatch(msg: &MSG) {
+    if msg.message == WM_SYSKEYDOWN && msg.wParam == VK_UP as usize && with(|u| u.browse_up()) == Some(true) {
+        return; // Alt+Up: one folder up, as in Explorer
+    }
+    if msg.message == WM_SYSKEYDOWN && (msg.wParam == VK_LEFT as usize || msg.wParam == VK_RIGHT as usize) {
+        let back = msg.wParam == VK_LEFT as usize;
+        return with(|u| u.go_hist(back)).unwrap_or(());
+    }
+    if msg.message == WM_SYSKEYDOWN && msg.wParam == b'B' as usize {
+        return toggle_side(); // Alt+B
+    }
     if msg.message == WM_SYSKEYDOWN && msg.wParam == b'P' as usize {
         return toggle_preview(); // Alt+P, as in Explorer
     }
@@ -877,6 +911,31 @@ unsafe fn dispatch(msg: &MSG) {
 }
 
 /// The preview pane on / off (status bar button, Alt+P). Off stops playback and lets go of the file.
+unsafe fn toggle_side() {
+    with(|u| {
+        u.show_side = !u.show_side;
+        u.save_settings();
+        u.layout();
+    });
+}
+
+/// A click in the places panel. Real folders are listed here when Browse is on (like a folder in the results);
+/// everything else, and every folder with Browse off, opens in Explorer.
+fn go_place(target: &str, mosaic: bool) {
+    if let Some(spec) = target.strip_prefix("term:") {
+        let dir = with(|u| u.term_dir()).unwrap_or_default();
+        return shell::terminal(spec.starts_with("ps"), spec.ends_with("admin"), &dir);
+    }
+    if with(|u| (mosaic && u.browse > 0).then(|| u.browse_to(target))) == Some(Some(())) {
+        return;
+    }
+    if target.starts_with("shell:") {
+        shell::open_special(target);
+    } else {
+        shell::open(target);
+    }
+}
+
 unsafe fn toggle_preview() {
     let on = with(|u| {
         u.show_pv = !u.show_pv;
@@ -1171,6 +1230,96 @@ impl Ui {
     }
 
     // -- searching
+    /// Lists what's directly inside `dir` (the search box gets `child:"dir"`, which then runs like any typed query).
+    fn browse_to(&self, dir: &str) {
+        let q = format!("{}:\"{}\"", if self.browse == 2 { "descendant" } else { "child" }, dir.trim_end_matches('\\'));
+        self.visit(&q);
+        unsafe { SetWindowTextW(self.edit, wz(&q).as_ptr()) };
+    }
+
+    /// Remember `q` as the newest place (dropping any "forward" ones), after the one we are leaving.
+    fn visit(&self, q: &str) {
+        let mut h = self.hist.borrow_mut();
+        let (v, i) = &mut *h;
+        if v.is_empty() {
+            v.push(self.args.q.clone());
+        } else if v[*i] != self.args.q {
+            v.truncate(*i + 1);
+            v.push(self.args.q.clone());
+            *i += 1;
+        }
+        v.truncate(*i + 1);
+        v.push(q.to_string());
+        *i = v.len() - 1;
+    }
+
+    fn can_go(&self, back: bool) -> bool {
+        let h = self.hist.borrow();
+        let (v, i) = &*h;
+        if back {
+            *i > 0 || v.get(*i).is_some_and(|q| *q != self.args.q)
+        } else {
+            *i + 1 < v.len()
+        }
+    }
+
+    /// Back / forward through the places visited. A search typed since the last move is kept as a place too.
+    fn go_hist(&mut self, back: bool) {
+        if !self.can_go(back) {
+            return;
+        }
+        let q = {
+            let mut h = self.hist.borrow_mut();
+            let (v, i) = &mut *h;
+            if back && v[*i] != self.args.q {
+                v.truncate(*i + 1);
+                v.push(self.args.q.clone());
+                *i += 1;
+            }
+            *i = if back { *i - 1 } else { *i + 1 };
+            v[*i].clone()
+        };
+        unsafe { SetWindowTextW(self.edit, wz(&q).as_ptr()) };
+    }
+
+    /// Browse off / contents / subfolders; a folder listing on screen is redone under the new mode.
+    fn set_browse(&mut self, mode: u8) {
+        self.browse = mode;
+        self.save_settings();
+        let q = self.args.q.trim().to_string();
+        if let Some(d) = q.strip_prefix("child:\"").or_else(|| q.strip_prefix("descendant:\"")).and_then(|d| d.strip_suffix('"')) {
+            if mode > 0 {
+                self.browse_to(d);
+            }
+        }
+        self.invalidate();
+    }
+
+    /// Where a terminal opens: the folder selected, else the one being browsed, else beside the selected file, else home.
+    fn term_dir(&mut self) -> String {
+        let sel = self.sel_paths();
+        let is_dir = |p: &str| std::fs::metadata(p).is_ok_and(|m| m.is_dir());
+        if let Some(d) = sel.iter().find(|p| is_dir(p)).filter(|_| sel.len() == 1) {
+            return d.clone();
+        }
+        let q = self.args.q.trim();
+        if let Some(d) = ["child:\"", "descendant:\""].iter().find_map(|p| q.strip_prefix(p)).and_then(|d| d.strip_suffix('"')) {
+            return if d.ends_with(':') { format!("{d}\\") } else { d.to_string() };
+        }
+        if let Some(parent) = sel.first().and_then(|p| std::path::Path::new(p).parent()) {
+            return parent.to_string_lossy().into_owned();
+        }
+        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into())
+    }
+
+    /// Alt+Up while browsing a folder: its parent. False when the search box isn't showing a folder listing.
+    fn browse_up(&self) -> bool {
+        let Some(dir) = self.args.q.trim().strip_prefix("child:\"").or_else(|| self.args.q.trim().strip_prefix("descendant:\"")).and_then(|d| d.strip_suffix('"')) else { return false };
+        let Some((parent, _)) = dir.rsplit_once('\\').filter(|(p, _)| !p.is_empty()) else { return false }; // already at a drive's top
+        self.browse_to(parent);
+        true
+    }
+
     fn run(&mut self, keep: bool) {
         self.seq += 1;
         self.fresh |= !keep;
@@ -1570,12 +1719,15 @@ impl Ui {
     fn tip_text(&self, h: Hit) -> String {
         match h {
             Hit::Lang => t("tip.lang").into(),
-            Hit::Theme => t("tip.theme").into(),
             Hit::Filter => t("tip.filter").into(),
             Hit::Meta => t("tip.meta").into(),
             Hit::Sort => t("tip.sort").into(),
             Hit::Preview => t("tip.preview").into(),
             Hit::Smooth => t("tip.smooth").into(),
+            Hit::Browse(_) => t("tip.browse").into(),
+            Hit::Back => t("tip.back").into(),
+            Hit::Fwd => t("tip.forward").into(),
+            Hit::Side => t("tip.sidebar").into(),
             Hit::Tags => t("tip.tags").into(),
             Hit::Content => t("tip.content").into(),
             Hit::MatchCase => t("tip.match_case").into(),
@@ -1843,11 +1995,14 @@ impl Ui {
             0 => Note("Select a file to preview"),
             1 => match self.sel.iter().next().and_then(|i| self.get(i)) {
                 None => Note(""),
-                Some(r) if r.is_dir => Note("No preview for folders"),
                 Some(r) => File {
                     path: r.path.clone(),
                     name: String::from_utf16_lossy(&r.name),
-                    detail: format!("{} · {} · {}", String::from_utf16_lossy(&r.size_s), String::from_utf16_lossy(&r.date), String::from_utf16_lossy(&r.dir)),
+                    detail: if r.is_dir {
+                        format!("{} · {}", String::from_utf16_lossy(&r.date), String::from_utf16_lossy(&r.dir))
+                    } else {
+                        format!("{} · {} · {}", String::from_utf16_lossy(&r.size_s), String::from_utf16_lossy(&r.date), String::from_utf16_lossy(&r.dir))
+                    },
                 },
             },
             _ => Note("Select one file to preview"),
@@ -2061,7 +2216,7 @@ impl Ui {
         let sep = String::from_utf16_lossy(&self.thousands);
         let mut out = String::new();
         for (k, c) in s.chars().enumerate() {
-            if k > 0 && (s.len() - k) % 3 == 0 {
+            if k > 0 && (s.len() - k).is_multiple_of(3) {
                 out += &sep;
             }
             out.push(c);
@@ -2181,13 +2336,10 @@ impl Ui {
             x = self.tab.right + px(4);
             let select = |opts: &[(&str, &str)]| opts.iter().map(|o| g.width(o.0, &g.f.reg)).max().unwrap_or(0) + px(8) + px(26) + 2; // widest option + padding + arrow
             let top = self.menu_h + (self.head_h - 1 - self.menu_h - box_h) / 2;
-            // settings, next to Files: language and theme have no other UI, unlike the search-only toggles below
-            let lang = RECT { left: x, top, right: x + select(&lang_opts()), bottom: top + box_h };
-            x = lang.right + px(4);
-            let thm = RECT { left: x, top, right: x + select(&theme_opts()), bottom: top + box_h };
-            x = thm.right + px(4);
-            hits.push((lang, Hit::Lang));
-            hits.push((thm, Hit::Theme));
+            for h in [Hit::Back, Hit::Fwd] {
+                hits.push((RECT { left: x, top, right: x + box_h + px(6), bottom: top + box_h }, h));
+                x += box_h + px(8);
+            }
             let filter = RECT { left: wd - side - select(&filters()).max(px(150)), top, right: wd - side, bottom: top + box_h };
             // Content | Metadata | Match case | Whole word | Regex | Diacritics | Timestamps toggles, packed
             // right to left between the search box and the filter. The search box keeps a minimum width no
@@ -2241,7 +2393,10 @@ impl Ui {
             push(seg(t("toolbar.grid")), Hit::View(1), -1); // the two segments share a border
             push(seg(t("toolbar.list")), Hit::View(0), px(10));
             push(seg(t("toolbar.preview")), Hit::Preview, px(6));
-            push(seg(t("toolbar.smooth")), Hit::Smooth, px(10));
+            push(seg(t("toolbar.smooth")), Hit::Smooth, px(6));
+            push(seg(t("toolbar.subfolders")), Hit::Browse(2), -1); // like List | Grid, but either can be switched off again
+            push(seg(t("toolbar.browse")), Hit::Browse(1), px(6));
+            push(seg(t("toolbar.sidebar")), Hit::Side, px(10));
             if self.grid {
                 push(g.width("▲", &g.f.reg) + px(20), Hit::Dir, px(6));
                 push(select(&col_defs()), Hit::Sort, px(6));
@@ -2255,7 +2410,12 @@ impl Ui {
             // the pane: as dragged (the list keeps 300 px), else 40% of the window. The list never gives up its
             // own minimum width for the pane's sake — on a narrow window the pane shrinks, then hides, first.
             let min_list = px(220);
-            let max_pane = (wd - px(28) - min_list).max(0);
+            // the places panel, left of the list: it gives way first on a narrow window
+            let side_w = if self.show_side && wd >= px(760) { px(side::WIDTH) } else { 0 };
+            let left = px(10) + if side_w > 0 { side_w + px(8) } else { 0 };
+            MoveWindow(self.side, px(10), lh_y, side_w.max(1), (self.status_top - px(4) - lh_y).max(1), 1);
+            ShowWindow(self.side, if side_w > 0 { SW_SHOWNA } else { SW_HIDE });
+            let max_pane = (wd - px(28) - min_list - (left - px(10))).max(0);
             let auto = ((wd as f64 * 0.4) as i32).clamp(px(240), px(960)).min(wd / 2).min(max_pane);
             let show_pane = self.show_pv && max_pane >= px(160);
             let pane_w = if !show_pane { 0 } else if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
@@ -2269,7 +2429,7 @@ impl Ui {
                 self.grip = RECT { top: mid - half, bottom: mid + half, ..gap };
                 hits.push((gap, Hit::Split));
             }
-            self.lh = RECT { left: px(10), top: lh_y, right: right - px(SB), bottom: lh_y + if self.grid { 0 } else { px(30) } };
+            self.lh = RECT { left, top: lh_y, right: right - px(SB), bottom: lh_y + if self.grid { 0 } else { px(30) } };
             if !self.grid {
                 let cols = self.cols(self.lh.right - self.lh.left);
                 for (k, (a, b)) in cols.iter().enumerate() {
@@ -2278,7 +2438,7 @@ impl Ui {
             }
             self.hits = hits;
             let top = self.lh.bottom;
-            MoveWindow(self.list, px(10), top, (right - px(10)).max(1), (self.status_top - px(4) - top).max(1), 1);
+            MoveWindow(self.list, left, top, (right - left).max(1), (self.status_top - px(4) - top).max(1), 1);
             // tiles keep their size: the window's width decides how many fit in a row. Keep the first item in view.
             let per = self.fit_per();
             if per != self.per {
@@ -2303,6 +2463,8 @@ impl Ui {
             ("preview", (self.show_pv as u8).to_string()),
             ("pvw", self.pv_w.to_string()),
             ("smooth", (self.smooth as u8).to_string()),
+            ("browse", self.browse.to_string()),
+            ("side", (self.show_side as u8).to_string()),
             ("tags", (self.args.tags as u8).to_string()),
             ("content", (self.args.content as u8).to_string()),
             ("match_case", (self.args.match_case as u8).to_string()),
@@ -2327,6 +2489,7 @@ impl Ui {
             self.gfx = g;
         }
         self.save_settings();
+        side::relabel();
         self.layout();
         self.invalidate();
     }
@@ -2341,6 +2504,7 @@ impl Ui {
             InvalidateRect(self.edit, null(), 0);
         }
         preview::invalidate();
+        side::invalidate();
         self.save_settings();
         self.invalidate();
     }
@@ -2380,7 +2544,8 @@ impl Ui {
     fn click_main(&mut self, x: i32, y: i32) -> Option<Hit> {
         let &(_, hit) = self.hits.iter().find(|(r, _)| inside(r, x, y))?;
         match hit {
-            Hit::Filter | Hit::Meta | Hit::Sort | Hit::Preview | Hit::Lang | Hit::Theme | Hit::Menu(_) => return Some(hit),
+            Hit::Filter | Hit::Meta | Hit::Sort | Hit::Preview | Hit::Side | Hit::Lang | Hit::Menu(_) => return Some(hit),
+            Hit::Back | Hit::Fwd => self.go_hist(hit == Hit::Back),
             Hit::Tags | Hit::Content => {
                 if hit == Hit::Tags {
                     self.args.tags = !self.args.tags;
@@ -2430,6 +2595,7 @@ impl Ui {
                 self.run(false);
             }
             Hit::View(k) => self.reshape(k == 1, self.size),
+            Hit::Browse(k) => self.set_browse(if self.browse == k { 0 } else { k }),
             Hit::Col(k) => {
                 let s = col_defs()[k].1;
                 let desc = if self.args.sort == s { self.args.dir != "desc" } else { s == "size" || s == "mtime" };
@@ -2484,12 +2650,10 @@ impl Ui {
             let ty = r.top + (r.bottom - r.top - lh) / 2;
             let tc = if hot(h) { theme().text } else { theme().muted };
             match h {
-                Hit::Filter | Hit::Meta | Hit::Sort | Hit::Lang | Hit::Theme => {
+                Hit::Filter | Hit::Meta | Hit::Sort => {
                     let label = match h {
                         Hit::Filter => filters().iter().find(|m| m.1 == self.args.cat).map_or(t("filter.everything"), |m| m.0),
                         Hit::Meta => metas().iter().find(|m| m.1 == self.args.meta).map_or(t("meta.names"), |m| m.0),
-                        Hit::Lang => lang_opts().iter().find(|m| m.1 == crate::i18n::lang()).map_or("English", |m| m.0),
-                        Hit::Theme => theme_opts().iter().find(|m| m.1 == theme_name()).map_or_else(|| t("theme.dark"), |m| m.0),
                         _ => col_defs().iter().find(|m| m.1 == self.args.sort).map_or(t("col.name"), |m| m.0),
                     };
                     cv.rrect(&r, rad(4.0), Some(theme().bg), Some(if hot(h) { theme().muted } else { theme().line }));
@@ -2503,14 +2667,23 @@ impl Ui {
                     let name = filters().iter().find(|m| m.1 == self.args.cat).map_or("", |m| m.0);
                     put_mid(g, cv, name, &g.f.reg, &r, ty, theme().accent);
                 }
+                Hit::Back | Hit::Fwd => {
+                    let on = self.can_go(h == Hit::Back);
+                    if hot(h) && on {
+                        cv.rrect(&r, rad(6.0), Some(theme().hl), None);
+                    }
+                    let c = if !on { theme().line } else if hot(h) { theme().accent } else { theme().text };
+                    cv.arrow((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0, rad(8.0), h == Hit::Fwd, c, rad(2.0));
+                }
                 Hit::Dir => {
                     cv.rrect(&r, rad(4.0), Some(theme().card), Some(theme().line));
                     put_mid(g, cv, if self.args.dir == "desc" { "▼" } else { "▲" }, &g.f.reg, &r, ty, tc);
                 }
-                Hit::Preview | Hit::Smooth | Hit::Tags | Hit::Content | Hit::MatchCase | Hit::WholeWord | Hit::Regex | Hit::Diacritics | Hit::Timestamps => {
+                Hit::Preview | Hit::Smooth | Hit::Side | Hit::Tags | Hit::Content | Hit::MatchCase | Hit::WholeWord | Hit::Regex | Hit::Diacritics | Hit::Timestamps => {
                     let (on, label) = match h {
                         Hit::Preview => (self.show_pv, t("toolbar.preview")),
                         Hit::Smooth => (self.smooth, t("toolbar.smooth")),
+                        Hit::Side => (self.show_side, t("toolbar.sidebar")),
                         Hit::Tags => (self.args.tags, t("toolbar.metadata")),
                         Hit::MatchCase => (self.args.match_case, t("toolbar.match_case")),
                         Hit::WholeWord => (self.args.whole_word, t("toolbar.whole_word")),
@@ -2523,6 +2696,20 @@ impl Ui {
                     put_mid(g, cv, label, &g.f.reg, &r, ty, if on { theme().accent } else { tc });
                 }
                 _ => {}
+            }
+        }
+        // Browse | Subfolders: neither, one, never both
+        for pass in [false, true] {
+            for &(r, h) in &self.hits {
+                let Hit::Browse(k) = h else { continue };
+                let on = self.browse == k;
+                if on != pass {
+                    continue;
+                }
+                let radii = if k == 1 { [rad(4.0), 0.0, 0.0, rad(4.0)] } else { [0.0, rad(4.0), rad(4.0), 0.0] };
+                cv.corners(&r, radii, if on { theme().hl } else { theme().card }, if on { theme().accent } else { theme().line });
+                let ty = r.top + (r.bottom - r.top - lh) / 2;
+                put_mid(g, cv, if k == 1 { t("toolbar.browse") } else { t("toolbar.subfolders") }, &g.f.reg, &r, ty, if on { theme().accent } else if hot(h) { theme().text } else { theme().muted });
             }
         }
         // List | Grid: the "off" segment first, so the accent border of the "on" one wins the shared edge
@@ -2883,8 +3070,12 @@ struct Menu {
     canvas: Canvas,
     gfx: Gfx,
     scale: f64,
+    gutter: i32, // room at the left for the checkmarks
 }
 thread_local!(static POPUP: RefCell<Option<Menu>> = const { RefCell::new(None) });
+// While a menu-bar menu is open, the other menu-bar buttons (screen rects): hovering one switches to its menu
+thread_local!(static BAR: RefCell<Vec<(RECT, usize)>> = const { RefCell::new(Vec::new()) });
+thread_local!(static SWITCH: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) });
 
 fn finish(v: Option<usize>) {
     POPUP.with(|m| {
@@ -2897,7 +3088,7 @@ fn finish(v: Option<usize>) {
 /// Show a menu at screen point (x, y), at least `min_w` wide, and run it until it is closed. Returns the index of
 /// the chosen item. Where it doesn't fit below, it ends at `above` instead (the top of the button that opened it).
 /// Keys and clicks elsewhere are the menu's while it is open, like a Win32 menu.
-unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, items: Vec<(String, String, bool)>) -> Option<usize> {
+unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, checks: bool, items: Vec<(String, String, bool)>) -> Option<usize> {
     let scale = GetDpiForWindow(owner) as f64 / 96.0;
     let gfx = Gfx::new(scale, crate::i18n::lang() == "ar").ok()?;
     let px = |v: i32| (v as f64 * scale).round() as i32;
@@ -2905,7 +3096,8 @@ unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, items: Vec<
     let label_w = items.iter().map(|i| gfx.width(&i.0, &gfx.f.reg)).max().unwrap_or(0);
     let key_w = items.iter().map(|i| gfx.width(&i.1, &gfx.f.reg)).max().unwrap_or(0);
     let pad = px(4) + 1; // padding inside the 1px border
-    let wd = min_w.max(px(210)).max(2 * pad + px(20) + label_w + if key_w > 0 { px(28) + key_w } else { 0 });
+    let gutter = if checks { px(22) } else { 0 };
+    let wd = min_w.max(px(210)).max(2 * pad + px(20) + gutter + label_w + if key_w > 0 { px(28) + key_w } else { 0 });
     let mut rows = Vec::new();
     let mut yy = pad;
     for it in &items {
@@ -2944,7 +3136,7 @@ unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, items: Vec<
     DwmSetWindowAttribute(hwnd, 34, &border as *const _ as *const c_void, 4); // DWMWA_BORDER_COLOR: --line
     let hover = items.iter().position(|i| i.2);
     let canvas = Canvas::new(hwnd, &gfx);
-    POPUP.with(|m| *m.borrow_mut() = Some(Menu { items, rows, hover, done: None, canvas, gfx, scale }));
+    POPUP.with(|m| *m.borrow_mut() = Some(Menu { items, rows, hover, done: None, canvas, gfx, scale, gutter }));
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
     SetCapture(hwnd);
@@ -3021,6 +3213,14 @@ unsafe extern "system" fn menu_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_MOUSEMOVE => {
+            // over another menu-bar button: close this menu, the bar opens that one (see `menu_bar_popup`)
+            let mut pt = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut pt);
+            if let Some(i) = BAR.with(|b| b.borrow().iter().find(|(r, _)| inside(r, pt.x, pt.y)).map(|b| b.1)) {
+                SWITCH.with(|s| s.set(Some(i)));
+                finish(None);
+                return 0;
+            }
             let (x, y) = xy(l);
             let changed = POPUP.with(|p| {
                 let mut g = p.borrow_mut();
@@ -3066,12 +3266,12 @@ fn paint_menu(m: &mut Menu) {
         if on {
             cv.rrect(r, (6.0 * s) as f32, Some(theme().hl), None);
         }
-        put(g, cv, label, &g.f.reg, r.left + px(10), r.top + px(6), if on || *checked { theme().accent } else { theme().text });
+        put(g, cv, label, &g.f.reg, r.left + px(10) + m.gutter, r.top + px(6), if on || *checked { theme().accent } else { theme().text });
         if !keys.is_empty() {
             put(g, cv, keys, &g.f.reg, r.right - px(10) - g.width(keys, &g.f.reg), r.top + px(6), theme().muted);
         }
         if *checked {
-            put(g, cv, "✓", &g.f.reg, r.right - px(10) - g.width("✓", &g.f.reg), r.top + px(6), theme().accent);
+            put(g, cv, "✓", &g.f.reg, r.left + px(8), r.top + px(6), theme().accent); // in its own column: never over a shortcut
         }
     }
     m.canvas.end();
@@ -3096,7 +3296,7 @@ unsafe fn act(a: Act) {
             if n > 5 && !confirm(main, &t("confirm.open_items").replace("{n}", &n.to_string())) {
                 return;
             }
-            paths.iter().take(20).for_each(|p| shell::open(p));
+            paths.iter().take(20).for_each(|p| open_item(p));
             return;
         }
         Act::Reveal => return shell::reveal(&paths[0]),
@@ -3180,7 +3380,7 @@ unsafe fn context_menu(list: HWND, l: LPARAM) {
     UpdateWindow(list);
     let m = menu();
     let items = m.iter().map(|(l, k, _)| (l.to_string(), k.to_string(), false)).collect();
-    if let Some(Some(a)) = popup(GetAncestor(list, GA_ROOT), x, y, y, 0, items).map(|k| m[k].2) {
+    if let Some(Some(a)) = popup(GetAncestor(list, GA_ROOT), x, y, y, 0, false, items).map(|k| m[k].2) {
         act(a);
     }
 }
@@ -3192,17 +3392,15 @@ unsafe fn drop_menu(main: HWND, hit: Hit) {
         Hit::Filter => filters().to_vec(),
         Hit::Meta => metas().to_vec(),
         Hit::Lang => lang_opts().to_vec(),
-        Hit::Theme => theme_opts().to_vec(),
         _ => col_defs().to_vec(),
     };
     let cur = |u: &Ui| match hit {
         Hit::Filter => u.args.cat.clone(),
         Hit::Meta => u.args.meta.clone(),
         Hit::Lang => crate::i18n::lang(),
-        Hit::Theme => theme_name(),
         _ => u.args.sort.clone(),
     };
-    let Some(Some((r, cur, gap, dialog_w))) = with(|u| u.hits.iter().find(|x| x.1 == hit).map(|x| (x.0, cur(u), u.px(4), u.px(260)))) else { return };
+    let Some((r, cur, gap, dialog_w)) = with(|u| (u.hits.iter().find(|x| x.1 == hit).map_or(RECT { left: 0, top: 0, right: 0, bottom: 0 }, |x| x.0), cur(u), u.px(4), u.px(260))) else { return };
     // Language has too many options (17) to read as a flyout under a small button — open it centered
     // over the main window instead, like a little dialog, rather than anchored to the button.
     let (p, top, min_w) = if hit == Hit::Lang {
@@ -3219,7 +3417,7 @@ unsafe fn drop_menu(main: HWND, hit: Hit) {
         (p, top, r.right - r.left)
     };
     let items = opts.iter().map(|(l, v)| (l.to_string(), String::new(), *v == cur)).collect();
-    if let Some(k) = popup(main, p.x, p.y, top.y, min_w, items) {
+    if let Some(k) = popup(main, p.x, p.y, top.y, min_w, true, items) {
         let v = opts[k].1;
         with(|u| {
             match hit {
@@ -3232,7 +3430,6 @@ unsafe fn drop_menu(main: HWND, hit: Hit) {
                     u.save_settings();
                 }
                 Hit::Lang => return u.set_lang(v),
-                Hit::Theme => return u.set_theme_choice(v),
                 _ => u.args.sort = v.into(),
             }
             u.run(false);
@@ -3244,7 +3441,48 @@ unsafe fn drop_menu(main: HWND, hit: Hit) {
 /// The File/Edit/View/Search strip: each item either runs a selection-scoped `Act` (same as the right-click
 /// menu) or flips one of the toolbar toggles that already live elsewhere in the UI — this is just another
 /// way to reach them, not a second copy of their behavior.
-unsafe fn menu_bar_popup(main: HWND, menu: usize) {
+unsafe fn menu_bar_popup(main: HWND, mut menu: usize) {
+    loop {
+        SWITCH.with(|s| s.set(None));
+        // the other buttons, in screen coordinates: pointing at one while this menu is open switches to its menu
+        let others = with(|u| {
+            u.hot = Some(Hit::Menu(menu)); // the open menu's button stays lit
+            u.invalidate();
+            u.hits
+                .iter()
+                .filter_map(|&(r, h)| match h {
+                    Hit::Menu(i) if i != menu => Some((r, i)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        BAR.with(|b| {
+            *b.borrow_mut() = others
+                .into_iter()
+                .map(|(mut r, i)| {
+                    let mut p = POINT { x: r.left, y: r.top };
+                    ClientToScreen(main, &mut p);
+                    let (w, h) = (r.right - r.left, r.bottom - r.top);
+                    r = RECT { left: p.x, top: p.y, right: p.x + w, bottom: p.y + h };
+                    (r, i)
+                })
+                .collect()
+        });
+        menu_bar_once(main, menu);
+        BAR.with(|b| b.borrow_mut().clear());
+        match SWITCH.with(|s| s.take()) {
+            Some(next) => menu = next,
+            None => break,
+        }
+    }
+    with(|u| {
+        u.hot = None;
+        u.invalidate();
+    });
+}
+
+unsafe fn menu_bar_once(main: HWND, menu: usize) {
     let Some(Some((r, gap))) = with(|u| u.hits.iter().find(|x| x.1 == Hit::Menu(menu)).map(|x| (x.0, u.px(4)))) else { return };
     let mut p = POINT { x: r.left, y: r.bottom + gap };
     let mut top = POINT { x: r.left, y: r.top - gap };
@@ -3276,9 +3514,13 @@ unsafe fn menu_bar_popup(main: HWND, menu: usize) {
                 sep(),
                 (t("toolbar.preview").into(), "Alt+P".into(), u.show_pv),
                 (t("toolbar.smooth").into(), String::new(), u.smooth),
+                (t("toolbar.sidebar").into(), "Alt+B".into(), u.show_side),
                 sep(),
                 (t("menu.zoom_in").into(), "Ctrl++".into(), false),
                 (t("menu.zoom_out").into(), "Ctrl+-".into(), false),
+                sep(),
+                (format!("{}: {}", t("menu.theme"), theme_opts()[0].0), String::new(), theme_name() == theme_opts()[0].1),
+                (format!("{}: {}", t("menu.theme"), theme_opts()[1].0), String::new(), theme_name() == theme_opts()[1].1),
             ]
         })
         .unwrap_or_default(),
@@ -3296,10 +3538,10 @@ unsafe fn menu_bar_popup(main: HWND, menu: usize) {
             ]
         })
         .unwrap_or_default(),
-        4 => vec![(t("menu.language").into(), String::new(), false), (t("menu.theme").into(), String::new(), false), sep(), (t("menu.install_service").into(), String::new(), false)],
+        4 => vec![(t("menu.language").into(), String::new(), false), sep(), (t("menu.install_service").into(), String::new(), false)],
         _ => vec![(t("menu.about").into(), String::new(), false)],
     };
-    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, items) else { return };
+    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2 | 3), items) else { return };
     match (menu, k) {
         (0, 0) => act(Act::Open),
         (0, 1) => act(Act::Reveal),
@@ -3330,8 +3572,12 @@ unsafe fn menu_bar_popup(main: HWND, menu: usize) {
                 u.save_settings();
             });
         }
-        (2, 6 | 7) => {
-            with(|u| u.zoom(k == 6));
+        (2, 5) => toggle_side(),
+        (2, 7 | 8) => {
+            with(|u| u.zoom(k == 7));
+        }
+        (2, 10 | 11) => {
+            with(|u| u.set_theme_choice(theme_opts()[k - 10].1));
         }
         (3, 0..=3) => {
             with(|u| {
@@ -3365,8 +3611,7 @@ unsafe fn menu_bar_popup(main: HWND, menu: usize) {
             });
         }
         (4, 0) => drop_menu(main, Hit::Lang),
-        (4, 1) => drop_menu(main, Hit::Theme),
-        (4, 3) => offer_install(main),
+        (4, 2) => offer_install(main),
         (5, 0) => show_about(main),
         _ => {}
     }
@@ -3524,10 +3769,17 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             });
             return 0;
         }
+        // the mouse's back / forward buttons (and keyboards' browser keys): children pass them up
+        WM_APPCOMMAND if matches!(((l >> 16) & 0x0fff) as u32, 1 | 2) => {
+            let back = ((l >> 16) & 0x0fff) == 1;
+            with(|u| u.go_hist(back));
+            return 1;
+        }
         WM_LBUTTONDOWN => {
             let (x, y) = xy(l);
             match with(|u| u.click_main(x, y)).flatten() {
                 Some(Hit::Preview) => toggle_preview(),
+                Some(Hit::Side) => toggle_side(),
                 Some(Hit::Menu(i)) => menu_bar_popup(h, i),
                 Some(hit) => drop_menu(h, hit),
                 None => {}
@@ -3600,7 +3852,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 1;
         }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT => {
-            if with(|u| u.hot.is_some_and(|h| !matches!(h, Hit::Filter | Hit::Meta | Hit::Sort | Hit::Tag | Hit::Lang | Hit::Theme | Hit::Menu(_)))) == Some(true) {
+            if with(|u| u.hot.is_some_and(|h| !matches!(h, Hit::Filter | Hit::Meta | Hit::Sort | Hit::Tag | Hit::Menu(_)))) == Some(true) {
                 SetCursor(LoadCursorW(null_mut(), IDC_HAND));
                 return 1;
             }
@@ -3627,6 +3879,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             set_icons(h, true);
             with(|u| u.layout());
             preview::rescale((wp & 0xffff) as f64 / 96.0);
+            side::rescale((wp & 0xffff) as f64 / 96.0);
             return 0;
         }
         WM_DESTROY => {
@@ -3681,7 +3934,7 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 return 0;
             }
             if let Some(Some(p)) = with(|u| u.item_at(x, y).and_then(|i| u.get(i)).map(|r| r.path.clone())) {
-                shell::open(&p);
+                open_item(&p);
             }
             return 0;
         }

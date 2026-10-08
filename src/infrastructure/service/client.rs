@@ -43,6 +43,20 @@ impl ServiceClient {
         }
     }
 
+    /// Full-text content search via the service, which owns the content index — paths, best first.
+    pub fn content(&self, query: &str, limit: usize) -> Result<Vec<String>, String> {
+        match self.exchange(&Request::Content { query: query.into(), limit }) {
+            Ok(Response::Content(paths)) => Ok(paths),
+            // a service from before content search moved over IPC can't parse the request
+            Ok(Response::Error(m)) if m.starts_with("bad request") => {
+                Err("the background service is out of date — reinstall it in Settings to search content".into())
+            }
+            Ok(Response::Error(message)) => Err(message),
+            Ok(_) => Err("unexpected response from service".into()),
+            Err(e) => Err(format!("background service unavailable: {e}")),
+        }
+    }
+
     /// Fetch the service's index status, degrading to an error status when the
     /// service can't be reached.
     pub fn status(&self) -> IndexStatus {

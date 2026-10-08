@@ -101,7 +101,7 @@ pub fn ifilter_text(path: &str) -> Option<String> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let wpath: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
         let mut punk: *mut std::ffi::c_void = std::ptr::null_mut();
-        LoadIFilterEx(PCWSTR(wpath.as_ptr()), CLSCTX_INPROC_SERVER.0 as u32, &IFilter::IID, &mut punk).ok()?;
+        LoadIFilterEx(PCWSTR(wpath.as_ptr()), CLSCTX_INPROC_SERVER.0, &IFilter::IID, &mut punk).ok()?;
         if punk.is_null() {
             return None;
         }

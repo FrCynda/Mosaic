@@ -45,6 +45,15 @@ impl SearchHandle {
             SearchHandle::Local(catalog) => catalog.read().search(options),
         }
     }
+
+    /// Content-index search, from whichever process owns the index: the service when there is
+    /// one (it writes the index as SYSTEM; an unelevated GUI can't open it), else this process.
+    pub fn content(&self, query: &str, limit: usize) -> Result<Vec<String>, String> {
+        match self {
+            SearchHandle::Service(client) => client.content(query, limit),
+            SearchHandle::Local(_) => Ok(crate::contentindex::search(query, limit)?.into_iter().map(|(p, _)| p).collect()),
+        }
+    }
 }
 
 impl SearchBackend {

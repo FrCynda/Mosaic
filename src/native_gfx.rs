@@ -229,7 +229,7 @@ impl Canvas {
     pub fn corners(&self, r: &RECT, radii: [f32; 4], fill: u32, border: u32) {
         unsafe {
             if let Some(g) = self.path(rf(r), radii) {
-                let _ = self.rt().FillGeometry(&g, self.b(fill, 1.0), None);
+                self.rt().FillGeometry(&g, self.b(fill, 1.0), None);
             }
             let mut i = rf(r);
             (i.left, i.top, i.right, i.bottom) = (i.left + 0.5, i.top + 0.5, i.right - 0.5, i.bottom - 0.5);
@@ -277,6 +277,26 @@ impl Canvas {
             s.BeginFigure(v(x - half, y - d), D2D1_FIGURE_BEGIN_HOLLOW);
             s.AddLine(v(x, y + d));
             s.AddLine(v(x + half, y - d));
+            s.EndFigure(D2D1_FIGURE_END_OPEN);
+            if s.Close().is_ok() {
+                self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());
+            }
+        }
+    }
+
+    /// A horizontal arrow centred on (x, y), `half` from the middle to either end: a shaft and a round-capped head.
+    pub fn arrow(&self, x: f32, y: f32, half: f32, right: bool, c: u32, width: f32) {
+        let k = if right { 1.0 } else { -1.0 };
+        let (tip, head) = (x + k * half, half * 0.62);
+        unsafe {
+            let Ok(g) = self.d2.CreatePathGeometry() else { return };
+            let Ok(s) = g.Open() else { return };
+            s.BeginFigure(v(x - k * half, y), D2D1_FIGURE_BEGIN_HOLLOW);
+            s.AddLine(v(tip, y));
+            s.EndFigure(D2D1_FIGURE_END_OPEN);
+            s.BeginFigure(v(tip - k * head, y - head), D2D1_FIGURE_BEGIN_HOLLOW);
+            s.AddLine(v(tip, y));
+            s.AddLine(v(tip - k * head, y + head));
             s.EndFigure(D2D1_FIGURE_END_OPEN);
             if s.Close().is_ok() {
                 self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());

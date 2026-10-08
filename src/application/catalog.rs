@@ -57,7 +57,7 @@ impl Catalog {
         self.volumes.iter().flat_map(|v| {
             v.live_name_order().into_iter().filter_map(move |i| {
                 let h = v.hit(i);
-                (!h.is_dir).then(|| (h.path, h.modified / 1000, h.size))
+                (!h.is_dir).then_some((h.path, h.modified / 1000, h.size))
             })
         })
     }

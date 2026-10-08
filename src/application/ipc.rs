@@ -28,6 +28,10 @@ pub enum Request {
     Status,
     /// Liveness + version probe used to decide whether to use the service.
     Ping,
+    /// Full-text search of the content index, answered with matching paths, best first. The
+    /// service owns that index (it lives under `%ProgramData%`, written as SYSTEM): an unelevated
+    /// GUI can't open it itself, since tantivy takes a write lock even just to read.
+    Content { query: String, limit: usize },
 }
 
 /// A response from the service to the GUI.
@@ -38,6 +42,7 @@ pub enum Response {
     Pong {
         protocol_version: u32,
     },
+    Content(Vec<String>),
     /// A server-side failure, surfaced to the user as degraded status.
     Error(String),
 }
