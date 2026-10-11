@@ -242,6 +242,31 @@ pub fn open(path: &str) {
     let _ = Command::new("cmd").args(["/c", "start", "", path]).creation_flags(0x0800_0000).spawn();
 }
 
+/// Where a .lnk points (None for a broken link or one into a shell namespace with no path).
+pub fn link_target(lnk: &str) -> Option<String> {
+    use windows::core::Interface;
+    use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
+    use windows::Win32::System::Com::{CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ};
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        link.cast::<IPersistFile>().ok()?.Load(PCWSTR(wide(lnk).as_ptr()), STGM_READ).ok()?;
+        let mut buf = [0u16; 1024];
+        link.GetPath(&mut buf, std::ptr::null_mut::<WIN32_FIND_DATAW>(), 0).ok()?;
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        (n > 0).then(|| String::from_utf16_lossy(&buf[..n]))
+    }
+}
+
+/// Where a .url file points when that is a local path (`URL=file:///C:/dir`); web addresses are None.
+pub fn url_target(url: &str) -> Option<String> {
+    let text = std::fs::read_to_string(url).ok()?;
+    let v = text.lines().find_map(|l| l.trim().strip_prefix("URL="))?;
+    let p = v.strip_prefix("file:///")?.replace('/', "\\");
+    Some(p.replace("%20", " "))
+}
+
 /// A shell location with no path (This PC, Network, …) by its `shell:::{CLSID}` name.
 pub fn open_special(target: &str) {
     let _ = Command::new("explorer").arg(target).spawn();

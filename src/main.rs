@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 //! Mosaic: dark UI on an NTFS MFT/USN search engine. The engine (application/, domain/, infrastructure/) is
-//! adapted from AllTheThings (MIT, Swatto); the UI is ../static, served by Tauri, talking to it over IPC.
+//! adapted from AllTheThings (MIT, Swatto); the window is drawn natively (native*.rs).
 mod application;
 mod backend;
 mod contentindex;
@@ -18,10 +18,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use parking_lot::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
-use tauri::http::{Response, StatusCode};
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use parking_lot::Mutex;
+use serde::Deserialize;
 
 use application::search::SortKey;
 use application::SearchOptions;
@@ -30,10 +28,6 @@ use infrastructure::icons;
 use infrastructure::service::{host, scm};
 
 const SVC_DIR: &str = r"C:\Program Files\Mosaic";
-
-struct App {
-    backend: RwLock<SearchBackend>,
-}
 
 // ---- categories and type words ------------------------------------------------------------------------------
 const CATS: &[(&str, &str, &str)] = &[
@@ -141,8 +135,6 @@ struct SearchArgs {
     sort: String,
     dir: String,
     meta: String,
-    offset: usize,
-    limit: usize,
     /// Metadata / Content toggles (native window): search the content index instead of names
     #[serde(default)]
     tags: bool,
@@ -156,59 +148,9 @@ struct SearchArgs {
     regex: bool,
     #[serde(default)]
     diacritics: bool,
-}
-
-#[derive(Serialize)]
-struct Row {
-    path: String,
-    size: i64,
-    mtime: i64,
-    dir: bool,
-    icon: String,
-    #[serde(rename = "type")]
-    ty: String,
-    thumb: String,
-}
-
-#[derive(Serialize)]
-struct Page {
-    rows: Vec<Row>,
-    matches: usize,
-    total: usize,
-    capped: bool,
-    scanning: bool,
-    scanned: usize,
-    error: Option<String>,
-}
-
-fn enc(s: &str) -> String {
-    let mut o = String::new();
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
-            o.push(b as char);
-        } else {
-            o.push_str(&format!("%{b:02X}"));
-        }
-    }
-    o
-}
-
-fn dec(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() + 1 {
-            if let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(if b[i] == b'+' { b' ' } else { b[i] });
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    #[serde(default)]
+    hidden: bool,
+    system: bool,
 }
 
 fn sort_key(s: &str) -> SortKey {
@@ -237,6 +179,8 @@ fn options(a: &SearchArgs, offset: usize, limit: usize) -> SearchOptions {
         whole_word: a.whole_word,
         regex: a.regex,
         diacritics: a.diacritics,
+        show_hidden: a.hidden,
+        show_system: a.system,
         ..SearchOptions::default()
     }
 }
@@ -316,12 +260,86 @@ pub fn metadata_progress() -> Option<(usize, usize, Option<Duration>)> {
 /// A search as the toggles ask: names from the NTFS index, or with Metadata / Content on, files whose metadata or
 /// text (content index) matches, filtered by the category and sorted like the list. The last such result is kept: the list
 /// pages through it.
+/// Explorer's Home: the Quick access folders (pinned, then frequent), cached for a minute.
+/// Matched as `parent:"<folder>\x"`, which selects the item whose path is exactly that folder.
+static HOME: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+fn home_query() -> String {
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // Asking the shell costs a PowerShell start (about a second), so the last answer lives on disk and in memory
+    // and is returned at once; once over a minute old, a background thread refreshes it for the next visit.
+    // ponytail: a Quick access change shows one visit late.
+    let file = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("home.txt");
+    let known = HOME.lock().clone().or_else(|| std::fs::read_to_string(&file).ok().filter(|q| !q.is_empty()).map(|q| (Instant::now().checked_sub(Duration::from_secs(61)).unwrap_or_else(Instant::now), q)));
+    if let Some((t, q)) = known {
+        *HOME.lock() = Some((t, q.clone()));
+        if t.elapsed() > Duration::from_secs(60) && !BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::thread::spawn(|| {
+                home_refresh();
+                BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        return q;
+    }
+    home_refresh()
+}
+
+fn home_refresh() -> String {
+    use std::os::windows::process::CommandExt;
+    let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; (New-Object -ComObject Shell.Application).Namespace('shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}').Items() | % { $_.Path }";
+    let out = std::process::Command::new("powershell").args(["-NoProfile", "-Command", script]).creation_flags(0x0800_0000).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    // drive roots (`G:\`) are not index entries, so they can't be listed
+    let mut parts: Vec<String> = out.lines().map(str::trim).filter(|p| p.len() > 3 && p.as_bytes()[1] == b':').map(|p| format!("parent:\"{p}\\x\"")).collect();
+    if parts.is_empty() {
+        parts.push(format!("child:\"{}\"", std::env::var("USERPROFILE").unwrap_or_default()));
+    } else {
+        // then the 20 most recently opened files (the shortcuts Windows keeps in Recent), as Explorer's Home does
+        let recent = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join(r"Microsoft\Windows\Recent");
+        let mut links: Vec<_> = std::fs::read_dir(recent).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk"))).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
+        links.sort_by(|a, b| b.0.cmp(&a.0));
+        let files = links.iter().filter_map(|(_, l)| shell::link_target(l.to_str()?)).filter(|t| t.as_bytes().get(1) == Some(&b':') && std::fs::metadata(t).is_ok_and(|m| m.is_file())).take(20);
+        parts.extend(files.map(|p| format!("parent:\"{p}\\x\"")));
+    }
+    let q = parts.join(" | ");
+    let file = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("home.txt");
+    let _ = std::fs::write(file, &q);
+    *HOME.lock() = Some((Instant::now(), q.clone()));
+    q
+}
+
+/// What every file directly inside `path` is: 1 pictures, 2 videos, 3 music, 4 documents; 0 when mixed, unknown or empty.
+/// Samples the first 400 entries, so a huge folder costs no more than a small one.
+fn folder_kind(h: &backend::SearchHandle, path: &str) -> u8 {
+    let kind_of = |name: &str| match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).as_deref() {
+        Some("jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "heic" | "tif" | "tiff" | "svg" | "ico") => 1,
+        Some("mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "flv" | "m4v" | "mpg" | "mpeg") => 2,
+        Some("mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "opus") => 3,
+        Some("txt" | "md" | "rtf" | "doc" | "docx" | "odt" | "ppt" | "pptx" | "odp" | "xls" | "xlsx" | "ods" | "pdf" | "csv") => 4,
+        _ => 0,
+    };
+    let r = h.search(&SearchOptions { query: format!("child:\"{path}\""), limit: 400, ..SearchOptions::default() });
+    let mut kind = 0;
+    for hit in r.hits.iter().filter(|x| !x.is_dir && !x.name.eq_ignore_ascii_case("desktop.ini") && !x.name.eq_ignore_ascii_case("thumbs.db")) {
+        let k = kind_of(&hit.name);
+        if k == 0 || (kind != 0 && k != kind) {
+            return 0;
+        }
+        kind = k;
+    }
+    kind
+}
+
 fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) -> application::SearchResult {
+    if a.q.trim().eq_ignore_ascii_case("home:") {
+        return h.search(&options(&SearchArgs { q: home_query(), ..a.clone() }, offset, limit));
+    }
     type Hits = std::sync::Arc<Vec<application::index::Hit>>;
     static LAST: Mutex<Option<(String, Hits, Option<String>)>> = Mutex::new(None);
     let (clean_q, hashq) = hashcache::extract_hash(&a.q);
     let (clean_q, fieldq) = metadata::extract_field(&clean_q);
-    if !a.tags && !a.content && hashq.is_none() && fieldq.is_none() {
+    // a folder listing (Browse, or typed child:/descendant:) is a name search: the content index has no such field
+    let q = a.q.trim_start().to_ascii_lowercase();
+    let folder_listing = q.starts_with("child:") || q.starts_with("descendant:");
+    if folder_listing || (!a.tags && !a.content && hashq.is_none() && fieldq.is_none()) {
         return h.search(&options(a, offset, limit));
     }
     if a.tags || fieldq.is_some() {
@@ -402,194 +420,6 @@ fn type_cache(ext: &Option<String>, dir: bool) -> String {
     m.entry(key).or_insert_with(|| icons::type_name(ext.as_deref(), dir).unwrap_or_else(|| "File".into())).clone()
 }
 
-#[tauri::command]
-async fn search(app: State<'_, App>, args: SearchArgs) -> Result<Page, String> {
-    let opts = options(&args, args.offset, args.limit.min(500));
-    let (res, status) = {
-        let b = app.backend.read();
-        (b.search(&opts), b.status())
-    };
-    let rows = res
-        .hits
-        .into_iter()
-        .map(|h| {
-            let ext = if h.is_dir { None } else { ext_of(&h.name) };
-            let icon = if h.is_dir {
-                "http://res.localhost/icon?d=1".to_string()
-            } else if matches!(ext.as_deref(), Some("exe" | "lnk" | "ico" | "msi" | "scr")) {
-                format!("http://res.localhost/icon?p={}", enc(&h.path))
-            } else {
-                format!("http://res.localhost/icon?e={}", enc(ext.as_deref().unwrap_or("")))
-            };
-            Row {
-                thumb: format!("http://res.localhost/thumb?p={}&m={}", enc(&h.path), h.modified),
-                icon,
-                ty: type_cache(&ext, h.is_dir),
-                path: h.path,
-                size: if h.is_dir { 0 } else { h.size.max(0) },
-                mtime: h.modified / 1000,
-                dir: h.is_dir,
-            }
-        })
-        .collect();
-    Ok(Page {
-        rows,
-        matches: res.total,
-        total: status.count,
-        capped: false,
-        scanning: status.state == "indexing",
-        scanned: status.count,
-        error: res.error.or(if status.state == "error" { Some(status.message) } else { None }),
-    })
-}
-
-/// Paths of a selection sent as [first, last] index ranges into the current result list.
-#[tauri::command]
-async fn paths(app: State<'_, App>, args: SearchArgs, ranges: Vec<(usize, usize)>) -> Result<Vec<String>, String> {
-    let mut out: Vec<String> = Vec::new();
-    for (a, b) in ranges {
-        let n = (b + 1).saturating_sub(a).min(20000usize.saturating_sub(out.len()));
-        if n == 0 {
-            break;
-        }
-        out.extend(app.backend.read().search(&options(&args, a, n)).hits.into_iter().map(|h| h.path));
-    }
-    Ok(out)
-}
-
-#[derive(Serialize)]
-struct Status {
-    state: String,
-    count: usize,
-    message: String,
-    service: bool,
-}
-
-#[tauri::command]
-fn status(app: State<'_, App>) -> Status {
-    let b = app.backend.read();
-    let s = b.status();
-    Status { state: s.state, count: s.count, message: s.message, service: b.uses_service() }
-}
-
-/// One UAC prompt: install the index service (as a SYSTEM service under Program Files) and start it, then reconnect.
-#[tauri::command]
-async fn install_service(app: State<'_, App>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| infrastructure::elevation::run_elevated("--svc-setup")).await.map_err(|e| e.to_string())??;
-    std::thread::sleep(Duration::from_millis(1500));
-    *app.backend.write() = SearchBackend::detect();
-    Ok(())
-}
-
-// ---- file actions -------------------------------------------------------------------------------------------
-#[tauri::command]
-fn open_paths(paths: Vec<String>) {
-    for p in paths.iter().take(20) {
-        shell::open(p);
-    }
-}
-#[tauri::command]
-fn reveal(path: String) {
-    shell::reveal(&path);
-}
-#[tauri::command]
-fn props(path: String) {
-    shell::properties(path);
-}
-#[tauri::command]
-fn clip(paths: Vec<String>, cut: bool) -> Result<usize, String> {
-    shell::clipboard_files(&paths, cut).map(|_| paths.len())
-}
-#[tauri::command]
-async fn delete(paths: Vec<String>) -> Result<usize, String> {
-    let p2 = paths.clone();
-    tauri::async_runtime::spawn_blocking(move || infrastructure::fileops::recycle_many(&p2)).await.map_err(|e| e.to_string())??;
-    Ok(paths.iter().filter(|p| !std::path::Path::new(p).exists()).count())
-}
-
-#[tauri::command]
-fn start_drag(window: tauri::WebviewWindow, paths: Vec<String>) -> Result<(), String> {
-    let icon = drag::Image::Raw(include_bytes!("../icons/drag.png").to_vec());
-    drag::start_drag(&window, drag::DragItem::Files(paths.into_iter().map(PathBuf::from).collect()), icon, |_, _| {}, Default::default())
-        .map_err(|e| e.to_string())
-}
-
-// ---- res:// icons and thumbnails ----------------------------------------------------------------------------
-/// (entries, insertion order, total bytes). The WebView keeps its own image cache, so this only has to cover re-scrolls.
-type Lru = (HashMap<String, Vec<u8>>, VecDeque<String>, usize);
-const CACHE_BYTES: usize = 16 << 20;
-
-fn cached<F: FnOnce() -> Option<Vec<u8>>>(key: String, f: F) -> Option<Vec<u8>> {
-    static C: OnceLock<Mutex<Lru>> = OnceLock::new();
-    let c = C.get_or_init(Default::default);
-    if let Some(v) = c.lock().0.get(&key) {
-        return Some(v.clone());
-    }
-    let v = f()?;
-    let mut g = c.lock();
-    if !g.0.contains_key(&key) {
-        g.2 += v.len();
-        while g.2 > CACHE_BYTES {
-            let Some(old) = g.1.pop_front() else { break };
-            if let Some(b) = g.0.remove(&old) {
-                g.2 -= b.len();
-            }
-        }
-        g.1.push_back(key.clone());
-        g.0.insert(key, v.clone());
-    }
-    Some(v)
-}
-
-fn res(uri: &str) -> Response<Vec<u8>> {
-    let after = uri.split_once("://").map(|x| x.1).unwrap_or(uri);
-    let (path, query) = after.split_once('/').map(|x| x.1).unwrap_or("").split_once('?').unwrap_or(("", ""));
-    let q: HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), dec(v))).collect();
-    let g = |k: &str| q.get(k).cloned().unwrap_or_default();
-    let size: i32 = g("s").parse().unwrap_or(128).clamp(32, 256);
-    let (body, mime): (Option<Vec<u8>>, &str) = match path {
-        "thumb" => {
-            let p = g("p");
-            if p.to_lowercase().ends_with(".svg") && std::fs::metadata(&p).map(|m| m.len() < 2 << 20).unwrap_or(false) {
-                // the shell's SVG thumbnailer starts helper processes (busy cursor); the browser draws SVG itself
-                return respond(std::fs::read(&p).ok(), "image/svg+xml");
-            }
-            (cached(format!("t{size}|{p}|{}", g("m")), || shell::thumbnail(&p, size, false)), "image/png")
-        }
-        "icon" if !g("p").is_empty() => {
-            let p = g("p");
-            (cached(format!("f|{p}"), || shell::thumbnail(&p, 32, true)), "image/png")
-        }
-        "icon" if !g("s").is_empty() => {
-            let (e, d) = (g("e"), !g("d").is_empty());
-            (cached(format!("j|{e}|{d}"), || icons::jumbo_png((!e.is_empty()).then_some(e.as_str()), d)), "image/png")
-        }
-        "icon" => {
-            let (e, d) = (g("e"), !g("d").is_empty());
-            let body = cached(format!("e|{e}|{d}"), || {
-                use base64::Engine;
-                icons::icon_base64((!e.is_empty()).then_some(e.as_str()), d).and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
-            });
-            (body, "image/png")
-        }
-        _ => (None, ""),
-    };
-    respond(body, mime)
-}
-
-fn respond(body: Option<Vec<u8>>, mime: &str) -> Response<Vec<u8>> {
-    match body {
-        Some(b) => Response::builder()
-            .header("Content-Type", mime)
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Cache-Control", "max-age=3600")
-            .header("Content-Security-Policy", "sandbox")
-            .body(b)
-            .unwrap(),
-        None => Response::builder().status(StatusCode::NOT_FOUND).header("Access-Control-Allow-Origin", "*").body(Vec::new()).unwrap(),
-    }
-}
-
 // ---- entry point --------------------------------------------------------------------------------------------
 /// Elevated one-shots: the exe is copied under Program Files (admin-writable only) before it is registered as the
 /// SYSTEM service, so a normal user can't swap the binary the service runs.
@@ -601,7 +431,7 @@ fn admin(arg: &str) -> i32 {
             let dst = PathBuf::from(SVC_DIR).join("mosaic-index.exe");
             let me = std::env::current_exe().map_err(|e| e.to_string())?;
             // its own name and icon in Task Manager
-            let copy = || native::stamp(&me, &dst, "Mosaic Filename Index", native::index_icons());
+            let copy = || native::stamp(&me, &dst, "Mosaic Filename Index", native::index_icons(std::path::Path::new(SVC_DIR)));
             let mut copied = copy();
             for _ in 0..40 {
                 // the stopped service's process can hold the exe open for a moment after it reports Stopped
@@ -621,17 +451,6 @@ fn admin(arg: &str) -> i32 {
         _ => return 2,
     };
     i32::from(r.is_err())
-}
-
-/// While minimized, ask WebView2 to drop caches and page out what it can; restored, back to normal.
-fn low_memory(w: &tauri::WebviewWindow, low: bool) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::*;
-    use windows_core::Interface;
-    let _ = w.with_webview(move |v| unsafe {
-        if let Ok(c) = v.controller().CoreWebView2().and_then(|c| c.cast::<ICoreWebView2_19>()) {
-            let _ = c.SetMemoryUsageTargetLevel(if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL });
-        }
-    });
 }
 
 /// `mosaic.exe --cli <query...>`: a thin, script-friendly client sharing `SearchBackend` with the
@@ -767,6 +586,11 @@ fn main() {
         let args: Vec<String> = std::env::args().skip(k + 1).collect();
         std::process::exit(cli::run(&args));
     }
+    if let Some(k) = std::env::args().position(|a| a == "--dist") {
+        let dir = std::env::args().nth(k + 1).unwrap_or_else(|| "dist".into());
+        let choice: Vec<(String, String)> = std::env::args().skip(k + 2).filter_map(|a| a.split_once('=').map(|(r, n)| (r.to_string(), n.to_string()))).collect();
+        std::process::exit(i32::from(native::dist(std::path::Path::new(&dir), &choice).is_err()));
+    }
     if std::env::args().any(|a| a == "--shell-helper") {
         shell::helper_main();
         return;
@@ -788,9 +612,8 @@ fn main() {
         native::run();
         return;
     }
-    // the native window is the app: start it as mosaic.exe (refreshed from this build) so Task Manager
-    // names it right. The web UI is kept behind --web.
-    if !args.iter().any(|a| a == "--web") {
+    // started under another name (a dev build): run as mosaic.exe, a copy with its own name and icon
+    {
         match native::native_exe().and_then(|p| std::process::Command::new(p).args(&args[1..]).spawn()) {
             Ok(_) => return,
             Err(_) => {
@@ -801,40 +624,4 @@ fn main() {
             }
         }
     }
-    native::app_id("local.mosaic.web");
-    let app = tauri::Builder::default()
-        .manage(App { backend: RwLock::new(SearchBackend::detect()) })
-        .register_asynchronous_uri_scheme_protocol("res", |_ctx, req, responder| {
-            let uri = req.uri().to_string();
-            shell::shell_spawn(Box::new(move |dropped| responder.respond(if dropped { respond(None, "") } else { res(&uri) })));
-        })
-        .invoke_handler(tauri::generate_handler![search, paths, status, install_service, open_paths, reveal, props, clip, delete, start_drag])
-        .setup(|app| {
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("Mosaic Web")
-                .inner_size(1400.0, 900.0)
-                .background_color(tauri::window::Color(15, 18, 22, 255))
-                // wry's defaults, plus caps on the GPU process's tile and decoded-image budgets: by default it grows to
-                // hundreds of MB while scrolling. A full window of tiles needs well under 64 MB.
-                .additional_browser_args(
-                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-                     --force-gpu-mem-available-mb=64 --force-gpu-mem-discardable-limit-mb=32",
-                )
-                .initialization_script("window.native={startDrag:p=>window.__TAURI__.core.invoke('start_drag',{paths:p})}")
-                .build()?;
-            let w = app.get_webview_window("main").unwrap();
-            if let Ok(h) = w.hwnd() {
-                native::set_icons(h.0 as _, false);
-            }
-            let w2 = w.clone();
-            w.on_window_event(move |e| {
-                if let tauri::WindowEvent::Resized(_) = e {
-                    low_memory(&w2, w2.is_minimized().unwrap_or(false));
-                }
-            });
-            Ok(())
-        })
-        .build(tauri::generate_context!())
-        .expect("build");
-    app.run(|_, _| {});
 }

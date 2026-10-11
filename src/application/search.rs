@@ -65,6 +65,9 @@ pub struct SearchOptions {
     pub ascending: bool,
     /// Group directories ahead of files, regardless of the sort column/direction.
     pub folders_first: bool,
+    /// List hidden files too (protected operating-system files, hidden + system, never show).
+    pub show_hidden: bool,
+    pub show_system: bool,
 }
 
 impl Default for SearchOptions {
@@ -81,6 +84,8 @@ impl Default for SearchOptions {
             sort: SortKey::Name,
             ascending: true,
             folders_first: false,
+            show_hidden: false,
+            show_system: false,
         }
     }
 }
@@ -268,6 +273,25 @@ impl Matcher {
         self.root.is_none()
     }
 
+    /// The folder of a plain `child:` query (nothing else in it): the index can answer that from parent numbers
+    /// without rebuilding every entry's path.
+    pub fn only_child(&self) -> Option<&str> {
+        match &self.root {
+            Some(Expr::Pred(Pred::Child(t))) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The folders of a query that is only `parent:` terms OR-ed together (Home): the index finds them by walking
+    /// the tree instead of rebuilding every entry's path.
+    pub fn only_parents(&self) -> Option<Vec<&str>> {
+        match &self.root {
+            Some(Expr::Pred(Pred::Parent(t))) => Some(vec![t]),
+            Some(Expr::Or(parts)) => parts.iter().map(|p| if let Expr::Pred(Pred::Parent(t)) = p { Some(t.as_str()) } else { None }).collect(),
+            _ => None,
+        }
+    }
+
     /// Whether matching requires the reconstructed full path.
     pub fn needs_path(&self) -> bool {
         self.needs_path
@@ -358,96 +382,7 @@ impl Matcher {
     }
 }
 
-/// Whether a `content:` filter applies globally (and therefore correctly) for
-/// `query`. Content matching is a post-filter ANDed over every candidate, so it
-/// can't be scoped to one branch of a top-level OR (`|`). Returns false when the
-/// query has a `|` at paren-depth 0, so the caller can reject the query rather
-/// than silently mis-scoping the body search.
-pub fn content_scope_ok(query: &str) -> bool {
-    let mut depth = 0u32;
-    let mut in_quote = false;
-    for c in query.chars() {
-        match c {
-            '"' => in_quote = !in_quote,
-            '(' if !in_quote => depth += 1,
-            ')' if !in_quote => depth = depth.saturating_sub(1),
-            '|' if !in_quote && depth == 0 => return false,
-            _ => {}
-        }
-    }
-    true
-}
 
-/// Pull every `content:term` / `content:"phrase"` out of `query`, returning the
-/// remaining filename/metadata query and the content terms (AND-combined).
-///
-/// Content matching reads file bodies and so is evaluated separately, in the
-/// GUI's user token — never the query-only service — over the candidates the
-/// remaining query narrows to. An empty term (a bare `content:`) is dropped.
-pub fn extract_content(query: &str) -> (String, Vec<String>) {
-    const KW: [char; 8] = ['c', 'o', 'n', 't', 'e', 'n', 't', ':'];
-    let chars: Vec<char> = query.chars().collect();
-    let mut terms = Vec::new();
-    let mut rest = String::with_capacity(query.len());
-    let mut i = 0;
-
-    while i < chars.len() {
-        // A quoted phrase is opaque: copy it verbatim and never treat a
-        // `content:` inside it as the operator, so `"a content:b"` stays a
-        // literal name phrase (matching the documented quoting rule).
-        if chars[i] == '"' {
-            rest.push(chars[i]);
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                rest.push(chars[i]);
-                i += 1;
-            }
-            if i < chars.len() {
-                rest.push(chars[i]); // closing quote
-                i += 1;
-            }
-            continue;
-        }
-
-        let at_boundary = i == 0 || chars[i - 1].is_whitespace();
-        let is_kw = at_boundary
-            && i + KW.len() <= chars.len()
-            && chars[i..i + KW.len()]
-                .iter()
-                .zip(KW.iter())
-                .all(|(a, b)| a.eq_ignore_ascii_case(b));
-        if !is_kw {
-            rest.push(chars[i]);
-            i += 1;
-            continue;
-        }
-
-        i += KW.len(); // skip "content:"
-        let term: String = if chars.get(i) == Some(&'"') {
-            i += 1;
-            let start = i;
-            while i < chars.len() && chars[i] != '"' {
-                i += 1;
-            }
-            let t = chars[start..i].iter().collect();
-            if i < chars.len() {
-                i += 1; // closing quote
-            }
-            t
-        } else {
-            let start = i;
-            while i < chars.len() && !chars[i].is_whitespace() {
-                i += 1;
-            }
-            chars[start..i].iter().collect()
-        };
-        if !term.is_empty() {
-            terms.push(term);
-        }
-    }
-
-    (rest.split_whitespace().collect::<Vec<_>>().join(" "), terms)
-}
 
 /// Pull a `distinct:field` / `unique:field` out of `query` (`field` is `name`, `ext`, or `size`),
 /// returning the remaining query and the field to dedupe results by. The last occurrence wins if
@@ -1274,27 +1209,6 @@ fn parse_attrib(value: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn extract_content_pulls_terms_and_cleans_query() {
-        let (rest, terms) =
-            extract_content(r#"*.log content:"error timeout" report content:fatal"#);
-        assert_eq!(rest, "*.log report");
-        assert_eq!(
-            terms,
-            vec!["error timeout".to_string(), "fatal".to_string()]
-        );
-
-        let (rest, terms) = extract_content("just a name search");
-        assert_eq!(rest, "just a name search");
-        assert!(terms.is_empty());
-
-        // A bare `content:` (no term) is dropped; `content` as a substring is not
-        // a function.
-        let (rest, terms) = extract_content("content: mycontent:x report");
-        assert_eq!(rest, "mycontent:x report");
-        assert!(terms.is_empty());
-    }
-
     fn matcher(query: &str) -> Matcher {
         Matcher::compile(&SearchOptions {
             query: query.into(),
@@ -1597,14 +1511,6 @@ mod tests {
     }
 
     #[test]
-    fn content_scope_detects_top_level_or() {
-        assert!(content_scope_ok("report content:foo"));
-        assert!(content_scope_ok("content:foo (a | b)")); // OR inside a group is fine
-        assert!(!content_scope_ok("report content:foo | memo")); // top-level OR
-        assert!(content_scope_ok("\"a | b\" report")); // a `|` inside quotes is literal
-    }
-
-    #[test]
     fn path_fragment_glob_matches_interior() {
         // A path fragment with a wildcard matches an interior path segment, the
         // same as the fragment without a wildcard.
@@ -1648,14 +1554,6 @@ mod tests {
         // `ext:` must Unicode-lowercase to match the index's `name_lower`.
         assert!(hits(&matcher("ext:CAFÉ"), "x.CAFÉ", false, None));
         assert!(hits(&matcher("ext:café"), "x.CAFÉ", false, None));
-    }
-
-    #[test]
-    fn content_inside_quotes_stays_literal() {
-        // A `content:` inside a quoted phrase is literal text, not the operator.
-        let (rest, terms) = extract_content("\"report content:secret\"");
-        assert_eq!(rest, "\"report content:secret\"");
-        assert!(terms.is_empty());
     }
 
     #[test]
@@ -1900,6 +1798,15 @@ mod tests {
         let bare = matcher("child:C:");
         assert!(path_hits(&bare, r"C:\Windows"));
     }
+    #[test]
+    fn home_query_selects_exactly_the_listed_folders() {
+        let m = matcher(r#"parent:"C:\Users\bob\My Docs\x" | parent:"C:\Work (2)\x""#);
+        assert!(path_hits(&m, r"C:\Users\bob\My Docs"));
+        assert!(path_hits(&m, r"C:\Work (2)"));
+        assert!(!path_hits(&m, r"C:\Users\bob\My Docs\sub"));
+        assert!(!path_hits(&m, r"C:\Users\bob"));
+    }
+
     #[test]
     fn parent_finds_the_single_containing_folder() {
         let m = matcher(r"parent:C:\Users\bob\Downloads\report.pdf");

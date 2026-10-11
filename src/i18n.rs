@@ -59,7 +59,6 @@ fn en(key: &str) -> Option<&'static str> {
         "menubar.help" => "Help",
         "menu.language" => "Language",
         "menu.theme" => "Theme",
-        "menu.install_service" => "Install background index service",
         "menu.about" => "About Mosaic",
         "toolbar.files" => "Files",
         "toolbar.content" => "Content",
@@ -77,6 +76,9 @@ fn en(key: &str) -> Option<&'static str> {
         "toolbar.regex" => "Regex",
         "toolbar.diacritics" => "Diacritics",
         "toolbar.timestamps" => "Timestamps",
+        "menu.show_hidden" => "Show hidden files",
+        "menu.folder_color" => "Colour folder names",
+        "menu.show_system" => "Show protected system files",
         "item.zero" => "{n} items",
         "item.one" => "{n} item",
         "item.two" => "{n} items",
@@ -114,6 +116,7 @@ fn en(key: &str) -> Option<&'static str> {
         "tip.browse" => "Open folders inside Mosaic instead of Explorer (Alt+Up goes up a folder)",
         "toolbar.sidebar" => "Sidebar",
         "tip.sidebar" => "Show or hide the places panel on the left (Alt+B)",
+        "side.all" => "All",
         "side.home" => "Home",
         "side.gallery" => "Gallery",
         "side.desktop" => "Desktop",
@@ -1601,8 +1604,8 @@ fn table(lang: &str, key: &str) -> Option<&'static str> {
     }
 }
 
-/// Every language `table()` knows how to route to, English included — used by the smoke test below
-/// and available to the language-picker UI.
+/// Every language `table()` knows how to route to, English included — used by the smoke test below.
+#[cfg(test)]
 pub const LANGS: [&str; 17] = ["en", "es", "ar", "pt", "fr", "sw", "ha", "hi", "zh", "ru", "yo", "ig", "am", "zu", "so", "wo", "om"];
 
 /// Resolves `key` in the active language, then English, then the key itself.

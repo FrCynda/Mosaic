@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- body -->
+  <rect x="40" y="96" width="176" height="124" rx="8" fill="#C99A5B"/>
+  <!-- lid -->
+  <rect x="28" y="52" width="200" height="52" rx="8" fill="#B07F45"/>
+  <!-- handle cutout -->
+  <rect x="94" y="132" width="68" height="22" rx="11" fill="#6E4A24"/>
+</svg>

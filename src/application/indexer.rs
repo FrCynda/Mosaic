@@ -11,6 +11,10 @@ pub struct RawRecord {
     pub record_no: u64,
     /// The MFT number of the containing directory.
     pub parent_no: u64,
+    /// NTFS sequence numbers of this record and of its parent reference (`0` = unknown): a parent whose sequence differs
+    /// from the folder now in that slot is a deleted folder whose record number was reused.
+    pub seq: u16,
+    pub parent_seq: u16,
     /// File or directory name (Win32 namespace, not 8.3 DOS).
     pub name: String,
     pub is_dir: bool,

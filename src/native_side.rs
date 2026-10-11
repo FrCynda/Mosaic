@@ -8,7 +8,7 @@ use std::ptr::{null, null_mut};
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos, KF_FLAG_DEFAULT};
+use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, KF_FLAG_DEFAULT};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
@@ -67,6 +67,22 @@ fn special(label: &str, guid: &str) -> Item {
     Item { kind: Kind::Place, label: label.into(), target: format!("shell:::{{{guid}}}"), mosaic: false, icon: String::new() }
 }
 
+/// Folders with a unique Windows icon of their own (lowercased paths), wherever they are listed.
+pub fn special_dirs() -> std::collections::HashSet<String> {
+    [&FOLDERID_Desktop, &FOLDERID_Downloads, &FOLDERID_Documents, &FOLDERID_Pictures, &FOLDERID_Music, &FOLDERID_Videos].into_iter().filter_map(|id| known(id, "")).map(|i| i.target.to_lowercase()).collect()
+}
+
+/// The Windows folder whose icon a folder of only pictures (1), videos (2), music (3) or documents (4) wears.
+pub fn kind_dir(kind: u8) -> Option<String> {
+    let id = match kind {
+        1 => &FOLDERID_Pictures,
+        2 => &FOLDERID_Videos,
+        3 => &FOLDERID_Music,
+        _ => &FOLDERID_Documents,
+    };
+    known(id, "").map(|i| i.target)
+}
+
 fn known(id: &windows::core::GUID, label: &str) -> Option<Item> {
     unsafe {
         let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, HANDLE::default()).ok()?;
@@ -98,7 +114,20 @@ fn drives() -> Vec<Item> {
 
 fn build() -> Vec<Item> {
     let sep = || Item { kind: Kind::Sep, label: String::new(), target: String::new(), mosaic: false, icon: String::new() };
-    let mut v = vec![special(t("side.home"), "F874310E-B6B7-47DC-BC84-B9E6B38F5903"), special(t("side.gallery"), "E88865EA-0E1C-4E20-9AA6-EDCD0212C87C"), sep()];
+    // Home and Gallery are virtual shell folders; browse their real folders (profile, Pictures) but keep Explorer's icons
+    let place = |label: &str, guid: &str, id: &windows::core::GUID| {
+        let mut it = known(id, label).unwrap_or_else(|| special(label, guid));
+        it.icon = format!("shell:::{{{guid}}}");
+        it
+    };
+    let all = Item { kind: Kind::Place, label: t("side.all").into(), target: "all:".into(), mosaic: true, icon: "shell:::{031E4825-7B94-4dc3-B131-E946B44C8DD5}".into() };
+    let mut v = vec![
+        all,
+        place(t("side.home"), "F874310E-B6B7-47DC-BC84-B9E6B38F5903", &FOLDERID_Profile),
+        place(t("side.gallery"), "E88865EA-0E1C-4E20-9AA6-EDCD0212C87C", &FOLDERID_Pictures),
+        sep(),
+    ];
+    v[1].target = "home:".into(); // Explorer's Home is the Quick access list, not the profile folder
     v.extend(
         [
             known(&FOLDERID_Desktop, t("side.desktop")),
@@ -202,7 +231,7 @@ impl Side {
 
     /// Ask the shell helper for every item's icon (once each).
     fn ask_icons(&mut self) {
-        let (size, hw) = (self.px(16), self.hwnd as isize);
+        let (size, hw) = (self.px(48), self.hwnd as isize); // 3x, box-filtered down to 16: sharper than the shell's own 16 px scaling
         for it in self.items.iter().filter(|i| i.kind != Kind::Sep) {
             if self.png.contains_key(&it.target) || !self.asked.insert(it.target.clone()) {
                 continue;

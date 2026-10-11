@@ -400,7 +400,7 @@ fn parse_file_record(
                 // $FILE_NAME — resident. One per hardlink path.
                 let content = off + read_u16(rec, off + 0x14) as usize;
                 if content + 0x42 <= rec.len() {
-                    let parent = read_u64(rec, content) & 0x0000_FFFF_FFFF_FFFF;
+                    let parent = read_u64(rec, content); // record number | sequence << 48
                     let real_size = read_u64(rec, content + 0x30);
                     let name_chars = rec[content + 0x40] as usize;
                     let namespace = rec[content + 0x41];
@@ -428,10 +428,13 @@ fn parse_file_record(
         return;
     }
     let size = resolve_size(is_dir, size_from_data, size_from_name);
-    for (parent_no, name) in names.drain(..) {
+    let seq = read_u16(rec, 0x10);
+    for (parent_ref, name) in names.drain(..) {
         sink(RawRecord {
             record_no,
-            parent_no,
+            parent_no: parent_ref & 0x0000_FFFF_FFFF_FFFF,
+            seq,
+            parent_seq: (parent_ref >> 48) as u16,
             name,
             is_dir,
             size,
