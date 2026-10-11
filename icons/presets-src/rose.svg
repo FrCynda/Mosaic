@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a1430"/><stop offset="1" stop-color="#1a0816"/></linearGradient>
+    <linearGradient id="folder" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#ff7ab8"/><stop offset="0.55" stop-color="#e03a8a"/><stop offset="1" stop-color="#a01860"/></linearGradient>
+    <linearGradient id="sheet" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e6a6c8"/><stop offset="1" stop-color="#fbe0ee"/></linearGradient>
+    <linearGradient id="p1" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#5fe3c4"/><stop offset="1" stop-color="#1ea0b2"/></linearGradient>
+    <linearGradient id="p2" x1="0.2" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#ffe94f"/><stop offset="1" stop-color="#ff8620"/></linearGradient>
+    <linearGradient id="p3" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#a070ff"/><stop offset="1" stop-color="#5646ff"/></linearGradient>
+    <linearGradient id="p4" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#45b4ff"/><stop offset="1" stop-color="#1368f5"/></linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/></filter>
+  </defs>
+  <rect x="68" y="72" width="890" height="880" rx="240" ry="240" fill="url(#bg)"/>
+  <path d="M 490 262 Q 500 257 520 257 H 780 Q 808 257 808 285 V 335 H 490 Z" fill="url(#sheet)" opacity="0.9"/>
+  <path d="M 270 222 H 430 Q 452 222 466 238 L 500 276 Q 512 293 534 293 H 745 Q 778 293 778 326 V 772 H 270 Q 218 772 218 720 V 274 Q 218 222 270 222 Z" fill="url(#folder)"/>
+  <g filter="url(#soft)"><path d="M 452 452 Q 452 436 466 428 L 612 345 Q 624 336 640 336 H 848 Q 870 336 870 358 V 772 Q 870 797 845 797 H 478 Q 452 797 452 772 Z" fill="#2a0d22"/></g>
+  <g stroke-linejoin="round" stroke-width="16">
+    <polygon points="480,458 636,374 638,568 480,616" fill="url(#p1)" stroke="url(#p1)"/>
+    <polygon points="675,374 830,374 830,516 675,562" fill="url(#p2)" stroke="url(#p2)"/>
+    <polygon points="480,660 638,613 638,760 480,760" fill="url(#p3)" stroke="url(#p3)"/>
+    <polygon points="675,603 830,556 830,760 675,760" fill="url(#p4)" stroke="url(#p4)"/>
+  </g>
+</svg>

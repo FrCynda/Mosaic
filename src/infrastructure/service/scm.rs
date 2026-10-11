@@ -11,7 +11,6 @@
 use std::ffi::{OsStr, OsString};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use windows_service::service::{
     ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceState, ServiceType,
 };
@@ -30,38 +29,6 @@ const ERROR_SERVICE_EXISTS: i32 = 1073;
 
 /// How long [`uninstall`] waits for a running service to stop before deleting.
 const STOP_WAIT: Duration = Duration::from_secs(5);
-
-/// The service's lifecycle as the Settings UI needs it — derived live from the
-/// SCM on every read.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SvcState {
-    /// No service is registered.
-    NotInstalled,
-    /// Registered but not running.
-    Stopped,
-    /// Registered and running.
-    Running,
-    /// A start has been requested and is in progress.
-    StartPending,
-    /// A stop has been requested and is in progress.
-    StopPending,
-    /// Registered, in some other transient/paused state.
-    Other,
-}
-
-/// Read the service's current state straight from the SCM.
-pub fn status() -> Result<SvcState, String> {
-    let manager = manager(ServiceManagerAccess::CONNECT)?;
-    match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
-        Ok(service) => {
-            let status = service.query_status().map_err(friendly)?;
-            Ok(map_state(status.current_state))
-        }
-        Err(e) if is_not_found(&e) => Ok(SvcState::NotInstalled),
-        Err(e) => Err(friendly(e)),
-    }
-}
 
 /// Register the service: this executable plus `--service`, account LocalSystem,
 /// auto-start at boot. Idempotent — a pre-existing service is treated as success
@@ -192,16 +159,6 @@ fn wait_for_stop(service: &windows_service::service::Service) {
             Ok(_) => std::thread::sleep(Duration::from_millis(100)),
             Err(_) => return,
         }
-    }
-}
-
-fn map_state(state: ServiceState) -> SvcState {
-    match state {
-        ServiceState::Stopped => SvcState::Stopped,
-        ServiceState::Running => SvcState::Running,
-        ServiceState::StartPending => SvcState::StartPending,
-        ServiceState::StopPending => SvcState::StopPending,
-        _ => SvcState::Other,
     }
 }
 

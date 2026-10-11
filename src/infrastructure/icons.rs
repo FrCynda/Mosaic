@@ -1,15 +1,11 @@
 //! Extract the Windows shell icon for a file extension or folder and return it
-//! as a base64-encoded PNG. Per-extension, so the frontend caches one icon per
-//! type. Best-effort: any failure returns `None` and the UI falls back to a
-//! glyph.
+//! as a PNG. Per-extension, so the UI caches one icon per type. Best-effort: any
+//! failure returns `None` and the UI falls back to a glyph.
 
 use std::ffi::c_void;
 use std::iter::once;
 use std::mem::{size_of, zeroed};
 use std::ptr;
-
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 
 use windows_sys::Win32::Graphics::Gdi::{
     DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
@@ -17,47 +13,12 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 
-const SHGFI_ICON: u32 = 0x0000_0100;
-const SHGFI_SMALLICON: u32 = 0x0000_0001;
 const SHGFI_TYPENAME: u32 = 0x0000_0400;
 const SHGFI_USEFILEATTRIBUTES: u32 = 0x0000_0010;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 const BI_RGB: u32 = 0;
 const DIB_RGB_COLORS: u32 = 0;
-
-/// Base64 PNG of the small shell icon for an extension (`None` => folder icon).
-pub fn icon_base64(ext: Option<&str>, is_dir: bool) -> Option<String> {
-    let name = if is_dir {
-        "folder".to_string()
-    } else {
-        format!("x.{}", ext.unwrap_or("dat"))
-    };
-    let wide: Vec<u16> = name.encode_utf16().chain(once(0)).collect();
-    let attrs = if is_dir {
-        FILE_ATTRIBUTE_DIRECTORY
-    } else {
-        FILE_ATTRIBUTE_NORMAL
-    };
-
-    let mut info: SHFILEINFOW = unsafe { zeroed() };
-    let res = unsafe {
-        SHGetFileInfoW(
-            wide.as_ptr(),
-            attrs,
-            &mut info,
-            size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES,
-        )
-    };
-    if res == 0 || info.hIcon.is_null() {
-        return None;
-    }
-
-    let png = unsafe { icon_to_png(info.hIcon) };
-    unsafe { DestroyIcon(info.hIcon) };
-    png.map(|bytes| STANDARD.encode(bytes))
-}
 
 /// PNG of the 256 px ("jumbo") shell icon for an extension or folder, the size Explorer's thumbnails use, so a
 /// grid tile's placeholder matches the thumbnail that replaces it. Needs a COM-initialised thread.

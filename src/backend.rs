@@ -97,10 +97,6 @@ impl SearchBackend {
     }
 
     /// Whether the GUI is querying the background service (for the status bar).
-    pub fn uses_service(&self) -> bool {
-        matches!(self, SearchBackend::Service(_))
-    }
-
     /// A detached handle for running a search off the async worker thread.
     pub fn handle(&self) -> SearchHandle {
         match self {
