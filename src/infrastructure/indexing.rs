@@ -165,7 +165,6 @@ impl Indexer {
             };
 
             if !indexed.is_empty() {
-                thread::spawn(crate::contentindex::purge_excluded);
                 // the full content scan only when something may have been missed: a volume scanned from scratch (its
                 // changes while we were off are unknown) or an earlier scan that never finished. Otherwise the
                 // journal replay above already sent every change since the last run to the content index.

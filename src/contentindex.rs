@@ -275,7 +275,34 @@ pub fn commit() {
 }
 
 pub fn search(query: &str, limit: usize) -> Result<Vec<(String, f32)>, String> {
-    engine()?.search(query, limit).map_err(|e| format!("content search failed: {e}"))
+    let mut hits = engine()?.search(query, limit).map_err(|e| format!("content search failed: {e}"))?;
+    // user files changed but not yet indexed (the batch minute, or HOT_COOLDOWN): searched as they are now, from a
+    // throwaway in-RAM index, so results are current without writing anything. `try_lock`: a batch in flight holds
+    // the lock while it indexes these very files.
+    let fresh: Vec<String> = PENDING.try_lock().map_or_else(Vec::new, |p| p.keys().filter(|p| !churny(p)).cloned().collect());
+    if fresh.is_empty() {
+        return Ok(hits);
+    }
+    hits.retain(|(p, _)| !fresh.contains(p)); // their indexed text is stale
+    hits.extend(search_fresh(&fresh, query, limit).map_err(|e| format!("content search failed: {e}"))?);
+    hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+    hits.truncate(limit);
+    Ok(hits)
+}
+
+// ponytail: plain-text/Office files only (IFilter types like PDF would need a subprocess per query), and capped:
+// a mass change (an unzip into Documents) is searched from the index once its batch lands
+fn search_fresh(paths: &[String], query: &str, limit: usize) -> tantivy::Result<Vec<(String, f32)>> {
+    let (schema, fields) = schema();
+    let index = Index::create_in_ram(schema);
+    let mut w: IndexWriter = index.writer_with_num_threads(1, 15_000_000)?;
+    for path in paths.iter().take(200) {
+        if let Some(body) = crate::extract::local_text(path) {
+            w.add_document(doc!(fields.path => path.as_str(), fields.mtime => 0i64, fields.size => 0i64, fields.body => body))?;
+        }
+    }
+    w.commit()?;
+    Engine::open(index, fields)?.search(query, limit)
 }
 
 /// Bulk-scan progress, for the status line's "building index" message — `None` once the initial
@@ -364,7 +391,9 @@ fn done_path() -> PathBuf {
 pub fn take_done() -> bool {
     let done = done_path().exists() && dir().join("meta.json").exists();
     let _ = std::fs::remove_file(done_path());
-    done
+    // left by a build that purged Windows/ProgramData/AppData from the index: one full pass brings them back
+    let purged = std::fs::remove_file(dir().with_file_name("contentscope1")).is_ok();
+    done && !purged
 }
 
 /// A full pass stands behind this session's index (finished now, or vouched for by [`take_done`]).
@@ -403,7 +432,7 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
             }
             let Some(files) = chunk(from, CHUNK) else { return false };
             files.par_iter().for_each(|(path, mtime, size)| {
-                if !excluded(path) && !skipped(path, *mtime, *size) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
+                if !is_own(path) && !skipped(path, *mtime, *size) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
                     index_file(path, *mtime, *size);
                 }
                 let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
@@ -440,7 +469,7 @@ static PENDING: LazyLock<Mutex<std::collections::HashMap<String, ChangeEvent>>> 
 /// Whether `ev` touched the index at all (anything but the index's own files).
 fn apply(ev: ChangeEvent) -> bool {
     match ev {
-        ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if excluded(path) => false,
+        ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
         ChangeEvent::Upserted { path, mtime, size } => {
             index_file(&path, mtime, size);
             true
@@ -461,6 +490,7 @@ fn flush(any: bool) {
 
 pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
     std::thread::spawn(move || {
+        load_churn();
         let mut first = std::time::Instant::now();
         let mut recent: std::collections::HashMap<String, std::time::Instant> = Default::default();
         loop {
@@ -471,7 +501,7 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
                     let path = match &ev {
                         ChangeEvent::Upserted { path, .. } | ChangeEvent::Deleted { path } => path.clone(),
                     };
-                    if !excluded(&path) {
+                    if !is_own(&path) {
                         let mut pending = PENDING.lock();
                         if pending.is_empty() {
                             first = std::time::Instant::now();
@@ -487,16 +517,21 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
             let mut pending = PENDING.lock();
             let now = std::time::Instant::now();
             recent.retain(|_, t| now - *t < HOT_COOLDOWN);
-            let ready: Vec<String> = pending.keys().filter(|p| !recent.contains_key(*p)).cloned().collect();
+            use std::sync::atomic::Ordering::Relaxed;
+            let churn_due = unix_now().saturating_sub(CHURN_SINCE.load(Relaxed)) >= CHURN_BATCH.as_secs();
+            let ready: Vec<String> = pending.keys().filter(|p| if churny(p) { churn_due } else { !recent.contains_key(*p) }).cloned().collect();
             let mut any = false;
             for p in ready {
                 let ev = pending.remove(&p).unwrap();
-                if matches!(ev, ChangeEvent::Upserted { .. }) {
+                if matches!(ev, ChangeEvent::Upserted { .. }) && !churny(&p) {
                     recent.insert(p, now);
                 }
                 any |= apply(ev);
             }
             flush(any);
+            if churn_due {
+                CHURN_SINCE.store(unix_now(), Relaxed);
+            }
             first = now; // what's still cooling down is looked at again next batch
         }
     });
@@ -509,8 +544,15 @@ pub fn shutdown(within: std::time::Duration) {
     let deadline = std::time::Instant::now() + within;
     let Some(pending) = PENDING.try_lock_for(within) else { return };
     let pending = parking_lot::MutexGuard::leak(pending); // never unlocked
+    // churn keeps waiting for its daily batch, in a file: a day of it could take far longer than a stop allows
+    let (churn, now): (Vec<_>, Vec<_>) = pending.drain().partition(|(p, _)| churny(p));
+    if !churn.is_empty() {
+        let since = CHURN_SINCE.load(std::sync::atomic::Ordering::Relaxed);
+        let text: String = std::iter::once(since.to_string()).chain(churn.into_iter().map(|(p, _)| p)).map(|l| l + "\n").collect();
+        let _ = std::fs::write(churn_path(), text);
+    }
     let mut any = false;
-    for (_, ev) in pending.drain() {
+    for (_, ev) in now {
         if std::time::Instant::now() > deadline {
             return; // out of time: changes left unapplied, so no marker; the next start's full pass picks them up
         }
@@ -522,58 +564,45 @@ pub fn shutdown(within: std::time::Duration) {
     }
 }
 
-/// Never content-indexed: the index's own files ([`is_own`]), and system/app churn, left out as `hashcache::SKIP`
-/// leaves it out. Windows, ProgramData and AppData rewrite files around the clock (logs, telemetry, browser and app
-/// state): each change cost an extraction, a commit and later segment merges, i.e. constant SSD writes, for text
-/// nobody content-searches.
-fn excluded(path: &str) -> bool {
+/// System/app churn: Windows, ProgramData and AppData rewrite files around the clock (logs, telemetry, temp, caches).
+/// Applied per minute, each change cost an extraction, a commit and later segment merges (~30 GB/day of SSD writes).
+/// So its changes wait for the daily [`CHURN_BATCH`] instead: temp and cache files created and deleted within the
+/// day cancel out unseen, and a file rewritten all day is indexed once, as it ended up.
+fn churny(path: &str) -> bool {
     let p = path.to_ascii_lowercase();
     let rest = p.get(2..).unwrap_or_default(); // past the drive letter
-    is_own(path)
-        || rest.starts_with(r"\windows\")
-        || rest.starts_with(r"\programdata\")
-        || rest.starts_with(r"\system volume information\")
-        || rest.starts_with(r"\$recycle.bin\")
-        || p.contains(r"\appdata\")
+    rest.starts_with(r"\windows\") || rest.starts_with(r"\programdata\") || p.contains(r"\appdata\")
 }
 
-/// Marks [`purge_excluded`] done.
-fn scope_path() -> PathBuf {
-    dir().with_file_name("contentscope1")
+const CHURN_BATCH: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// Unix seconds the current churn window opened (carried over a restart by [`churn_path`]).
+static CHURN_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// One-time: drops what [`excluded`] keeps out but an index built before it already holds. Walks the `path`
-/// term dictionary (every indexed path, without decompressing stored docs). The space comes back as the
-/// segments holding them are merged.
-pub fn purge_excluded() {
-    if scope_path().exists() {
-        return;
-    }
-    let Ok(e) = engine() else { return };
-    let mut gone = Vec::new();
-    for seg in e.reader.searcher().segment_readers() {
-        let Ok(inv) = seg.inverted_index(e.fields.path) else { return };
-        let Ok(mut terms) = inv.terms().stream() else { return };
-        while terms.advance() {
-            if let Ok(p) = std::str::from_utf8(terms.key()) {
-                if excluded(p) {
-                    gone.push(p.to_string());
-                }
+/// Churn still waiting for its batch at a clean stop: the window's start, then one path per line.
+fn churn_path() -> PathBuf {
+    dir().with_file_name("contentchurn.txt")
+}
+
+/// Puts back what the last clean stop left waiting, as it stands now (its events weren't kept).
+fn load_churn() {
+    let text = std::fs::read_to_string(churn_path()).unwrap_or_default();
+    let _ = std::fs::remove_file(churn_path());
+    let mut lines = text.lines();
+    CHURN_SINCE.store(lines.next().and_then(|l| l.parse().ok()).unwrap_or_else(unix_now), std::sync::atomic::Ordering::Relaxed);
+    let mut pending = PENDING.lock();
+    for path in lines {
+        let ev = match std::fs::metadata(path) {
+            Ok(m) if m.is_file() => {
+                let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
+                ChangeEvent::Upserted { path: path.to_string(), mtime, size: m.len() as i64 }
             }
-        }
-    }
-    gone.sort_unstable();
-    gone.dedup();
-    let deleted = e.with_writer(|w| {
-        for p in &gone {
-            w.delete_term(Term::from_field_text(e.fields.path, p));
-        }
-        Ok(())
-    });
-    release_writer();
-    commit();
-    if deleted.is_ok() {
-        let _ = std::fs::write(scope_path(), b"");
+            _ => ChangeEvent::Deleted { path: path.to_string() },
+        };
+        pending.insert(path.to_string(), ev);
     }
 }
 
@@ -652,14 +681,24 @@ mod tests {
     }
 
     #[test]
-    fn system_and_app_churn_is_excluded() {
-        assert!(excluded(r"C:\Windows\Prefetch\X.pf"));
-        assert!(excluded(r"D:\ProgramData\Microsoft\Diagnosis\a.json"));
-        assert!(excluded(r"C:\Users\me\AppData\Roaming\Code\state.json"));
-        assert!(excluded(r"C:\$Recycle.Bin\S-1\$R1.txt"));
-        assert!(!excluded(r"C:\Users\me\Documents\Windows\notes.txt"));
-        assert!(!excluded(r"C:\Users\me\appdata.txt"));
-        assert!(!excluded(r"C:\Program Files\App\readme.txt"));
+    fn fresh_files_are_searched_as_they_are_now() {
+        let f = std::env::temp_dir().join(format!("fresh_test_{}.txt", std::process::id()));
+        std::fs::write(&f, "the quokka smiles").unwrap();
+        let p = f.display().to_string();
+        let hits = search_fresh(std::slice::from_ref(&p), "quokka", 10).unwrap();
+        assert_eq!(hits.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(), [p.as_str()]);
+        assert!(search_fresh(&[p], "wombat", 10).unwrap().is_empty());
+        let _ = std::fs::remove_file(f);
+    }
+
+    #[test]
+    fn system_and_app_churn_is_recognized() {
+        assert!(churny(r"C:\Windows\Prefetch\X.pf"));
+        assert!(churny(r"D:\ProgramData\Microsoft\Diagnosis\a.json"));
+        assert!(churny(r"C:\Users\me\AppData\Roaming\Code\state.json"));
+        assert!(!churny(r"C:\Users\me\Documents\Windows\notes.txt"));
+        assert!(!churny(r"C:\Users\me\appdata.txt"));
+        assert!(!churny(r"C:\Program Files\App\readme.txt"));
     }
 
     #[test]
