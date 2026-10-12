@@ -97,6 +97,7 @@ impl Indexer {
             }
 
             let mut indexed: Vec<IndexedVolume> = Vec::new();
+            let mut content_current = crate::contentindex::take_done();
             let mut last_error = String::new();
 
             for drive in drives {
@@ -104,9 +105,10 @@ impl Indexer {
                 progress.store(0, Ordering::Relaxed);
                 let serial = volume_serial(drive);
 
-                let outcome = bring_volume_online(drive, serial, &progress);
+                let outcome = bring_volume_online(drive, serial, &progress, &content_tx);
                 match outcome {
                     Ok(volume) => {
+                        content_current &= volume.replayed;
                         let count = volume.index.len();
                         // Save before publishing so a cache exists immediately.
                         if let Some(next_usn) = volume.resume_usn {
@@ -151,8 +153,16 @@ impl Indexer {
             };
 
             if !indexed.is_empty() {
-                let files: Vec<_> = catalog.read().all_files().collect();
-                thread::spawn(move || crate::contentindex::bulk_index(files));
+                // the full content scan only when something may have been missed: a volume scanned from scratch (its
+                // changes while we were off are unknown) or an earlier scan that never finished. Otherwise the
+                // journal replay above already sent every change since the last run to the content index.
+                if content_current {
+                    crate::contentindex::mark_complete();
+                } else {
+                    let (refs, epochs) = catalog.read().file_positions();
+                    let scan_catalog = catalog.clone();
+                    thread::spawn(move || crate::contentindex::bulk_index(refs.len(), |from, n| scan_catalog.read().files_at(&refs[from..(from + n).min(refs.len())], &epochs)));
+                }
                 spawn_cache_saver(catalog, indexed);
             }
         });
@@ -196,6 +206,9 @@ impl Indexer {
 
 /// A volume brought online, with the journal position to resume the watcher.
 struct OnlineVolume {
+    /// Loaded from the cache and caught up from the journal (every change since reported to the content index),
+    /// rather than scanned from scratch.
+    replayed: bool,
     index: SearchIndex,
     journal_id: u64,
     resume_usn: Option<i64>,
@@ -206,17 +219,21 @@ fn bring_volume_online(
     drive: char,
     serial: u32,
     progress: &AtomicUsize,
+    sink: &std::sync::mpsc::Sender<super::ntfs::ChangeEvent>,
 ) -> Result<OnlineVolume, String> {
     // Fast path: a valid cached index we can replay forward.
     if let Some(snapshot) = cache::load(drive) {
         if snapshot.volume_serial == serial {
             let journal_id = snapshot.journal_id;
-            let mut index = SearchIndex::from_parts(drive, snapshot.recs, snapshot.names);
+            let mut recs = snapshot.recs;
+            crate::application::index::drop_orphans(&mut recs);
+            let mut index = SearchIndex::from_parts(drive, recs, snapshot.names);
             progress.store(index.len(), Ordering::Relaxed);
             if let CatchUp::Caught { next_usn } =
-                catch_up(drive, journal_id, snapshot.next_usn, &mut index)
+                catch_up(drive, journal_id, snapshot.next_usn, &mut index, Some(sink))
             {
                 return Ok(OnlineVolume {
+                    replayed: true,
                     index,
                     journal_id,
                     resume_usn: Some(next_usn),
@@ -232,6 +249,7 @@ fn bring_volume_online(
     let index = SearchIndex::build_from(&mut reader, progress).map_err(|e| e.to_string())?;
 
     Ok(OnlineVolume {
+        replayed: false,
         index,
         journal_id: journal.map(|j| j.journal_id).unwrap_or(0),
         resume_usn: journal.map(|j| j.next_usn),
@@ -241,8 +259,16 @@ fn bring_volume_online(
 /// Periodically refresh each volume's on-disk cache so future startups load
 /// fast and only a small journal tail needs replaying.
 fn spawn_cache_saver(catalog: Arc<RwLock<Catalog>>, indexed: Vec<IndexedVolume>) {
-    thread::spawn(move || loop {
+    thread::spawn(move || {
+        let mut saved_at = super::ntfs::CHANGES.load(Ordering::Relaxed);
+        loop {
         thread::sleep(CACHE_SAVE_INTERVAL);
+        // nothing changed since the last save: skip rewriting the whole (100MB+) cache
+        let now = super::ntfs::CHANGES.load(Ordering::Relaxed);
+        if now == saved_at {
+            continue;
+        }
+        saved_at = now;
         for vol in &indexed {
             let Some(journal) = journal_state(vol.drive) else {
                 continue;
@@ -255,6 +281,7 @@ fn spawn_cache_saver(catalog: Arc<RwLock<Catalog>>, indexed: Vec<IndexedVolume>)
                 let _ = cache::save(vol.drive, vol.serial, journal.journal_id, usn, index.parts());
                 let _ = crate::datestore::save();
             }
+        }
         }
     });
 }

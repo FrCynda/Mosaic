@@ -40,6 +40,7 @@ const WM_ICON: u32 = WM_APP + 2;
 const WM_INSTALLED: u32 = WM_APP + 3;
 const WM_THUMB: u32 = WM_APP + 4;
 const WM_PREVIEW: u32 = WM_APP + 5;
+const WM_KIND: u32 = WM_APP + 20;
 const T_TYPE: usize = 1;
 const T_POLL: usize = 2;
 const T_FLASH: usize = 3;
@@ -191,6 +192,16 @@ fn menu() -> [(&'static str, &'static str, Option<Act>); 10] {
 
 /// view, items per row and the Names/type mode survive restarts (the web UI kept them in localStorage).
 /// JSON now (was a flat key=value text file); `load_settings` migrates the old file on first read.
+/// Folder -> icon kind, kept between runs (`kind<TAB>path` per line) so a folder is only ever looked into once.
+/// Each answer is stamped with the folder's modified time and recomputed when that changes.
+fn kinds_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("foldericons.txt")
+}
+
+fn mtime_secs(p: &str) -> u64 {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
+}
+
 fn settings_path() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("native.json")
 }
@@ -280,6 +291,8 @@ struct Row {
     ty: Vec<u16>,
     date: Vec<u16>,
     attrs_s: Vec<u16>,
+    hidden: bool, // drawn faded, like Explorer
+    link: bool,   // .lnk/.url: Windows' shortcut arrow goes over the icon
     size: i64,
     is_dir: bool,
     sys: i32,     // system image list index of the type's icon
@@ -386,6 +399,7 @@ struct Ui {
     scanning: bool,
     error: Option<String>,
     offered: bool,
+    err_polls: u32, // consecutive polls that found the service unreachable
     pages: HashMap<usize, Vec<Row>>,
     order: VecDeque<usize>,
     y: f64,
@@ -414,6 +428,7 @@ struct Ui {
     thousands: Vec<u16>,
     wheel_lines: f64,
     smooth: bool, // glide on wheel / scrollbar paging, else jump
+    folder_color: bool, // folder names in the accent colour (off: plain text, like files)
     hist: std::cell::RefCell<(Vec<String>, usize)>, // folders / searches visited (browse_to) and where we are in them
     browse: u8, // 0: open folders in Explorer; 1: list what's directly inside (child:); 2: list everything below (descendant:)
     timestamps: bool, // index created/accessed times for dc:/da: and their sort columns (Alt+T)
@@ -423,6 +438,9 @@ struct Ui {
     per: usize, // grid: tiles per row, as many as fit
     zoom_acc: i32, // Ctrl+wheel delta not yet a whole notch (precision touchpads)
     step_acc: i32, // likewise, for wheel steps with smooth scrolling off
+    live_at: Instant,      // when the last live refresh finished
+    live_cost: Duration,   // how long it took: the next one waits 8x that (a busy disk changes the index constantly)
+    poll_y: f64,           // scroll position at the previous poll: moving = scrolling, no refresh
     meta_gen: usize, // the metadata index's generation the results were last run against
     was_building: bool, // last poll()'s content/metadata-progress state, so poll() can repaint once more right as it finishes
     content_done: usize, // last poll()'s IndexStatus.content_done/content_total — see poll()'s comment
@@ -443,6 +461,13 @@ struct Ui {
     thumb_order: VecDeque<String>,
     thumb_bytes: usize,
     thumb_pending: HashSet<String>,
+    link_ov: Option<Option<Pic>>, // the shortcut arrow, made on first use
+    kinds: HashMap<String, (u8, u64)>,      // folder path -> what its files all are (see `crate::folder_kind`); 0 = mixed
+    kind_pending: HashSet<String>,
+    special: HashSet<String>,        // Desktop, Downloads, Documents, Pictures, Music, Videos: they keep their own shell icon
+    kind_checked: HashSet<String>,   // folders whose cached kind was compared with their modified time this run
+    kinds_dirty: bool,
+    kind_dirs: Vec<Option<String>>,  // the Windows folder whose icon each kind wears (Pictures, Videos, Music, Documents)
     jumbo_png: HashMap<String, Vec<u8>>,            // type key → the shell's 256 px icon
     jumbo: HashMap<(String, i32), Option<Pic>>,     // (type key, px) → decoded at tile size
 }
@@ -459,15 +484,18 @@ fn with<R>(f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
 // ---- window identity: the two UIs get their own name, icon and taskbar button ---------------------------------
 macro_rules! icon_set {
     ($n:literal) => {
+        icon_set!("../icons/", $n)
+    };
+    ($dir:literal, $n:literal) => {
         [
-            (16, &include_bytes!(concat!("../icons/", $n, "-16.png"))[..]),
-            (20, include_bytes!(concat!("../icons/", $n, "-20.png"))),
-            (24, include_bytes!(concat!("../icons/", $n, "-24.png"))),
-            (32, include_bytes!(concat!("../icons/", $n, "-32.png"))),
-            (40, include_bytes!(concat!("../icons/", $n, "-40.png"))),
-            (48, include_bytes!(concat!("../icons/", $n, "-48.png"))),
-            (64, include_bytes!(concat!("../icons/", $n, "-64.png"))),
-            (256, include_bytes!(concat!("../icons/", $n, "-256.png"))),
+            (16, &include_bytes!(concat!($dir, $n, "-16.png"))[..]),
+            (20, include_bytes!(concat!($dir, $n, "-20.png"))),
+            (24, include_bytes!(concat!($dir, $n, "-24.png"))),
+            (32, include_bytes!(concat!($dir, $n, "-32.png"))),
+            (40, include_bytes!(concat!($dir, $n, "-40.png"))),
+            (48, include_bytes!(concat!($dir, $n, "-48.png"))),
+            (64, include_bytes!(concat!($dir, $n, "-64.png"))),
+            (256, include_bytes!(concat!($dir, $n, "-256.png"))),
         ]
     };
 }
@@ -477,15 +505,49 @@ pub fn app_id(id: &str) {
     unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wz(id).as_ptr()) };
 }
 
-/// Title-bar and taskbar icons for `hwnd`, from the drawn PNG closest to each size at the window's DPI.
-pub fn set_icons(hwnd: HWND, native: bool) {
-    let set: [(i32, &[u8]); 8] = if native { icon_set!("native") } else { icon_set!("web") };
+/// The installer's icon presets (icons/presets-src/*.svg, rendered by tools/gen-presets.ps1), picked per process type.
+macro_rules! presets {
+    ($($n:literal),*) => {
+        fn preset_set(name: &str) -> Option<[(i32, &'static [u8]); 8]> {
+            match name {
+                $($n => Some(icon_set!("../icons/presets/", $n)),)*
+                _ => None,
+            }
+        }
+    };
+}
+presets!(
+    "crimson",
+    "crimson-bis",
+    "gold",
+    "gold-bis",
+    "graphite",
+    "graphite-bis",
+    "green",
+    "green-bis",
+    "light",
+    "light-bis",
+    "mint",
+    "mint-bis",
+    "navy",
+    "navy-bis",
+    "ocean",
+    "ocean-bis",
+    "purple",
+    "purple-bis",
+    "rose",
+    "rose-bis",
+    "sunset",
+    "sunset-bis"
+);
+
+/// Title-bar and taskbar icons for `hwnd`: the exe's own icon (what the installer stamped), at each size for the window's DPI.
+pub fn set_icons(hwnd: HWND) {
     unsafe {
-        let dpi = GetDpiForWindow(hwnd);
+        let (inst, dpi) = (GetModuleHandleW(null()), GetDpiForWindow(hwnd));
         for (which, metric) in [(ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)] {
             let px = windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(metric, dpi);
-            let (_, png) = set.iter().find(|(s, _)| *s >= px).unwrap_or(&set[7]);
-            let h = CreateIconFromResourceEx(png.as_ptr(), png.len() as u32, 1, 0x0003_0000, px, px, LR_DEFAULTCOLOR);
+            let h = LoadImageW(inst, 32512 as *const u16, IMAGE_ICON, px, px, 0);
             if !h.is_null() {
                 SendMessageW(hwnd, WM_SETICON, which as usize, h as isize);
             }
@@ -493,8 +555,8 @@ pub fn set_icons(hwnd: HWND, native: bool) {
     }
 }
 
-/// `mosaic.exe`: this exe with its own name and icon, so Task Manager and Explorer tell the two UIs apart.
-/// Started without arguments it opens the native window. Made (or refreshed after a rebuild) by the web UI's start.
+/// `mosaic.exe`: this exe with its own name and icon. Started without arguments it opens the window. A dev build
+/// (cargo's `mosaic-wrapper.exe`) makes or refreshes it beside itself on start.
 pub fn native_exe() -> std::io::Result<std::path::PathBuf> {
     stamped_helper("mosaic.exe", "Mosaic", icon_set!("native"))
 }
@@ -508,10 +570,10 @@ pub fn stamp(src: &std::path::Path, out: &std::path::Path, name: &str, set: [(i3
     std::fs::copy(me, &tmp)?;
     let err = || std::io::Error::last_os_error();
     unsafe {
-        // the manifest is kept (common controls v6, asInvoker, long paths); version and icons are replaced
+        // the manifest is kept, or added to a plain cargo build (common controls v6, asInvoker, long paths); version and icons are replaced
         let lib = LoadLibraryExW(wz(&me.to_string_lossy()).as_ptr(), null_mut(), LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
         let res = FindResourceW(lib, 1 as _, 24 as _); // RT_MANIFEST #1
-        let manifest = if res.is_null() { Vec::new() } else { std::slice::from_raw_parts(LockResource(LoadResource(lib, res)) as *const u8, SizeofResource(lib, res) as usize).to_vec() };
+        let manifest = if res.is_null() { include_bytes!("../mosaic.manifest").to_vec() } else { std::slice::from_raw_parts(LockResource(LoadResource(lib, res)) as *const u8, SizeofResource(lib, res) as usize).to_vec() };
         FreeLibrary(lib);
         let h = windows_sys::Win32::System::LibraryLoader::BeginUpdateResourceW(wz(&tmp.to_string_lossy()).as_ptr(), 1);
         if h.is_null() {
@@ -537,21 +599,49 @@ pub fn stamp(src: &std::path::Path, out: &std::path::Path, name: &str, set: [(i3
     std::fs::rename(&tmp, out) // fails while `out` is running: the caller retries or refreshes later
 }
 
-pub fn index_icons() -> [(i32, &'static [u8]); 8] {
-    icon_set!("index")
+/// `--dist <dir> [role=preset ...]`: the named, iconed exes an installer ships, with the icon chosen for each process
+/// type (roles main / index / content / thumbs; anything else or unnamed = its default icon). The choices are kept in
+/// `<dir>\icons.txt` for the service's `mosaic-index.exe`, which is made later, at service install.
+/// The preset each process type wears unless another is chosen (the installer preselects the same ones).
+fn default_set(role: &str) -> [(i32, &'static [u8]); 8] {
+    let name = match role {
+        "main" => "light-bis",
+        "index" => "sunset-bis",
+        "content" => "purple-bis",
+        _ => "green-bis",
+    };
+    preset_set(name).expect("built-in preset")
+}
+
+pub fn dist(dir: &std::path::Path, choice: &[(String, String)]) -> std::io::Result<()> {
+    let me = std::env::current_exe()?;
+    std::fs::create_dir_all(dir)?;
+    let pick = |role: &str, default: [(i32, &'static [u8]); 8]| choice.iter().find(|(r, _)| r == role).and_then(|(_, n)| preset_set(n)).unwrap_or(default);
+    // helpers last: an exe older than its helpers is never "refreshed" at run time (a read-only Program Files can't)
+    stamp(&me, &dir.join("mosaic.exe"), "Mosaic", pick("main", default_set("main")))?;
+    stamp(&me, &dir.join("mosaic-content.exe"), "Mosaic Content Index", pick("content", default_set("content")))?;
+    stamp(&me, &dir.join("mosaic-thumbs.exe"), "Mosaic Thumbnails", pick("thumbs", default_set("thumbs")))?;
+    std::fs::write(dir.join("icons.txt"), choice.iter().map(|(r, n)| format!("{r}={n}
+")).collect::<String>())
+}
+
+/// The service exe's icons: the preset chosen for `index` in `<dir>\icons.txt`, else the default.
+pub fn index_icons(dir: &std::path::Path) -> [(i32, &'static [u8]); 8] {
+    let txt = std::fs::read_to_string(dir.join("icons.txt")).unwrap_or_default();
+    txt.lines().find_map(|l| l.strip_prefix("index=")).and_then(|n| preset_set(n.trim())).unwrap_or(default_set("index"))
 }
 
 /// `mosaic-content.exe`: the `--extract` IFilter helper, stamped with its own name and icon so a
 /// burst of short-lived extraction subprocesses reads as "Mosaic Content Index" in Task Manager
 /// instead of flickering under whatever launched it.
 pub fn content_exe() -> std::io::Result<std::path::PathBuf> {
-    stamped_helper("mosaic-content.exe", "Mosaic Content Index", icon_set!("content"))
+    stamped_helper("mosaic-content.exe", "Mosaic Content Index", default_set("content"))
 }
 
 /// `mosaic-thumbs.exe`: the `--shell-helper` thumbnail/icon workers (up to 4, one per worker
 /// thread), stamped so they read as "Mosaic Thumbnails" instead of duplicating the GUI's name.
 pub fn thumbs_exe() -> std::io::Result<std::path::PathBuf> {
-    stamped_helper("mosaic-thumbs.exe", "Mosaic Thumbnails", icon_set!("thumbs"))
+    stamped_helper("mosaic-thumbs.exe", "Mosaic Thumbnails", default_set("thumbs"))
 }
 
 fn stamped_helper(file_name: &str, name: &str, set: [(i32, &[u8]); 8]) -> std::io::Result<std::path::PathBuf> {
@@ -625,7 +715,7 @@ pub fn run() {
 
         let s = GetDpiForSystem() as f64 / 96.0;
         let main = CreateWindowExW(0, cm.as_ptr(), wz("Mosaic").as_ptr(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, (1400.0 * s) as i32, (900.0 * s) as i32, null_mut(), null_mut(), inst, null());
-        set_icons(main, true);
+        set_icons(main);
         let edit = CreateWindowExW(0, wz("EDIT").as_ptr(), null(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32, 0, 0, 10, 10, main, null_mut(), inst, null());
         SendMessageW(edit, 0x1501, 1, wz("Search file and folder names…").as_ptr() as isize); // EM_SETCUEBANNER
         SetWindowTheme(edit, wz("DarkMode_CFD").as_ptr(), null()); // dark caret/selection/context menu
@@ -680,14 +770,14 @@ pub fn run() {
             sort: "name".into(),
             dir: "asc".into(),
             meta: get("meta"),
-            offset: 0,
-            limit: 0,
             tags: get("tags") == "1",
             content: get("content") == "1",
             match_case: get("match_case") == "1",
             whole_word: get("whole_word") == "1",
             regex: get("regex") == "1",
             diacritics: get("diacritics") == "1",
+            hidden: get("hidden") == "1",
+            system: get("system") == "1",
         };
         let mut lines: u32 = 3;
         SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &mut lines as *mut _ as *mut c_void, 0);
@@ -728,6 +818,7 @@ pub fn run() {
             scanning: false,
             error: None,
             offered: false,
+            err_polls: 0,
             pages: HashMap::new(),
             order: VecDeque::new(),
             y: 0.0,
@@ -756,6 +847,7 @@ pub fn run() {
             thousands: thousands(),
             wheel_lines: lines.max(1) as f64,
             smooth: get("smooth") != "0",
+            folder_color: get("folder_color") == "1",
             hist: Default::default(),
             browse: get("browse").parse().unwrap_or(0).min(2),
             timestamps: get("timestamps") == "1",
@@ -784,9 +876,22 @@ pub fn run() {
             thumb_order: VecDeque::new(),
             thumb_bytes: 0,
             thumb_pending: HashSet::new(),
+            link_ov: None,
+            kinds: std::fs::read_to_string(kinds_path()).unwrap_or_default().lines().filter_map(|l| { let mut f = l.splitn(3, '\t'); let (k, m) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?); Some((f.next()?.to_string(), (k, m))) }).collect(),
+            kind_pending: HashSet::new(),
+            special: side::special_dirs(),
+            live_at: Instant::now(),
+            live_cost: Duration::ZERO,
+            poll_y: 0.0,
+            kind_checked: HashSet::new(),
+            kinds_dirty: false,
+            kind_dirs: (0..5).map(|k| if k == 0 { None } else { side::kind_dir(k) }).collect(),
             jumbo_png: HashMap::new(),
             jumbo: HashMap::new(),
         };
+        std::thread::spawn(|| {
+            crate::home_query(); // warm Home's folder list so the first click on it is instant
+        });
         ui.sys_icon(&None, true); // loads the system image list
         if ui.himl != 0 {
             let (mut cx, mut cy) = (16, 16);
@@ -841,6 +946,13 @@ unsafe fn pump() {
 /// Opens `p` like double-click / Enter: with Browse on, a folder is listed in Mosaic; anything else (and every
 /// folder with Browse off) goes to the shell, i.e. Explorer for a folder.
 fn open_item(p: &str) {
+    // a shortcut to a folder opens that folder here (with Browse on); any other shortcut is run by the shell
+    let low = p.to_ascii_lowercase();
+    let linked = if low.ends_with(".lnk") { shell::link_target(p) } else if low.ends_with(".url") { shell::url_target(p) } else { None };
+    let p = match &linked {
+        Some(t) if std::fs::metadata(t).is_ok_and(|m| m.is_dir()) => t.as_str(),
+        _ => p,
+    };
     if with(|u| u.browse > 0).unwrap_or(false) && std::fs::metadata(p).is_ok_and(|m| m.is_dir()) {
         with(|u| u.browse_to(p));
     } else {
@@ -926,6 +1038,18 @@ fn go_place(target: &str, mosaic: bool) {
         let dir = with(|u| u.term_dir()).unwrap_or_default();
         return shell::terminal(spec.starts_with("ps"), spec.ends_with("admin"), &dir);
     }
+    if target == "all:" {
+        // every file, as with an empty search box
+        if with(|u| u.browse_all()).is_some() {
+            return;
+        }
+    }
+    if target == "home:" {
+        if with(|u| (u.browse > 0).then(|| u.browse_home())) == Some(Some(())) {
+            return;
+        }
+        return shell::open_special("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}");
+    }
     if with(|u| (mosaic && u.browse > 0).then(|| u.browse_to(target))) == Some(Some(())) {
         return;
     }
@@ -1001,25 +1125,59 @@ unsafe fn dark_menus() {
 fn pixels(px: &[u8], sw: usize, sh: usize, size: usize) -> (Vec<u8>, i32, i32) {
     let m = sw.max(sh).max(1);
     let (dw, dh) = if m > size { ((sw * size / m).max(1), (sh * size / m).max(1)) } else { (sw, sh) };
-    let mut out = vec![0u8; dw * dh * 4];
-    for y in 0..dh {
-        for x in 0..dw {
-            let (x0, x1, y0, y1) = (x * sw / dw, ((x + 1) * sw / dw).max(x * sw / dw + 1), y * sh / dh, ((y + 1) * sh / dh).max(y * sh / dh + 1));
-            let mut acc = [0u32; 4];
-            for yy in y0..y1 {
-                for xx in x0..x1 {
-                    let p = &px[(yy * sw + xx) * 4..][..4];
-                    let a = p[3] as u32;
-                    acc[0] += p[2] as u32 * a / 255; // B
-                    acc[1] += p[1] as u32 * a / 255; // G
-                    acc[2] += p[0] as u32 * a / 255; // R
-                    acc[3] += a;
-                }
+    if (dw, dh) == (sw, sh) {
+        // no resize (GIF frames, small icons): only premultiply and swap to BGRA
+        let mut out = vec![0u8; sw * sh * 4];
+        for (o, p) in out.chunks_exact_mut(4).zip(px.chunks_exact(4)) {
+            let a = p[3] as u32;
+            o.copy_from_slice(&[(p[2] as u32 * a / 255) as u8, (p[1] as u32 * a / 255) as u8, (p[0] as u32 * a / 255) as u8, p[3]]);
+        }
+        return (out, sw as i32, sh as i32);
+    }
+    // area-weighted (every source pixel counts by the fraction of it inside the destination pixel), alpha
+    // premultiplied, done as two separable passes in f32: no integer-rounded footprints, so no staircasing
+    let axis = |n: usize, d: usize| -> Vec<Vec<(usize, f32)>> {
+        (0..d)
+            .map(|i| {
+                let (a, b) = (i as f32 * n as f32 / d as f32, (i + 1) as f32 * n as f32 / d as f32);
+                (a.floor() as usize..(b.ceil() as usize).min(n)).map(|k| (k, ((k + 1) as f32).min(b) - (k as f32).max(a))).filter(|w| w.1 > 0.0).collect()
+            })
+            .collect()
+    };
+    let (wx, wy) = (axis(sw, dw), axis(sh, dh));
+    let mut mid = vec![0f32; dw * sh * 4]; // horizontal pass: dw x sh, premultiplied RGBA
+    for y in 0..sh {
+        for (x, taps) in wx.iter().enumerate() {
+            let (mut acc, mut wsum) = ([0f32; 4], 0f32);
+            for &(k, w) in taps {
+                let p = &px[(y * sw + k) * 4..][..4];
+                let a = p[3] as f32 / 255.0;
+                acc[0] += p[0] as f32 * a * w;
+                acc[1] += p[1] as f32 * a * w;
+                acc[2] += p[2] as f32 * a * w;
+                acc[3] += a * w * 255.0;
+                wsum += w;
             }
-            let n = ((x1 - x0) * (y1 - y0)) as u32;
             for c in 0..4 {
-                out[(y * dw + x) * 4 + c] = (acc[c] / n) as u8;
+                mid[(y * dw + x) * 4 + c] = acc[c] / wsum;
             }
+        }
+    }
+    let mut out = vec![0u8; dw * dh * 4];
+    for (y, taps) in wy.iter().enumerate() {
+        for x in 0..dw {
+            let (mut acc, mut wsum) = ([0f32; 4], 0f32);
+            for &(k, w) in taps {
+                for c in 0..4 {
+                    acc[c] += mid[(k * dw + x) * 4 + c] * w;
+                }
+                wsum += w;
+            }
+            let o = (y * dw + x) * 4;
+            out[o] = (acc[2] / wsum + 0.5) as u8; // B
+            out[o + 1] = (acc[1] / wsum + 0.5) as u8; // G
+            out[o + 2] = (acc[0] / wsum + 0.5) as u8; // R
+            out[o + 3] = (acc[3] / wsum + 0.5) as u8;
         }
     }
     (out, dw as i32, dh as i32)
@@ -1208,12 +1366,10 @@ impl Ui {
         self.px(self.size).min(self.cw() - self.px(2 * G + 10)).max(self.px(16))
     }
     /// Thumbnail size asked of the shell (it pre-renders these): the smallest that covers the tile.
+    /// Always the shell's 256 px image (its jumbo icon / cached thumbnail): box-filtered down to the tile it is
+    /// sharp, whereas asking for 64/128 made the shell stretch a 48 px icon.
     fn tsize(&self) -> i32 {
-        match self.tile() {
-            t if t <= 64 => 64,
-            t if t <= 128 => 128,
-            _ => 256,
-        }
+        256
     }
     /// x range of grid column `c` in whole pixels: a tile-sized cell centered in its share of the row, so spare
     /// width goes into the gaps, never into the tiles.
@@ -1235,6 +1391,18 @@ impl Ui {
         let q = format!("{}:\"{}\"", if self.browse == 2 { "descendant" } else { "child" }, dir.trim_end_matches('\\'));
         self.visit(&q);
         unsafe { SetWindowTextW(self.edit, wz(&q).as_ptr()) };
+    }
+
+    /// All: an empty search box.
+    fn browse_all(&self) {
+        self.visit("");
+        unsafe { SetWindowTextW(self.edit, wz("").as_ptr()) };
+    }
+
+    /// Home: the Quick access folders (the search box gets `home:`).
+    fn browse_home(&self) {
+        self.visit("home:");
+        unsafe { SetWindowTextW(self.edit, wz("home:").as_ptr()) };
     }
 
     /// Remember `q` as the newest place (dropping any "forward" ones), after the one we are leaving.
@@ -1463,15 +1631,26 @@ impl Ui {
     fn poll(&mut self) -> bool {
         self.count_fps();
         let st = self.backend.status();
-        if st.state == "error" && !self.offered {
+        // a busy service refuses a connection now and then (every pipe instance taken while it scans); only an
+        // unreachable one for ten polls in a row (5 s) is worth offering to install
+        self.err_polls = if st.state == "error" { self.err_polls + 1 } else { 0 };
+        if self.err_polls >= 10 && !self.offered {
             self.offered = true;
             return true;
         }
         // Metadata: results fill in as the metadata index reads files
         let meta = self.args.tags && crate::metadata::generation() != self.meta_gen;
-        if (st.count != self.objects || st.changes != self.changes || meta) && !self.typing && self.press.is_none() {
+        // Re-ranking millions of entries costs a core for about a second, and a busy disk changes the index all
+        // the time: never while scrolling, and no more often than 8x the cost of the last refresh (2 s at least).
+        let scrolling = self.y != self.poll_y;
+        self.poll_y = self.y;
+        let due = self.live_at.elapsed() >= (self.live_cost * 8).max(Duration::from_secs(2));
+        if (st.count != self.objects || st.changes != self.changes || meta) && !self.typing && self.press.is_none() && !scrolling && due {
             self.meta_gen = crate::metadata::generation();
+            let t = Instant::now();
             self.run(true);
+            self.live_cost = t.elapsed();
+            self.live_at = Instant::now();
         }
         // Cached off `st` (not re-read in `status()`'s text builder below): when a background
         // service does the actual indexing, this is the only way that progress reaches the GUI at
@@ -1491,7 +1670,8 @@ impl Ui {
 
     fn row(&mut self, h: crate::application::index::Hit) -> Row {
         let ext = if h.is_dir { None } else { ext_of(&h.name) };
-        let own = matches!(ext.as_deref(), Some("exe" | "lnk" | "ico" | "msi" | "scr"));
+        // Home lists Quick access folders: each gets its own shell icon (Desktop, Downloads... as in Explorer)
+        let own = matches!(ext.as_deref(), Some("exe" | "lnk" | "ico" | "msi" | "scr")) || (h.is_dir && (self.args.q.trim().eq_ignore_ascii_case("home:") || self.special.contains(&h.path.to_lowercase())));
         let (dir, name) = h.path.rsplit_once('\\').unwrap_or(("", &h.path));
         Row {
             name: w(name),
@@ -1500,6 +1680,8 @@ impl Ui {
             ty: w(&type_cache(&ext, h.is_dir)),
             date: fmt_date(h.modified),
             attrs_s: w(&fmt_attrs(h.attributes)),
+            hidden: h.attributes & 0x2 != 0,
+            link: matches!(ext.as_deref(), Some("lnk" | "url")),
             sys: self.sys_icon(&ext, h.is_dir),
             own,
             tkey: if h.is_dir { "\0dir".into() } else { ext.clone().unwrap_or_default() },
@@ -1639,6 +1821,50 @@ impl Ui {
         pic
     }
 
+    /// The path whose shell icon a row wears: its own, or the Windows folder matching what the folder holds.
+    fn icon_key(&self, path: &str, is_dir: bool) -> String {
+        // Home keeps each folder's own shell icon (Documents stays grey whatever it holds)
+        if is_dir && !self.args.q.trim().eq_ignore_ascii_case("home:") && !self.special.contains(&path.to_lowercase()) {
+            if let Some(Some(d)) = self.kinds.get(path).and_then(|&(k, _)| self.kind_dirs.get(k as usize)) {
+                return d.clone();
+            }
+        }
+        path.to_string()
+    }
+
+    /// Where the shortcut badge goes: a fifth of the icon, in its bottom-left corner.
+    fn badge(&self, x: i32, y: i32, w: i32, h: i32) -> RECT {
+        let s = (w.min(h) * 7 / 20).max(self.px(12));
+        RECT { left: x, top: y + h - s, right: x + s, bottom: y + h }
+    }
+
+    fn link_overlay(&mut self) -> Option<Pic> {
+        if self.link_ov.is_none() {
+            let pic = png_pixels(include_bytes!("../icons/link-arrow.png"), 128).and_then(|(px, w, h)| self.upload(&px, w, h));
+            self.link_ov = Some(pic);
+        }
+        self.link_ov.clone().flatten()
+    }
+
+    fn got_kind(&mut self, (p, k, m): (String, u8, u64)) {
+        self.kind_pending.remove(&p);
+        if self.kinds.len() > 200_000 {
+            self.kinds.clear();
+        }
+        if self.kinds.insert(p, (k, m)) != Some((k, m)) {
+            self.kinds_dirty = true;
+        }
+        if self.kind_pending.is_empty() && self.kinds_dirty {
+            self.kinds_dirty = false;
+            let text: String = self.kinds.iter().map(|(p, (k, m))| format!("{k}\t{m}\t{p}\n")).collect();
+            let _ = std::fs::write(kinds_path(), text);
+        }
+        if k != 0 {
+            self.want_thumbs();
+            unsafe { InvalidateRect(self.list, null(), 0) };
+        }
+    }
+
     /// Ask the shell helpers for thumbnails of the tiles on screen and one screen below.
     fn want_thumbs(&mut self) {
         if !self.grid || self.matches == 0 {
@@ -1648,16 +1874,21 @@ impl Ui {
         let r0 = (self.y / rh).floor() as usize;
         let r1 = ((self.y + 2.0 * h) / rh).floor() as usize;
         let (tile, ts, hw) = (self.tile(), self.tsize(), self.main as isize);
-        let want: Vec<String> = (r0 * self.per..((r1 + 1) * self.per).min(self.matches))
+        // folders only in Home (`own`): their shell icon (Documents, Downloads...), not a preview of their contents
+        let mut seen = HashSet::new();
+        let want: Vec<(String, bool)> = (r0 * self.per..((r1 + 1) * self.per).min(self.matches))
             .filter_map(|i| self.get(i))
-            .filter(|r| !r.is_dir && r.tkey != "svg" && !self.thumb_pending.contains(&r.path) && self.thumbs.get(&r.path).is_none_or(|t| t.1 != tile))
-            .map(|r| r.path.clone())
+            .filter_map(|r| {
+                let key = self.icon_key(&r.path, r.is_dir);
+                let icon = !r.is_dir || r.own || key != r.path;
+                (icon && r.tkey != "svg" && !self.thumb_pending.contains(&key) && self.thumbs.get(&key).is_none_or(|t| t.1 != tile) && seen.insert(key.clone())).then(|| (key, r.is_dir))
+            })
             .collect();
         // shell_spawn runs the newest job first: queue bottom-up so the top-left tile comes first
-        for p in want.into_iter().rev() {
+        for (p, icon_only) in want.into_iter().rev() {
             self.thumb_pending.insert(p.clone());
             shell::shell_spawn(Box::new(move |dropped| {
-                let png = if dropped { None } else { shell::thumbnail(&p, ts, false) };
+                let png = if dropped { None } else { shell::thumbnail(&p, ts, icon_only) };
                 let b: Box<(String, Option<Vec<u8>>, bool, i32)> = Box::new((p, png, dropped, tile));
                 unsafe { PostMessageW(hw as HWND, WM_THUMB, 0, Box::into_raw(b) as isize) };
             }));
@@ -2463,6 +2694,7 @@ impl Ui {
             ("preview", (self.show_pv as u8).to_string()),
             ("pvw", self.pv_w.to_string()),
             ("smooth", (self.smooth as u8).to_string()),
+            ("folder_color", (self.folder_color as u8).to_string()),
             ("browse", self.browse.to_string()),
             ("side", (self.show_side as u8).to_string()),
             ("tags", (self.args.tags as u8).to_string()),
@@ -2471,6 +2703,8 @@ impl Ui {
             ("whole_word", (self.args.whole_word as u8).to_string()),
             ("regex", (self.args.regex as u8).to_string()),
             ("diacritics", (self.args.diacritics as u8).to_string()),
+            ("hidden", (self.args.hidden as u8).to_string()),
+            ("system", (self.args.system as u8).to_string()),
             ("timestamps", (self.timestamps as u8).to_string()),
             ("theme", theme_name()),
             ("lang", crate::i18n::lang()),
@@ -2764,6 +2998,45 @@ impl Ui {
         self.cm.end();
     }
 
+    /// Look into the folders on screen for what they hold (see `folder_kind`). Run once painting has stopped for a
+    /// moment, never per frame: dragging the scroll bar over millions of rows would otherwise start a check, several
+    /// full scans in the service, for every folder that flashes past.
+    fn want_kinds(&mut self) {
+        let (_, h) = self.list_size();
+        let rh = self.rh() as f64;
+        let r0 = (self.y / rh).floor() as usize;
+        let r1 = ((self.y + h as f64) / rh).floor() as usize;
+        let (i0, i1) = (r0 * self.ncols(), ((r1 + 1) * self.ncols()).min(self.matches));
+        if i0 >= i1 {
+            return;
+        }
+        // a folder holding only one kind of file (all pictures, all videos...) wears that Windows folder's icon
+        let todo: Vec<(String, Option<(u8, u64)>)> = (i0..i1)
+            .filter_map(|i| self.get(i))
+            .filter(|r| r.is_dir && !self.args.q.trim().eq_ignore_ascii_case("home:") && !self.kind_checked.contains(&r.path))
+            .map(|r| (r.path.clone(), self.kinds.get(&r.path).copied()))
+            .collect();
+        if !todo.is_empty() {
+            for (p, _) in &todo {
+                self.kind_checked.insert(p.clone());
+                self.kind_pending.insert(p.clone());
+            }
+            let (h, hw) = (self.backend.handle(), self.main as isize);
+            std::thread::spawn(move || {
+                for (p, cached) in todo {
+                    // the cached answer stands while the folder's modified time (entries added or removed) is unchanged
+                    let m = mtime_secs(&p);
+                    let k = match cached {
+                        Some((k, cm)) if cm == m => k,
+                        _ => crate::folder_kind(&h, &p),
+                    };
+                    let b: Box<(String, u8, u64)> = Box::new((p, k, m));
+                    unsafe { PostMessageW(hw as HWND, WM_KIND, 0, Box::into_raw(b) as isize) };
+                }
+            });
+        }
+    }
+
     /// Fill in rows before drawing: pages and per-file icons for what is on screen.
     fn prepare(&mut self) {
         let (_, h) = self.list_size();
@@ -2780,7 +3053,13 @@ impl Ui {
         if self.grid {
             return; // tiles show thumbnails (they include exe/lnk icons)
         }
-        let want: Vec<String> = (i0..i1).filter_map(|i| self.get(i)).filter(|r| r.own && !self.own.contains_key(&r.path)).map(|r| r.path.clone()).collect();
+        let want: Vec<String> = (i0..i1)
+            .filter_map(|i| self.get(i))
+            .filter_map(|r| {
+                let key = self.icon_key(&r.path, r.is_dir);
+                ((r.own || key != r.path) && !self.own.contains_key(&key)).then_some(key)
+            })
+            .collect();
         for p in want {
             self.want_icon(&p);
         }
@@ -2851,8 +3130,10 @@ impl Ui {
         let (i0, i1) = (r0 * self.ncols(), ((r1 + 1) * self.ncols()).min(self.matches));
         for i in i0..i1.max(i0) {
             let texts = self.item_texts(i);
-            let Some((is_dir, sys, own, path, tkey)) = self.get(i).map(|r| (r.is_dir, r.sys, r.own, r.path.clone(), r.tkey.clone())) else { continue };
-            let color = if is_dir { theme().accent } else { theme().text };
+            let Some((is_dir, sys, own, path, tkey, hidden, link)) = self.get(i).map(|r| (r.is_dir, r.sys, r.own, r.path.clone(), r.tkey.clone(), r.hidden, r.link)) else { continue };
+            let arrow = if link { self.link_overlay() } else { None };
+            let fade = if hidden { 0.5 } else { 1.0 };
+            let color = if is_dir && self.folder_color { theme().accent } else { theme().text };
             let (dx, dy) = self.lag(&path); // sliding to its new place after a live refresh
             let (dx, dy) = (dx.round() as i32, dy.round() as i32);
             if self.grid {
@@ -2869,23 +3150,26 @@ impl Ui {
                 self.glow(&path, &bx, rad(8.0));
                 let tile = self.tile();
                 let pv = RECT { left: bx.left + self.px(5), top: bx.top + self.px(5), right: bx.left + self.px(5) + tile, bottom: bx.top + self.px(5) + tile };
-                match self.thumbs.get(&path).and_then(|t| t.0.clone()) {
+                match self.thumbs.get(&self.icon_key(&path, is_dir)).and_then(|t| t.0.clone()) {
                     // the thumbnail: contained in the preview box, never enlarged past its own size
                     Some((bmp, w, h)) => {
                         let k = (tile as f64 / w as f64).min(tile as f64 / h as f64).min(self.scale);
                         let (dw, dh) = ((w as f64 * k).round() as i32, (h as f64 * k).round() as i32);
                         let (x, y) = (pv.left + (tile - dw) / 2, pv.top + (tile - dh) / 2);
-                        self.cl.bitmap(&bmp, &RECT { left: x, top: y, right: x + dw, bottom: y + dh }, 1.0);
+                        self.cl.bitmap(&bmp, &RECT { left: x, top: y, right: x + dw, bottom: y + dh }, fade);
+                        if let Some((ov, _, _)) = &arrow {
+                            self.cl.bitmap(ov, &self.badge(x, y, dw, dh), fade);
+                        }
                     }
                     // until then, the type's jumbo icon filling the box (.pv img.ph)
                     None => {
                         if let Some((bmp, _, _)) = self.jumbo_pic(&tkey, tile.min(256)) {
-                            self.cl.bitmap(&bmp, &pv, 1.0);
+                            self.cl.bitmap(&bmp, &pv, fade);
                         }
                     }
                 }
                 if let Some(t) = texts.as_ref().and_then(|t| t.first()) {
-                    self.cl.text(t, pv.left, pv.bottom + self.px(6), color);
+                    self.cl.text_a(t, pv.left, pv.bottom + self.px(6), color, fade);
                 }
             } else {
                 let top = (i as f64 * rh as f64 - self.y).round() as i32 + dy;
@@ -2899,20 +3183,24 @@ impl Ui {
                 let cols = self.cols(cw);
                 let ty = bx.top + (bx.bottom - bx.top - lh) / 2;
                 // icon: the file's own (exe/lnk) or its type's, centered in an 18px box
-                let pic = if own { self.own.get(&path).cloned().flatten() } else { None }.or_else(|| self.sys_pic(sys));
+                let key = self.icon_key(&path, is_dir);
+                let pic = if own || key != path { self.own.get(&key).cloned().flatten() } else { None }.or_else(|| self.sys_pic(sys));
                 // icon sits at the near edge of the Name column in reading order: the column's left in LTR,
                 // its right in RTL (the column itself is already mirrored there by `cols()`/`col_positions`).
                 let icon_x = if self.rtl { cols[0].1 - self.px(18) } else { cols[0].0 };
                 if let Some((bmp, w, h)) = pic {
                     let bs = self.px(18);
                     let (x, y) = (icon_x + (bs - w) / 2, bx.top + (bx.bottom - bx.top - h) / 2);
-                    self.cl.bitmap(&bmp, &RECT { left: x, top: y, right: x + w, bottom: y + h }, 1.0);
+                    self.cl.bitmap(&bmp, &RECT { left: x, top: y, right: x + w, bottom: y + h }, fade);
+                    if let Some((ov, _, _)) = &arrow {
+                        self.cl.bitmap(ov, &self.badge(x, y, w, h), fade);
+                    }
                 }
                 if let Some(t) = &texts {
                     let name_x = if self.rtl { cols[0].0 } else { cols[0].0 + self.px(26) };
                     let x = [name_x, cols[1].0, cols[2].0, cols[3].0, cols[4].0, cols[5].0];
                     for (k, t) in t.iter().enumerate() {
-                        self.cl.text(t, x[k], ty, if k == 0 { color } else { theme().muted });
+                        self.cl.text_a(t, x[k], ty, if k == 0 { color } else { theme().muted }, fade);
                     }
                 }
             }
@@ -2946,7 +3234,7 @@ impl Ui {
             self.cl.rrect_a(&r, bw as f32 / 2.0, Some(theme().muted), None, a);
         }
         self.cl.end();
-        if self.grid && self.matches > 0 {
+        if self.matches > 0 {
             unsafe { SetTimer(self.main, T_THUMB, 80, None) }; // thumbnails for tiles that stay on screen for a moment
         }
     }
@@ -3521,6 +3809,10 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
                 sep(),
                 (format!("{}: {}", t("menu.theme"), theme_opts()[0].0), String::new(), theme_name() == theme_opts()[0].1),
                 (format!("{}: {}", t("menu.theme"), theme_opts()[1].0), String::new(), theme_name() == theme_opts()[1].1),
+                sep(),
+                (t("menu.show_hidden").into(), String::new(), u.args.hidden),
+                (t("menu.folder_color").into(), String::new(), u.folder_color),
+                (t("menu.show_system").into(), String::new(), u.args.system),
             ]
         })
         .unwrap_or_default(),
@@ -3538,7 +3830,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             ]
         })
         .unwrap_or_default(),
-        4 => vec![(t("menu.language").into(), String::new(), false), sep(), (t("menu.install_service").into(), String::new(), false)],
+        4 => vec![(t("menu.language").into(), String::new(), false)],
         _ => vec![(t("menu.about").into(), String::new(), false)],
     };
     let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2 | 3), items) else { return };
@@ -3576,6 +3868,27 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
         (2, 7 | 8) => {
             with(|u| u.zoom(k == 7));
         }
+        (2, 13) => {
+            with(|u| {
+                u.args.hidden = !u.args.hidden;
+                u.save_settings();
+                u.run(false);
+            });
+        }
+        (2, 15) => {
+            with(|u| {
+                u.args.system = !u.args.system;
+                u.save_settings();
+                u.run(false);
+            });
+        }
+        (2, 14) => {
+            with(|u| {
+                u.folder_color = !u.folder_color;
+                u.save_settings();
+                u.invalidate();
+            });
+        }
         (2, 10 | 11) => {
             with(|u| u.set_theme_choice(theme_opts()[k - 10].1));
         }
@@ -3611,7 +3924,6 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             });
         }
         (4, 0) => drop_menu(main, Hit::Lang),
-        (4, 2) => offer_install(main),
         (5, 0) => show_about(main),
         _ => {}
     }
@@ -3717,6 +4029,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 T_THUMB => {
                     KillTimer(h, T_THUMB);
                     with(|u| u.want_thumbs());
+                    with(|u| u.want_kinds());
                 }
                 T_PREVIEW => {
                     KillTimer(h, T_PREVIEW);
@@ -3745,6 +4058,13 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         WM_ICON => {
             let p = l as *mut (String, Option<Vec<u8>>, bool);
             if with(|u| u.got_icon(*Box::from_raw(p))).is_none() {
+                PostMessageW(h, m, wp, l);
+            }
+            return 0;
+        }
+        WM_KIND => {
+            let p = l as *mut (String, u8, u64);
+            if with(|u| u.got_kind(*Box::from_raw(p))).is_none() {
                 PostMessageW(h, m, wp, l);
             }
             return 0;
@@ -3876,7 +4196,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 SendMessageW(u.edit, WM_SETFONT, u.edit_font as usize, 1);
             });
             SetWindowPos(h, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-            set_icons(h, true);
+            set_icons(h);
             with(|u| u.layout());
             preview::rescale((wp & 0xffff) as f64 / 96.0);
             side::rescale((wp & 0xffff) as f64 / 96.0);
@@ -4076,7 +4396,7 @@ mod tests {
         let px = [255, 0, 0, 255, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 128];
         let (out, w, h) = pixels(&px, 2, 2, 1);
         assert_eq!((w, h), (1, 1));
-        assert_eq!(out, [95, 95, 159, 159]); // B, G: (0+0+255+128)/4; R, A: (255+0+255+128)/4
+        assert_eq!(out, [96, 96, 160, 160]); // B, G: (0+0+255+128)/4; R, A: (255+0+255+128)/4
         assert_eq!(pixels(&px, 2, 2, 8).1, 2); // never enlarged
     }
 

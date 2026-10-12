@@ -42,6 +42,8 @@ use crate::extract::{looks_text, OFFICE, TEXTS};
 const TEXT_MAX: usize = 256 * 1024;
 const T_MEDIA: usize = 1;
 const T_GIF: usize = 2;
+/// A decoded GIF frame: premultiplied BGRA, width, height, delay (ms).
+type GifFrame = (Vec<u8>, i32, i32, u32);
 const T_AUTO: usize = 3;
 const WM_ICON: u32 = WM_APP + 11;
 /// Folder and archive listings are cut after this many entries.
@@ -94,8 +96,8 @@ pub struct Preview {
     live: bool, // its divider is being dragged: stretch the picture, keep the text's wrap, until it's let go
     grip: f32,  // how lit the divider's grip is
     handler: Option<IPreviewHandler>,
-    gif: Vec<(Vec<u8>, i32, i32, u32)>, // decoded frames: premultiplied BGRA, width, height, delay (ms)
-    gif_i: usize,
+    gif: Option<GifFrame>,                                  // the frame on screen
+    gif_rx: Option<std::sync::mpsc::Receiver<GifFrame>>,    // the next few, from the decoding thread
     gif_bmp: Option<(Bitmap, u32)>, // current frame's bitmap, and the canvas `gen` it was made for
     grab: i32,          // dragging the scrollbar thumb: where it was grabbed, from its top
     auto: Option<Auto>, // middle-click autoscroll
@@ -231,8 +233,8 @@ pub unsafe fn create(parent: HWND, scale: f64) -> HWND {
             live: false,
             grip: 0.0,
             handler: None,
-            gif: Vec::new(),
-            gif_i: 0,
+            gif: None,
+            gif_rx: None,
             gif_bmp: None,
             grab: 0,
             auto: None,
@@ -478,8 +480,8 @@ impl Preview {
         self.scroll = 0.0;
         self.cut = false;
         self.audio = false;
-        self.gif.clear();
-        self.gif_i = 0;
+        self.gif = None;
+        self.gif_rx = None; // the decoding thread stops at its next send
         self.gif_bmp = None;
     }
 
@@ -571,48 +573,63 @@ impl Preview {
         true
     }
 
-    /// Decodes every frame up front (GIFs previewed here are thumbnail-sized, not full movies) so playback is
-    /// just picking the next one on a timer; `image` composites each frame onto the canvas per its disposal
-    /// method, so every entry here is already a full straight-alpha RGBA frame at the GIF's own size.
+    /// Plays a GIF from a decoding thread that stays a few frames ahead (a bounded channel), looping by decoding the
+    /// file again: memory is a handful of frames whatever the length. Decoding every frame up front held 1.5 GB for
+    /// a 1800-frame 480x432 GIF (twice that while converting) and froze the window until it was done.
+    /// `image` composites each frame per its disposal method, so each is a full frame at the GIF's own size.
     fn load_gif(&mut self, path: &str) -> bool {
-        let Ok(f) = std::fs::File::open(path) else { return false };
-        let Ok(dec) = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(f)) else { return false };
-        let Ok(frames) = image::AnimationDecoder::into_frames(dec).collect_frames() else { return false };
-        if frames.is_empty() {
-            return false;
-        }
-        self.gif = frames
-            .iter()
-            .map(|fr| {
-                let (n, d) = fr.delay().numer_denom_ms();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<GifFrame>(3);
+        let path = path.to_string();
+        std::thread::spawn(move || loop {
+            let Ok(f) = std::fs::File::open(&path) else { return };
+            let Ok(dec) = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(f)) else { return };
+            let mut n = 0;
+            for fr in image::AnimationDecoder::into_frames(dec) {
+                let Ok(fr) = fr else { break };
+                let (num, den) = fr.delay().numer_denom_ms();
                 // GIF delay is stored in centiseconds; 0 (and, by the convention every major browser follows, any
                 // value under ~2 cs) means "as fast as the format allows" and is shown at a 10 fps default instead
-                let ms = if d == 0 { 0 } else { n / d };
-                let delay = if ms < 20 { 100 } else { ms };
+                let ms = if den == 0 { 0 } else { num / den };
                 let buf = fr.buffer();
                 let (w, h) = (buf.width() as usize, buf.height() as usize);
                 let (px, dw, dh) = pixels(buf.as_raw(), w, h, w.max(h)); // premultiplies to BGRA; size = no downscale
-                (px, dw, dh, delay)
-            })
-            .collect();
-        self.gif_i = 0;
+                if tx.send((px, dw, dh, if ms < 20 { 100 } else { ms })).is_err() {
+                    return; // preview moved on
+                }
+                n += 1;
+            }
+            if n <= 1 {
+                return; // a still (or broken) GIF: nothing to loop
+            }
+        });
+        let Ok(first) = rx.recv_timeout(Duration::from_secs(3)) else { return false };
+        unsafe { SetTimer(self.hwnd, T_GIF, first.3, None) };
+        self.gif = Some(first);
+        self.gif_rx = Some(rx);
         self.gif_bmp = None;
         self.body = Body::Anim;
-        unsafe { SetTimer(self.hwnd, T_GIF, self.gif[0].3, None) };
         true
     }
 
-    /// Every frame's delay, once it's shown: advance to the next one and repaint.
+    /// Every frame's delay, once it's shown: take the next one from the decoder and repaint.
     fn gif_tick(&mut self) {
-        if self.gif.is_empty() {
-            unsafe { KillTimer(self.hwnd, T_GIF) };
-            return;
-        }
-        self.gif_i = (self.gif_i + 1) % self.gif.len();
-        self.gif_bmp = None;
+        use std::sync::mpsc::TryRecvError;
+        let next = self.gif_rx.as_ref().map(|rx| rx.try_recv());
         unsafe {
-            SetTimer(self.hwnd, T_GIF, self.gif[self.gif_i].3, None);
-            InvalidateRect(self.hwnd, null(), 0);
+            match next {
+                Some(Ok(f)) => {
+                    SetTimer(self.hwnd, T_GIF, f.3, None);
+                    self.gif = Some(f);
+                    self.gif_bmp = None;
+                    InvalidateRect(self.hwnd, null(), 0);
+                }
+                Some(Err(TryRecvError::Empty)) => {
+                    SetTimer(self.hwnd, T_GIF, 10, None); // decoder a little behind: try again shortly
+                }
+                _ => {
+                    KillTimer(self.hwnd, T_GIF); // ended (a still image) or gone: keep the last frame
+                }
+            }
         }
     }
 
@@ -1029,7 +1046,7 @@ impl Preview {
             }
         }
         if matches!(self.body, Body::Anim) && self.gif_bmp.as_ref().is_none_or(|b| b.1 != self.cv.gen) {
-            if let Some((px, w, h, _)) = self.gif.get(self.gif_i) {
+            if let Some((px, w, h, _)) = &self.gif {
                 self.gif_bmp = self.cv.make_bitmap(px, *w, *h).map(|b| (b, self.cv.gen));
             }
         }
@@ -1126,7 +1143,7 @@ impl Preview {
             }
             Body::Handler => {}
             Body::Anim => {
-                if let (Some((b, _)), Some((_, pw, ph, _))) = (&self.gif_bmp, self.gif.get(self.gif_i)) {
+                if let (Some((b, _)), Some((_, pw, ph, _))) = (&self.gif_bmp, &self.gif) {
                     let k = ((body.right - body.left) as f64 / *pw as f64).min((body.bottom - body.top) as f64 / *ph as f64).min(1.0);
                     let (dw, dh) = ((*pw as f64 * k).round() as i32, (*ph as f64 * k).round() as i32);
                     let (x, y) = (body.left + (body.right - body.left - dw) / 2, body.top + (body.bottom - body.top - dh) / 2);

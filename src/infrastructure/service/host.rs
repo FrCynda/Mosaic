@@ -93,6 +93,10 @@ fn run_service() -> windows_service::Result<()> {
     // process's lifetime; methods take `&self` and lock internally.
     let indexer = Arc::new(Indexer::new());
     indexer.start();
+    // below-normal CPU priority (the cap below bounds the total); not background mode, whose idle I/O priority
+    // made the scan crawl whenever anything else touched the disk
+    unsafe { windows_sys::Win32::System::Threading::SetPriorityClass(windows_sys::Win32::System::Threading::GetCurrentProcess(), 0x0000_4000) }; // BELOW_NORMAL_PRIORITY_CLASS
+    cap_cpu();
     trim_when_idle();
 
     let serve_indexer = indexer.clone();
@@ -106,7 +110,7 @@ fn run_service() -> windows_service::Result<()> {
 
     status_handle.set_service_status(status(
         ServiceState::Running,
-        ServiceControlAccept::STOP,
+        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, // shutdown too, or a power-off just kills us
         Duration::default(),
     ))?;
 
@@ -118,6 +122,7 @@ fn run_service() -> windows_service::Result<()> {
         ServiceControlAccept::empty(),
         Duration::from_secs(5),
     ))?;
+    crate::contentindex::shutdown(Duration::from_secs(3));
     status_handle.set_service_status(status(
         ServiceState::Stopped,
         ServiceControlAccept::empty(),
@@ -168,6 +173,29 @@ fn trim_when_idle() {
             unsafe { SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX) };
         }
     });
+}
+
+/// Hard ceiling on the service's total CPU (percent of the whole machine, all cores): a burst of file changes, a
+/// merge or a re-sort can't take over the machine, it just takes longer. A job object enforces it for every thread.
+const CPU_CAP_PERCENT: u32 = 50;
+
+fn cap_cpu() {
+    use windows_sys::Win32::System::JobObjects::*;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: plain Win32 calls on a job we create here and a handle to our own process.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return;
+        }
+        let mut info: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = std::mem::zeroed();
+        info.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        info.Anonymous.CpuRate = CPU_CAP_PERCENT * 100; // hundredths of a percent
+        let set = SetInformationJobObject(job, JobObjectCpuRateControlInformation, &info as *const _ as *const _, size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32);
+        if set != 0 {
+            AssignProcessToJobObject(job, GetCurrentProcess());
+        }
+    }
 }
 
 /// Accept loop: host the pipe and spawn one handler thread per connection. A

@@ -12,7 +12,7 @@ use crate::application::Rec;
 
 /// Bumped whenever the on-disk layout changes; mismatches are ignored on load.
 /// v2 added per-entry creation/access times and DOS attributes; v3 is the compact record + name arena layout.
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4; // 4: 28-byte Rec (48-bit size)
 
 /// A persisted per-volume index plus its journal resume point. Loads straight into the index's own arrays.
 #[derive(Deserialize)]
@@ -83,3 +83,4 @@ pub fn save(
     }
     fs::rename(&tmp_path, &final_path)
 }
+

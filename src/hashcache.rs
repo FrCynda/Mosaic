@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use crate::application::index::Hit;
 use crate::application::SearchOptions;
 use crate::backend::SearchHandle;
 
@@ -245,21 +244,6 @@ pub fn matches(path: &str, hq: &HashQuery) -> bool {
     }
 }
 
-/// Duplicate groups as `Hit` lists (for a future dedicated "Duplicate Files" view), grouped by
-/// identical size + sha256. Only already-hashed files participate.
-pub fn dupe_groups(hits: &[Hit]) -> Vec<Vec<Hit>> {
-    let members = dupe_paths();
-    let mut by_key: HashMap<(i64, [u8; 32]), Vec<Hit>> = HashMap::new();
-    for h in hits {
-        if !members.contains(&h.path.to_lowercase()) {
-            continue;
-        }
-        if let Some(hashes) = get(&h.path) {
-            by_key.entry((h.size, hashes.sha256)).or_default().push(h.clone());
-        }
-    }
-    by_key.into_values().filter(|g| g.len() > 1).collect()
-}
 
 #[cfg(test)]
 mod tests {

@@ -8,7 +8,9 @@
 //! [`crate::infrastructure::ntfs::ChangeEvent`] stream after that.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
+
+use crate::infrastructure::ntfs::ChangeEvent;
 
 use parking_lot::Mutex;
 use tantivy::collector::TopDocs;
@@ -18,9 +20,15 @@ use tantivy::query::{QueryParser, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, OwnedValue, Schema, FAST, STORED, STRING, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
-/// ~50MB, tantivy's own suggested default (see its `basic_search` example) — plenty for the kind
-/// of per-file, incremental indexing this does (not a one-shot bulk load of a huge corpus).
-const WRITER_BUDGET: usize = 50_000_000;
+/// 3 indexing threads at tantivy's 15MB-per-thread minimum: one thread capped the bulk scan at a single core, and the
+/// default (50MB over up to 8 threads) just held more RAM.
+const WRITER_BUDGET: usize = 45_000_000;
+/// Segments past this many docs are left alone by merging: otherwise every few commits rewrite the whole
+/// multi-GB index (the 30MB/s of disk writes and a core of CPU with nothing changing).
+const MAX_MERGE_DOCS: usize = 100_000;
+const CHUNK: usize = 20_000; // files whose paths the bulk scan holds at once
+/// Live changes are applied at most this often: a file rewritten constantly is extracted once per window.
+const LIVE_BATCH: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Fixed, not per-account: the indexer (the background service, running as SYSTEM when one's
 /// installed — see `backend.rs`) and a search-only GUI process (running as the interactive user)
@@ -76,7 +84,11 @@ impl Engine {
     fn with_writer<R>(&self, f: impl FnOnce(&mut IndexWriter) -> tantivy::Result<R>) -> tantivy::Result<R> {
         let mut w = self.writer.lock();
         if w.is_none() {
-            *w = Some(self.index.writer(WRITER_BUDGET)?);
+            let writer = self.index.writer_with_num_threads(3, WRITER_BUDGET)?;
+            let mut policy = tantivy::merge_policy::LogMergePolicy::default();
+            policy.set_max_docs_before_merge(MAX_MERGE_DOCS);
+            writer.set_merge_policy(Box::new(policy));
+            *w = Some(writer);
         }
         f(w.as_mut().unwrap())
     }
@@ -105,6 +117,19 @@ impl Engine {
         if let Some(w) = self.writer.lock().as_mut() {
             w.commit()?;
         }
+        self.reader.reload()
+    }
+
+    /// Commit and close the writer: its per-thread indexing buffers are tens of MB, held for nothing between live
+    /// batches (one a minute at most). Merges finish first (under the lock: a second writer can't open while this
+    /// one still holds the directory). Reopening costs milliseconds.
+    fn release(&self) -> tantivy::Result<()> {
+        let mut w = self.writer.lock();
+        if let Some(mut writer) = w.take() {
+            writer.commit()?;
+            writer.wait_merging_threads()?;
+        }
+        drop(w);
         self.reader.reload()
     }
 
@@ -231,6 +256,15 @@ pub fn remove(path: &str) {
     }
 }
 
+/// Close the writer when no bulk scan is writing (see `Engine::release`).
+pub fn release_writer() {
+    if BULK_TOTAL.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        if let Ok(e) = engine() {
+            let _ = e.release();
+        }
+    }
+}
+
 pub fn commit() {
     if let Ok(e) = engine() {
         let _ = e.commit();
@@ -263,14 +297,88 @@ fn index_file(path: &str, mtime: i64, size: i64) {
         return;
     }
     if !crate::extract::has_ifilter(path) {
+        skip_mark(path, mtime, size); // no text in it: don't open it again until it changes
         return;
     }
     let Ok(exe) = crate::native::content_exe().or_else(|_| std::env::current_exe()) else { return };
     let Ok(out) = std::process::Command::new(exe).arg("--extract").arg(path).output() else { return };
     let body = String::from_utf8_lossy(&out.stdout);
-    if !body.trim().is_empty() {
-        upsert(path, mtime, size, &body);
+    // an empty result is stored too (an empty body): the stored mtime/size is what lets the next session's scan
+    // skip this file instead of starting another subprocess for it, every time
+    upsert(path, mtime, size, body.trim());
+}
+
+/// Files looked at and found to hold no text (binaries, media...), as hashes of (path, mtime, size). Only files
+/// with text get a document, so without this every session's scan reopened every other file on the disk, millions
+/// of opens and a few cores for as long as that takes, at each service start.
+struct Skip {
+    sorted: Vec<u64>,
+    added: std::collections::HashSet<u64>,
+}
+
+static SKIP: Mutex<Option<Skip>> = Mutex::new(None);
+
+fn skip_path() -> PathBuf {
+    dir().with_file_name("contentskip.bin")
+}
+
+fn skip_key(path: &str, mtime: i64, size: i64) -> u64 {
+    let mut h = 0xcbf29ce484222325u64; // FNV-1a
+    for b in path.to_lowercase().bytes().chain(mtime.to_le_bytes()).chain(size.to_le_bytes()) {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
     }
+    h
+}
+
+fn with_skip<T>(f: impl FnOnce(&mut Skip) -> T) -> T {
+    let mut g = SKIP.lock();
+    let s = g.get_or_insert_with(|| {
+        let sorted = std::fs::read(skip_path()).unwrap_or_default().chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        Skip { sorted, added: Default::default() }
+    });
+    f(s)
+}
+
+fn skip_mark(path: &str, mtime: i64, size: i64) {
+    let k = skip_key(path, mtime, size);
+    with_skip(|s| {
+        s.added.insert(k);
+    });
+}
+
+fn skipped(path: &str, mtime: i64, size: i64) -> bool {
+    let k = skip_key(path, mtime, size);
+    with_skip(|s| s.sorted.binary_search(&k).is_ok() || s.added.contains(&k))
+}
+
+/// Left by a clean stop ([`shutdown`]) of a session whose index was complete: a full pass stood behind it and every
+/// change it heard of had landed. The next start then trusts the journal replay instead of walking every file.
+fn done_path() -> PathBuf {
+    dir().with_file_name("contentdone")
+}
+
+/// Whether the last session left the index complete, consuming the marker: a crash this session leaves none behind.
+pub fn take_done() -> bool {
+    let done = done_path().exists() && dir().join("meta.json").exists();
+    let _ = std::fs::remove_file(done_path());
+    done
+}
+
+/// A full pass stands behind this session's index (finished now, or vouched for by [`take_done`]).
+static COMPLETE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_complete() {
+    COMPLETE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn skip_save() {
+    with_skip(|s| {
+        s.sorted.extend(s.added.drain());
+        s.sorted.sort_unstable();
+        s.sorted.dedup();
+        let bytes: Vec<u8> = s.sorted.iter().flat_map(|k| k.to_le_bytes()).collect();
+        let _ = std::fs::write(skip_path(), bytes);
+    });
 }
 
 /// One-time (per session) walk of every already-known file, indexing anything new or changed since the
@@ -278,65 +386,125 @@ fn index_file(path: &str, mtime: i64, size: i64) {
 /// synced with files that predate this session's USN events (the whole corpus, on a fresh index).
 /// Spread across the thread pool: extraction (the slow part — file reads, zip parsing, the rare
 /// subprocess) runs concurrently per file; only the final write is serialized, by `Engine`'s own lock.
-pub fn bulk_index(files: Vec<(String, i64, i64)>) {
+pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(String, i64, i64)>> + Sync) {
     use rayon::prelude::*;
     use std::sync::atomic::Ordering::Relaxed;
-    BULK_TOTAL.store(files.len(), Relaxed);
+    BULK_TOTAL.store(total, Relaxed);
     BULK_DONE.store(0, Relaxed);
+    // `chunk(from, n)` builds the paths of files `from..from + n` only when their turn comes: memory stays flat
+    // however many files there are. `None` (the index was rebuilt meanwhile) ends the pass; the next start redoes it.
     let scan = || {
-        files.par_iter().for_each(|(path, mtime, size)| {
-            if !is_own(path) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
-                index_file(path, *mtime, *size);
+        for (n, from) in (0..total).step_by(CHUNK).enumerate() {
+            if n % 20 == 19 {
+                skip_save();
             }
-            let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
-            if n.is_multiple_of(200) {
-                commit();
-            }
-        })
+            let Some(files) = chunk(from, CHUNK) else { return false };
+            files.par_iter().for_each(|(path, mtime, size)| {
+                if !is_own(path) && !skipped(path, *mtime, *size) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
+                    index_file(path, *mtime, *size);
+                }
+                let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
+                if n.is_multiple_of(2000) {
+                    commit();
+                }
+            });
+        }
+        true
     };
     // its own pool, not rayon's global one: this keeps every worker busy with blocking file reads for
     // minutes (hours on a fresh index), and rayon only serves a job from outside its pool once a worker
     // runs out of work — so a name search, or the USN watcher's re-sort, would wait out the whole scan
     // (holding the catalog lock, which stalls the watcher and with it every live update)
-    match rayon::ThreadPoolBuilder::new().thread_name(|i| format!("content-scan-{i}")).build() {
+    let complete = match rayon::ThreadPoolBuilder::new().num_threads(std::thread::available_parallelism().map_or(4, |n| n.get() / 2).max(2)).thread_name(|i| format!("content-scan-{i}")).build() {
         Ok(pool) => pool.install(scan),
         Err(_) => scan(),
-    }
+    };
     commit();
+    skip_save();
+    if complete {
+        mark_complete();
+    }
     BULK_TOTAL.store(0, Relaxed); // done: progress() reports nothing more
+    release_writer();
 }
 
 /// Drives the content index from live file-change events (see [`crate::infrastructure::ntfs::usn::ChangeEvent`]).
 /// Runs on its own thread so extraction (a subprocess spawn per file) never blocks the USN watcher.
-pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<crate::infrastructure::ntfs::ChangeEvent>) {
-    use crate::infrastructure::ntfs::ChangeEvent;
-    /// Whether `ev` touched the index at all (anything but the index's own files).
-    fn apply(ev: ChangeEvent) -> bool {
-        match ev {
-            ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
-            ChangeEvent::Upserted { path, mtime, size } => {
-                index_file(&path, mtime, size);
-                true
-            }
-            ChangeEvent::Deleted { path } => {
-                remove(&path);
-                true
-            }
+/// Changes heard but not yet applied: latest event per path, applied once per LIVE_BATCH window (a file saved 1000x
+/// costs one extraction). Locked for the whole of a batch, so [`shutdown`] waits for one in flight.
+static PENDING: LazyLock<Mutex<std::collections::HashMap<String, ChangeEvent>>> = LazyLock::new(Default::default);
+
+/// Whether `ev` touched the index at all (anything but the index's own files).
+fn apply(ev: ChangeEvent) -> bool {
+    match ev {
+        ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
+        ChangeEvent::Upserted { path, mtime, size } => {
+            index_file(&path, mtime, size);
+            true
+        }
+        ChangeEvent::Deleted { path } => {
+            remove(&path);
+            true
         }
     }
+}
+
+fn flush(any: bool) {
+    if any {
+        release_writer(); // commits and closes it, unless the bulk scan is still using it (then commit() below)
+        commit();
+    }
+}
+
+pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
     std::thread::spawn(move || {
-        for ev in rx.iter() {
-            let mut any = apply(ev);
-            // drain whatever's already queued before committing: a lone change is searchable right
-            // away, a burst of many (e.g. a git checkout) still lands in one commit instead of one per file
-            while let Ok(ev) = rx.try_recv() {
-                any |= apply(ev);
+        let mut first = std::time::Instant::now();
+        loop {
+            let waiting = !PENDING.lock().is_empty();
+            let wait = if waiting { LIVE_BATCH.saturating_sub(first.elapsed()) } else { std::time::Duration::from_secs(3600) };
+            match rx.recv_timeout(wait) {
+                Ok(ev) => {
+                    let path = match &ev {
+                        ChangeEvent::Upserted { path, .. } | ChangeEvent::Deleted { path } => path.clone(),
+                    };
+                    if !is_own(&path) {
+                        let mut pending = PENDING.lock();
+                        if pending.is_empty() {
+                            first = std::time::Instant::now();
+                        }
+                        pending.insert(path, ev);
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !waiting => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => break,
             }
-            if any {
-                commit();
-            }
+            let mut pending = PENDING.lock();
+            let any = pending.drain().fold(false, |any, (_, ev)| apply(ev) | any);
+            flush(any);
         }
     });
+}
+
+/// Service stop: land the waiting batch, for at most `within`, and if nothing was left unapplied and a full pass
+/// stands behind the index, leave the marker that lets the next start skip its full pass. Keeps the batch lock
+/// so no new batch starts before the process exits.
+pub fn shutdown(within: std::time::Duration) {
+    let deadline = std::time::Instant::now() + within;
+    let Some(pending) = PENDING.try_lock_for(within) else { return };
+    let pending = parking_lot::MutexGuard::leak(pending); // never unlocked
+    let mut any = false;
+    for (_, ev) in pending.drain() {
+        if std::time::Instant::now() > deadline {
+            return; // out of time: changes left unapplied, so no marker; the next start's full pass picks them up
+        }
+        any |= apply(ev);
+    }
+    flush(any);
+    if COMPLETE.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = std::fs::write(done_path(), b"");
+    }
 }
 
 /// A file inside the index's own directory. Never indexed: opening one while tantivy renames a new
@@ -344,7 +512,8 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<crate::infrastructure::ntfs:
 /// drops its documents — and each commit's own writes would queue another commit, forever.
 fn is_own(path: &str) -> bool {
     static OWN: OnceLock<String> = OnceLock::new();
-    let own = OWN.get_or_init(|| format!("{}\\", dir().display()));
+    // the whole Mosaic folder: the index, and beside it the skip list and done marker
+    let own = OWN.get_or_init(|| format!("{}\\", dir().parent().unwrap_or(&dir()).display()));
     path.get(..own.len()).is_some_and(|p| p.eq_ignore_ascii_case(own))
 }
 
@@ -407,7 +576,8 @@ mod tests {
         let d = dir().display().to_string();
         assert!(is_own(&format!(r"{d}\meta.json")));
         assert!(is_own(&format!(r"{}\.tmpAB12", d.to_uppercase())));
-        assert!(!is_own(&format!(r"{d}x\meta.json")));
+        assert!(is_own(&done_path().display().to_string()));
+        assert!(!is_own(&format!(r"{}x\meta.json", dir().parent().unwrap().display())));
         assert!(!is_own(r"C:\Users\me\notes.txt"));
     }
 

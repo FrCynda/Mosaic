@@ -306,8 +306,13 @@ impl Canvas {
 
     /// Text at a whole-pixel origin (crisp ClearType), clipped to its layout box.
     pub fn text(&self, t: &Text, x: i32, y: i32, c: u32) {
+        self.text_a(t, x, y, c, 1.0);
+    }
+
+    /// [`Canvas::text`] at opacity `a`.
+    pub fn text_a(&self, t: &Text, x: i32, y: i32, c: u32, a: f32) {
         let opts = D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT;
-        unsafe { self.rt().DrawTextLayout(v(x as f32, y as f32), t, self.b(c, 1.0), opts) };
+        unsafe { self.rt().DrawTextLayout(v(x as f32, y as f32), t, self.b(c, a), opts) };
     }
 
     /// Draw only inside `r` until [`Canvas::unclip`].

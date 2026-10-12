@@ -51,15 +51,27 @@ impl Catalog {
         self.volumes.iter().find(|v| v.drive() == drive)
     }
 
-    /// (path, mtime unix-seconds, size) for every live, non-directory file across all volumes — used to
-    /// seed the content index's initial bulk scan (`contentindex::bulk_index`).
-    pub fn all_files(&self) -> impl Iterator<Item = (String, i64, i64)> + '_ {
-        self.volumes.iter().flat_map(|v| {
-            v.live_name_order().into_iter().filter_map(move |i| {
-                let h = v.hit(i);
-                (!h.is_dir).then_some((h.path, h.modified / 1000, h.size))
-            })
-        })
+    /// Where every live, non-directory file is (volume, position) and each volume's rebuild epoch. The content scan
+    /// reads the files from these in chunks (`files_at`): `all_files()` holds a ~120-byte path per file all at once,
+    /// hundreds of MB over millions of files, for as long as the scan runs.
+    pub fn file_positions(&self) -> (Vec<(u16, u32)>, Vec<u64>) {
+        let mut refs = Vec::new();
+        for (n, v) in self.volumes.iter().enumerate() {
+            refs.extend(v.live_name_order().into_iter().filter(|&i| !v.hit(i).is_dir).map(|i| (n as u16, i)));
+        }
+        (refs, self.volumes.iter().map(|v| v.epoch()).collect())
+    }
+
+    /// The (path, mtime unix-seconds, size) of `refs`; `None` once an index was rebuilt since `file_positions`
+    /// (its positions then point at other entries).
+    pub fn files_at(&self, refs: &[(u16, u32)], epochs: &[u64]) -> Option<Vec<(String, i64, i64)>> {
+        if self.volumes.iter().map(|v| v.epoch()).ne(epochs.iter().copied()) {
+            return None;
+        }
+        Some(refs.iter().filter(|&&(n, i)| self.volumes[n as usize].contains(i)).map(|&(n, i)| {
+            let h = self.volumes[n as usize].hit(i);
+            (h.path, h.modified / 1000, h.size)
+        }).collect())
     }
 
     /// Search every volume and return one merged, ranked, truncated result set.
@@ -116,7 +128,11 @@ impl Catalog {
                     order = dedup_order(only, order, field);
                 }
                 let res = page(&order);
-                *self.view.lock() = Some(View { order, key, generation: self.generation, epoch });
+                // kept only when there are pages left to fetch: a result that fits in one page (the folder-icon
+                // checks, `folder_kind`) would otherwise replace the list's view and make its next page re-rank
+                if order.len() > opts.offset + opts.limit {
+                    *self.view.lock() = Some(View { order, key, generation: self.generation, epoch });
+                }
                 res
             }
             // ponytail: no view cache across volumes (each page re-ranks); add a merged view if multi-drive scrolling lags

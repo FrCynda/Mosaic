@@ -131,6 +131,7 @@ pub fn catch_up(
     snapshot_journal_id: u64,
     from_usn: i64,
     index: &mut SearchIndex,
+    sink: Option<&ChangeSink>,
 ) -> CatchUp {
     // Prefer an MftReader so replayed changes can be enriched with the full
     // metadata the journal omits; fall back to a journal-only handle if the MFT
@@ -182,7 +183,7 @@ pub fn catch_up(
         let next = i64::from_le_bytes(out[0..8].try_into().unwrap());
         if returned > 8 {
             for op in parse_records(&out[..returned], reader.as_ref()) {
-                apply_op(index, op);
+                apply_op(index, op, sink); // the content index hears about changes made while we were off
             }
         }
         if next <= cursor {
@@ -211,10 +212,28 @@ fn query_journal(volume: &Volume) -> Result<JournalState, u32> {
     })
 }
 
-fn apply_op(index: &mut SearchIndex, op: Op) {
+/// Apply one journal change to `idx`, and report it to `sink` (the content index) when there is one.
+fn apply_op(idx: &mut SearchIndex, op: Op, sink: Option<&ChangeSink>) {
     match op {
-        Op::Delete(r) => index.apply_delete(r),
-        Op::Upsert(r) => index.apply_upsert(r),
+        // resolved before deleting: the path can't be reconstructed once the link is gone
+        Op::Delete(record_no) => {
+            let path = sink.and_then(|_| idx.path_of(record_no as u32));
+            idx.apply_delete(record_no);
+            if let (Some(tx), Some(path)) = (sink, path) {
+                let _ = tx.send(ChangeEvent::Deleted { path });
+            }
+        }
+        // resolved after upserting: a newly-created record has no path until it's linked in
+        Op::Upsert(raw) => {
+            let want = sink.is_some() && !raw.is_dir;
+            let (record_no, mtime, size) = (raw.record_no as u32, crate::application::index::filetime_to_unix_s(raw.modified_ft) as i64, raw.size.unwrap_or(0) as i64);
+            idx.apply_upsert(raw);
+            if want {
+                if let (Some(tx), Some(path)) = (sink, idx.path_of(record_no)) {
+                    let _ = tx.send(ChangeEvent::Upserted { path, mtime, size });
+                }
+            }
+        }
     }
 }
 
@@ -329,27 +348,7 @@ fn run(
             let mut cat = catalog.write();
             if let Some(idx) = cat.volume_mut(drive) {
                 for op in ops {
-                    match op {
-                        // resolved before deleting: the path can't be reconstructed once the link is gone
-                        Op::Delete(record_no) => {
-                            let path = sink.as_ref().and_then(|_| idx.path_of(record_no as u32));
-                            idx.apply_delete(record_no);
-                            if let (Some(tx), Some(path)) = (&sink, path) {
-                                let _ = tx.send(ChangeEvent::Deleted { path });
-                            }
-                        }
-                        // resolved after upserting: a newly-created record has no path until it's linked in
-                        Op::Upsert(raw) => {
-                            let want = sink.is_some() && !raw.is_dir;
-                            let (record_no, mtime, size) = (raw.record_no as u32, crate::application::index::filetime_to_unix_s(raw.modified_ft) as i64, raw.size.unwrap_or(0) as i64);
-                            idx.apply_upsert(raw);
-                            if want {
-                                if let (Some(tx), Some(path)) = (&sink, idx.path_of(record_no)) {
-                                    let _ = tx.send(ChangeEvent::Upserted { path, mtime, size });
-                                }
-                            }
-                        }
-                    }
+                    apply_op(idx, op, sink.as_ref());
                 }
                 if !gap {
                     idx.usn = Some(next_usn);
@@ -404,6 +403,8 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
                 let raw = RawRecord {
                     record_no,
                     parent_no: parent_ref & RECORD_MASK,
+                    seq: 0,
+                    parent_seq: 0,
                     name,
                     is_dir,
                     // Journal-only fallbacks; overwritten by `enrich` when the

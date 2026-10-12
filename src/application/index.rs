@@ -59,12 +59,13 @@ pub(crate) fn filetime_to_unix_s(ft: u64) -> u32 {
     }
 }
 
-/// One file or folder, 32 bytes. Created/accessed times aren't kept (Everything doesn't index them by default
+/// One file or folder, 28 bytes (no 8-byte field, so no padding: 10 MB less over 2.5M entries). Created/accessed times aren't kept (Everything doesn't index them by default
 /// either); `dc:`/`da:` filters therefore match nothing.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Rec {
-    /// Bytes; `u64::MAX` for folders and unknown sizes.
-    size: u64,
+    /// Bytes, 48 bits (256 TB) split in two; all ones for folders and unknown sizes. See [`Rec::size`].
+    size_lo: u32,
+    size_hi: u16,
     /// MFT record number; `NONE` marks a retired slot (deleted, or renamed into a new slot).
     record: u32,
     /// MFT record number of the containing folder.
@@ -80,6 +81,18 @@ pub struct Rec {
 }
 
 impl Rec {
+    const NO_SIZE: u64 = (1 << 48) - 1;
+    /// Bytes; `u64::MAX` for folders and unknown sizes.
+    fn size(&self) -> u64 {
+        match (self.size_hi as u64) << 32 | self.size_lo as u64 {
+            Self::NO_SIZE => u64::MAX,
+            s => s,
+        }
+    }
+    fn with_size(self, size: u64) -> Rec {
+        let s = size.min(Self::NO_SIZE);
+        Rec { size_lo: s as u32, size_hi: (s >> 32) as u16, ..self }
+    }
     fn is_dir(&self) -> bool {
         self.attrs & FILE_ATTRIBUTE_DIRECTORY != 0
     }
@@ -157,6 +170,9 @@ pub struct SearchIndex {
     /// The journal position this index has applied every change up to (set by the live watcher). The cache is
     /// saved with it, so the next start replays exactly what the saved copy is missing.
     pub usn: Option<i64>,
+    /// Folder path (lowercased) -> its MFT record, for `dir_record`: each folder walked to once, not per listing.
+    /// Checked on use (the record must still be that folder), so renames and deletes never serve a stale answer.
+    dirs: parking_lot::Mutex<HashMap<String, u32>>,
 }
 
 /// Append `name` to the arena: lowercased bytes, then case data. Returns the `Rec::name`/`Rec::len` pair.
@@ -187,15 +203,58 @@ fn new_rec(r: &RawRecord) -> Option<Rec> {
     if r.name.is_empty() || r.record_no == ROOT_RECORD as u64 || r.record_no >= NONE as u64 || r.parent_no >= NONE as u64 {
         return None;
     }
+    let size = if r.is_dir { u64::MAX } else { r.size.unwrap_or(u64::MAX) };
     Some(Rec {
-        size: if r.is_dir { u64::MAX } else { r.size.unwrap_or(u64::MAX) },
+        size_lo: 0,
+        size_hi: 0,
         record: r.record_no as u32,
         parent: r.parent_no as u32,
         name: 0,
         mtime: filetime_to_unix_s(r.modified_ft),
         attrs: if r.is_dir { r.attributes | FILE_ATTRIBUTE_DIRECTORY } else { r.attributes & !FILE_ATTRIBUTE_DIRECTORY },
         len: 0,
-    })
+    }
+    .with_size(size))
+}
+
+/// Retire entries whose parent chain never reaches the drive root (leftovers of deleted folders, such as Windows
+/// Update's pending deletes in WinSxS): they have no real path, so they'd list as drive-root items.
+pub fn drop_orphans(recs: &mut [Rec]) {
+    let n = recs.iter().filter(|r| r.record != NONE).map(|r| r.record as usize + 1).max().unwrap_or(0).max(ROOT_RECORD as usize + 1);
+    let mut pos = vec![NONE; n];
+    for (i, r) in recs.iter().enumerate().filter(|(_, r)| r.record != NONE) {
+        pos[r.record as usize] = i as u32;
+    }
+    let mut state = vec![0u8; n]; // 0 unknown, 1 reaches the root, 2 doesn't
+    state[ROOT_RECORD as usize] = 1;
+    let mut walked = Vec::new();
+    let mut bad = Vec::new();
+    for (i, r) in recs.iter().enumerate().filter(|(_, r)| r.record != NONE) {
+        walked.clear();
+        let mut cur = r.parent as usize;
+        let verdict = loop {
+            match state.get(cur) {
+                None => break 2,
+                Some(&s) if s != 0 => break s,
+                _ => {}
+            }
+            walked.push(cur);
+            let p = pos[cur];
+            if p == NONE || walked.len() > MAX_PATH_DEPTH {
+                break 2;
+            }
+            cur = recs[p as usize].parent as usize;
+        };
+        for &w in &walked {
+            state[w] = verdict;
+        }
+        if verdict == 2 {
+            bad.push(i);
+        }
+    }
+    for i in bad {
+        recs[i].record = NONE;
+    }
 }
 
 impl SearchIndex {
@@ -205,8 +264,15 @@ impl SearchIndex {
         let drive = enumerator.drive();
         let mut recs: Vec<Rec> = Vec::with_capacity(1 << 19);
         let mut names: Vec<u8> = Vec::with_capacity(16 << 20);
+        let mut seqs: Vec<u16> = Vec::new(); // sequence number per record number
+        let mut parent_seqs: Vec<u16> = Vec::new(); // parallel to `recs`
         enumerator.enumerate(&mut |r: RawRecord| {
             if let Some(mut rec) = new_rec(&r) {
+                if seqs.len() <= rec.record as usize {
+                    seqs.resize(rec.record as usize + 1, 0);
+                }
+                seqs[rec.record as usize] = r.seq;
+                parent_seqs.push(r.parent_seq);
                 crate::datestore::set(drive, rec.record, filetime_to_unix_s(r.created_ft), filetime_to_unix_s(r.accessed_ft));
                 (rec.name, rec.len) = push_name(&mut names, &r.name);
                 recs.push(rec);
@@ -216,6 +282,15 @@ impl SearchIndex {
             }
         })?;
         progress.store(recs.len(), Ordering::Relaxed);
+        // a parent reference whose sequence differs from the folder now in that slot points at a deleted folder
+        // whose record number was reused (e.g. leftovers showing up inside C:\Windows)
+        for (rec, &ps) in recs.iter_mut().zip(&parent_seqs) {
+            let live = seqs.get(rec.parent as usize).copied().unwrap_or(0);
+            if ps != 0 && live != 0 && ps != live && rec.parent != ROOT_RECORD {
+                rec.record = NONE;
+            }
+        }
+        drop_orphans(&mut recs);
         recs.shrink_to_fit();
         names.shrink_to_fit();
         Ok(Self::from_parts(drive, recs, names))
@@ -235,6 +310,7 @@ impl SearchIndex {
             by_name: Vec::new(),
             drive,
             usn: None,
+            dirs: Default::default(),
         };
         let order = idx.live_name_order();
         idx.rebuild(order);
@@ -424,7 +500,20 @@ impl SearchIndex {
     /// direction applied). Cheap to page through: see `Catalog`'s view cache.
     pub fn ranked(&self, opts: &SearchOptions, matcher: &Matcher) -> Vec<u32> {
         let all = matcher.matches_all();
-        let keep = |i: u32| self.is_live(i as usize) && (all || self.entry_matches(i as usize, matcher));
+        // like Explorer, hide protected operating-system files (hidden + system: NTUSER.DAT.LOG1, *.blf, ntuser.ini...)
+        let shown = |a: u32| if a & 0x6 == 0x6 { opts.show_system } else { opts.show_hidden || a & 0x2 == 0 }; // protected (hidden + system) and hidden files only on request
+        // a plain folder listing: compare parent record numbers instead of rebuilding every path
+        let child_of = matcher.only_child().map(|t| self.dir_record(t, false));
+        let folders: Option<Vec<u32>> = matcher.only_parents().map(|ts| ts.into_iter().filter_map(|t| self.dir_record(t, true)).collect());
+        let keep = |i: u32| {
+            self.is_live(i as usize)
+                && shown(self.recs[i as usize].attrs)
+                && match (&folders, child_of) {
+                    (Some(set), _) => set.contains(&self.recs[i as usize].record),
+                    (None, Some(dir)) => dir == Some(self.recs[i as usize].parent),
+                    (None, None) => all || self.entry_matches(i as usize, matcher),
+                }
+        };
         let (sort, asc) = (opts.sort, opts.ascending);
         let mut m: Vec<u32>;
         if matches!(sort, SortKey::Name) {
@@ -562,6 +651,47 @@ impl SearchIndex {
         }
     }
 
+    /// MFT record of the folder at `path` (`c:`, any case; `c:` is the drive root), found by walking down from
+    /// the root one name at a time. `None` when it is on another drive or doesn't exist.
+    fn dir_record(&self, path: &str, last_any: bool) -> Option<u32> {
+        let path = path.to_lowercase();
+        let (drive, rest) = path.split_once(':')?;
+        if drive.len() != 1 || !drive.starts_with(self.drive.to_ascii_lowercase()) {
+            return None;
+        }
+        let parts: Vec<&str> = rest.split('\\').filter(|p| !p.is_empty()).collect();
+        // start below the deepest folder already known: a full scan per *new* level only, usually just the last
+        let prefix = |k: usize| format!("{drive}:\\{}", parts[..k].join("\\"));
+        let (mut cur, mut from) = (ROOT_RECORD, 0);
+        for k in (1..=parts.len()).rev() {
+            let p = prefix(k);
+            let known = self.dirs.lock().get(&p).copied();
+            if let Some(r) = known.filter(|&r| self.is_folder_at(r, &p)) {
+                (cur, from) = (r, k);
+                break;
+            }
+        }
+        for (n, part) in parts.iter().enumerate().skip(from) {
+            let pos = (0..self.recs.len())
+                .into_par_iter()
+                .find_any(|&i| self.is_live(i) && self.recs[i].parent == cur && (self.recs[i].is_dir() || (last_any && n + 1 == parts.len())) && self.lower(i) == *part)?;
+            cur = self.recs[pos].record;
+            if self.recs[pos].is_dir() {
+                let mut dirs = self.dirs.lock();
+                if dirs.len() > 50_000 {
+                    dirs.clear();
+                }
+                dirs.insert(prefix(n + 1), cur);
+            }
+        }
+        Some(cur)
+    }
+
+    /// Whether record `r` is still the live folder at `path` (lowercased).
+    fn is_folder_at(&self, r: u32, path: &str) -> bool {
+        self.first.get(r as usize).is_some_and(|&p| p != NONE && self.is_live(p as usize) && self.recs[p as usize].is_dir() && self.build_path(p as usize, true) == path)
+    }
+
     fn entry_matches(&self, i: usize, matcher: &Matcher) -> bool {
         let r = &self.recs[i];
         let lower = self.lower(i);
@@ -580,7 +710,7 @@ impl SearchIndex {
             path: &path,
             path_lower: &path_lower,
             is_dir: r.is_dir(),
-            size: (r.size != u64::MAX).then_some(r.size),
+            size: (r.size() != u64::MAX).then_some(r.size()),
             modified_ms: r.modified_ms(),
             created_ms: (created != 0).then_some(created as i64 * 1000),
             accessed_ms: (accessed != 0).then_some(accessed as i64 * 1000),
@@ -691,10 +821,10 @@ impl SearchIndex {
 
 /// Size as a sort/display key: `-1` for directories or unknown size.
 fn size_key(r: &Rec) -> i64 {
-    if r.is_dir() || r.size == u64::MAX {
+    if r.is_dir() || r.size() == u64::MAX {
         -1
     } else {
-        r.size as i64
+        r.size() as i64
     }
 }
 
@@ -715,12 +845,23 @@ fn ext_of(name_lower: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn orphans_are_dropped() {
+        let r = |record, parent| Rec { size_lo: 0, size_hi: 0, record, parent, name: 0, mtime: 0, attrs: 0, len: 0 };
+        // 10 sits in the root; 11 is under 10; 12 is under the missing record 99; 13 is under 12
+        let mut recs = vec![r(10, ROOT_RECORD), r(11, 10), r(12, 99), r(13, 12)];
+        drop_orphans(&mut recs);
+        assert_eq!(recs.iter().map(|r| r.record).collect::<Vec<_>>(), vec![10, 11, NONE, NONE]);
+    }
+
     use super::*;
 
     fn raw(record: u64, parent: u64, name: &str) -> RawRecord {
         RawRecord {
             record_no: record,
             parent_no: parent,
+            seq: 0,
+            parent_seq: 0,
             name: name.into(),
             is_dir: false,
             size: Some(1),
@@ -787,8 +928,12 @@ mod tests {
     }
 
     #[test]
-    fn rec_stays_32_bytes() {
-        assert_eq!(std::mem::size_of::<Rec>(), 32);
+    fn rec_stays_28_bytes() {
+        assert_eq!(std::mem::size_of::<Rec>(), 28);
+        let r = Rec { size_lo: 0, size_hi: 0, record: 1, parent: 5, name: 0, mtime: 0, attrs: 0, len: 0 };
+        for s in [0, 1, u32::MAX as u64 + 7, (1 << 48) - 2, u64::MAX] {
+            assert_eq!(r.with_size(s).size(), s);
+        }
     }
 
     #[test]
@@ -849,6 +994,37 @@ mod tests {
         assert!(!lnk_header_is_folder(&h));
         h[0x18] = 0x10;
         assert!(lnk_header_is_folder(&h));
+    }
+
+    #[test]
+    fn child_listing_uses_parent_numbers() {
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        let idx = index(vec![dir(50, 5, "Users"), raw(60, 50, "a.txt"), dir(51, 50, "sub"), raw(62, 51, "c.txt"), raw(61, 5, "b.txt")]);
+        let list = |q: &str| {
+            let opts = SearchOptions { query: q.into(), ..SearchOptions::default() };
+            let m = Matcher::compile(&opts).unwrap();
+            let mut v: Vec<String> = idx.ranked(&opts, &m).into_iter().map(|i| idx.name(i as usize).into_owned()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(list(r#"child:"C:\users""#), ["a.txt", "sub"]);
+        assert_eq!(list(r#"child:"c:\Users\SUB""#), ["c.txt"]);
+        assert_eq!(list(r#"child:"C:""#), ["Users", "b.txt"]);
+        assert!(list(r#"child:"C:\nope""#).is_empty());
+        assert!(list(r#"child:"D:\users""#).is_empty());
+        // Home: the listed folders themselves, found without building paths
+        assert_eq!(list(r#"parent:"C:\Users\x" | parent:"C:\users\sub\x" | parent:"C:\nope\x""#), ["Users", "sub"]);
+    }
+
+    #[test]
+    fn folder_lookup_cache_follows_renames() {
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        let mut idx = index(vec![dir(50, 5, "Users"), dir(51, 50, "sub"), raw(62, 51, "c.txt")]);
+        assert_eq!(idx.dir_record(r"C:\Users\sub", false), Some(51));
+        assert_eq!(idx.dir_record(r"c:\users\SUB", false), Some(51)); // cached
+        idx.apply_upsert(dir(51, 50, "renamed"));
+        assert_eq!(idx.dir_record(r"C:\Users\sub", false), None);
+        assert_eq!(idx.dir_record(r"C:\Users\renamed", false), Some(51));
     }
 
     #[test]
