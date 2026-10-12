@@ -29,6 +29,9 @@ const MAX_MERGE_DOCS: usize = 100_000;
 const CHUNK: usize = 20_000; // files whose paths the bulk scan holds at once
 /// Live changes are applied at most this often: a file rewritten constantly is extracted once per window.
 const LIVE_BATCH: std::time::Duration = std::time::Duration::from_secs(60);
+/// A file re-indexed this recently waits for a later batch: a log or transcript appended to all day was re-extracted
+/// whole every minute, each time a new segment (MBs of SSD writes) for the same text plus a bit.
+const HOT_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Fixed, not per-account: the indexer (the background service, running as SYSTEM when one's
 /// installed — see `backend.rs`) and a search-only GUI process (running as the interactive user)
@@ -400,7 +403,7 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
             }
             let Some(files) = chunk(from, CHUNK) else { return false };
             files.par_iter().for_each(|(path, mtime, size)| {
-                if !is_own(path) && !skipped(path, *mtime, *size) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
+                if !excluded(path) && !skipped(path, *mtime, *size) && engine().ok().and_then(|e| e.get(path)) != Some((*mtime, *size)) {
                     index_file(path, *mtime, *size);
                 }
                 let n = BULK_DONE.fetch_add(1, Relaxed) + 1;
@@ -437,7 +440,7 @@ static PENDING: LazyLock<Mutex<std::collections::HashMap<String, ChangeEvent>>> 
 /// Whether `ev` touched the index at all (anything but the index's own files).
 fn apply(ev: ChangeEvent) -> bool {
     match ev {
-        ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
+        ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if excluded(path) => false,
         ChangeEvent::Upserted { path, mtime, size } => {
             index_file(&path, mtime, size);
             true
@@ -459,6 +462,7 @@ fn flush(any: bool) {
 pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
     std::thread::spawn(move || {
         let mut first = std::time::Instant::now();
+        let mut recent: std::collections::HashMap<String, std::time::Instant> = Default::default();
         loop {
             let waiting = !PENDING.lock().is_empty();
             let wait = if waiting { LIVE_BATCH.saturating_sub(first.elapsed()) } else { std::time::Duration::from_secs(3600) };
@@ -467,7 +471,7 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
                     let path = match &ev {
                         ChangeEvent::Upserted { path, .. } | ChangeEvent::Deleted { path } => path.clone(),
                     };
-                    if !is_own(&path) {
+                    if !excluded(&path) {
                         let mut pending = PENDING.lock();
                         if pending.is_empty() {
                             first = std::time::Instant::now();
@@ -481,8 +485,19 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
                 Err(_) => break,
             }
             let mut pending = PENDING.lock();
-            let any = pending.drain().fold(false, |any, (_, ev)| apply(ev) | any);
+            let now = std::time::Instant::now();
+            recent.retain(|_, t| now - *t < HOT_COOLDOWN);
+            let ready: Vec<String> = pending.keys().filter(|p| !recent.contains_key(*p)).cloned().collect();
+            let mut any = false;
+            for p in ready {
+                let ev = pending.remove(&p).unwrap();
+                if matches!(ev, ChangeEvent::Upserted { .. }) {
+                    recent.insert(p, now);
+                }
+                any |= apply(ev);
+            }
             flush(any);
+            first = now; // what's still cooling down is looked at again next batch
         }
     });
 }
@@ -504,6 +519,61 @@ pub fn shutdown(within: std::time::Duration) {
     flush(any);
     if COMPLETE.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = std::fs::write(done_path(), b"");
+    }
+}
+
+/// Never content-indexed: the index's own files ([`is_own`]), and system/app churn, left out as `hashcache::SKIP`
+/// leaves it out. Windows, ProgramData and AppData rewrite files around the clock (logs, telemetry, browser and app
+/// state): each change cost an extraction, a commit and later segment merges, i.e. constant SSD writes, for text
+/// nobody content-searches.
+fn excluded(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    let rest = p.get(2..).unwrap_or_default(); // past the drive letter
+    is_own(path)
+        || rest.starts_with(r"\windows\")
+        || rest.starts_with(r"\programdata\")
+        || rest.starts_with(r"\system volume information\")
+        || rest.starts_with(r"\$recycle.bin\")
+        || p.contains(r"\appdata\")
+}
+
+/// Marks [`purge_excluded`] done.
+fn scope_path() -> PathBuf {
+    dir().with_file_name("contentscope1")
+}
+
+/// One-time: drops what [`excluded`] keeps out but an index built before it already holds. Walks the `path`
+/// term dictionary (every indexed path, without decompressing stored docs). The space comes back as the
+/// segments holding them are merged.
+pub fn purge_excluded() {
+    if scope_path().exists() {
+        return;
+    }
+    let Ok(e) = engine() else { return };
+    let mut gone = Vec::new();
+    for seg in e.reader.searcher().segment_readers() {
+        let Ok(inv) = seg.inverted_index(e.fields.path) else { return };
+        let Ok(mut terms) = inv.terms().stream() else { return };
+        while terms.advance() {
+            if let Ok(p) = std::str::from_utf8(terms.key()) {
+                if excluded(p) {
+                    gone.push(p.to_string());
+                }
+            }
+        }
+    }
+    gone.sort_unstable();
+    gone.dedup();
+    let deleted = e.with_writer(|w| {
+        for p in &gone {
+            w.delete_term(Term::from_field_text(e.fields.path, p));
+        }
+        Ok(())
+    });
+    release_writer();
+    commit();
+    if deleted.is_ok() {
+        let _ = std::fs::write(scope_path(), b"");
     }
 }
 
@@ -579,6 +649,17 @@ mod tests {
         assert!(is_own(&done_path().display().to_string()));
         assert!(!is_own(&format!(r"{}x\meta.json", dir().parent().unwrap().display())));
         assert!(!is_own(r"C:\Users\me\notes.txt"));
+    }
+
+    #[test]
+    fn system_and_app_churn_is_excluded() {
+        assert!(excluded(r"C:\Windows\Prefetch\X.pf"));
+        assert!(excluded(r"D:\ProgramData\Microsoft\Diagnosis\a.json"));
+        assert!(excluded(r"C:\Users\me\AppData\Roaming\Code\state.json"));
+        assert!(excluded(r"C:\$Recycle.Bin\S-1\$R1.txt"));
+        assert!(!excluded(r"C:\Users\me\Documents\Windows\notes.txt"));
+        assert!(!excluded(r"C:\Users\me\appdata.txt"));
+        assert!(!excluded(r"C:\Program Files\App\readme.txt"));
     }
 
     #[test]

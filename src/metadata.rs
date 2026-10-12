@@ -114,8 +114,13 @@ fn run(h: &SearchHandle) -> Result<(), String> {
     let todo: Vec<String> = {
         let mut g = FILES.write();
         let files = g.as_mut().unwrap();
+        let before = files.len();
         files.retain(|p, _| now.contains_key(p));
-        now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect()
+        let todo: Vec<String> = now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect();
+        if todo.is_empty() && files.len() == before {
+            return Ok(()); // nothing changed: don't rewrite the whole (tens of MB) store
+        }
+        todo
     };
     *PROGRESS.lock() = Some((0, todo.len()));
     let queue = Mutex::new(todo.chunks(BATCH).collect::<Vec<_>>());
@@ -143,7 +148,7 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                     GEN.fetch_add(1, Ordering::Relaxed);
                     // keep what's read so far: closing the app mid-run doesn't start the next one over
                     let mut s = saved.lock();
-                    if s.elapsed() > Duration::from_secs(30) {
+                    if s.elapsed() > crate::hashcache::SAVE_EVERY {
                         *s = Instant::now();
                         let _ = save();
                     }

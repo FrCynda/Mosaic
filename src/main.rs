@@ -302,7 +302,9 @@ fn home_refresh() -> String {
     }
     let q = parts.join(" | ");
     let file = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("home.txt");
-    let _ = std::fs::write(file, &q);
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(q.as_str()) {
+        let _ = std::fs::write(file, &q); // refreshed every visit: only written when Quick access actually changed
+    }
     *HOME.lock() = Some((Instant::now(), q.clone()));
     q
 }

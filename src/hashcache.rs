@@ -22,6 +22,8 @@ use crate::backend::SearchHandle;
 const SKIP: &str = r"!path:\appdata\ !path:c:\windows\ !path:$recycle.bin";
 const HASH_MAX_BYTES: i64 = 200 << 20;
 const BATCH: usize = 64;
+/// Mid-run checkpoint: each save rewrites the whole store, so a closed app redoes at most this much hashing.
+pub const SAVE_EVERY: Duration = Duration::from_secs(300);
 fn workers() -> usize {
     std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2))
 }
@@ -91,8 +93,13 @@ fn run(h: &SearchHandle) -> Result<(), String> {
     let todo: Vec<String> = {
         let mut g = FILES.write();
         let files = g.as_mut().unwrap();
+        let before = files.len();
         files.retain(|p, _| now.contains_key(p));
-        now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect()
+        let todo: Vec<String> = now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect();
+        if todo.is_empty() && files.len() == before {
+            return Ok(()); // nothing changed: don't rewrite the whole store (once a minute while a hash query is up)
+        }
+        todo
     };
     *PROGRESS.lock() = Some((0, todo.len()));
     let queue = Mutex::new(todo.chunks(BATCH).collect::<Vec<_>>());
@@ -118,7 +125,7 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                 }
                 GEN.fetch_add(1, Ordering::Relaxed);
                 let mut s = saved.lock();
-                if s.elapsed() > Duration::from_secs(30) {
+                if s.elapsed() > SAVE_EVERY {
                     *s = Instant::now();
                     let _ = save();
                 }

@@ -122,6 +122,7 @@ fn run_service() -> windows_service::Result<()> {
         ServiceControlAccept::empty(),
         Duration::from_secs(5),
     ))?;
+    crate::infrastructure::indexing::save_caches(); // ~0.1 s; the saver itself only writes after 100k changes or a day
     crate::contentindex::shutdown(Duration::from_secs(3));
     status_handle.set_service_status(status(
         ServiceState::Stopped,

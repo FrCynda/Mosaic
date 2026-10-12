@@ -5,7 +5,7 @@
 //! lives in `infrastructure` with no presentation dependency.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -19,10 +19,17 @@ use crate::infrastructure::ntfs::{
 
 /// How often the cache saver looks at what changed.
 const CACHE_SAVE_INTERVAL: Duration = Duration::from_secs(300);
-/// Rewrite the (100+ MB) cache once this many changes piled up — what the next start has to replay — or once an
-/// hour if anything changed at all. Every 5 minutes on any change wrote tens of GB a day on a busy disk.
+/// The (100+ MB) cache is rewritten on a clean stop ([`save_caches`]), and otherwise only once this many changes
+/// piled up (what the next start would have to replay) or once a day. A crash in between costs a longer replay at
+/// the next start (a rescan if the journal wrapped meanwhile), never a wrong index. Every 5 minutes on any change
+/// wrote tens of GB a day on a busy disk.
 const CACHE_SAVE_CHANGES: u64 = 100_000;
-const CACHE_SAVE_MAX_AGE: Duration = Duration::from_secs(3600);
+const CACHE_SAVE_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
+
+/// What [`save_caches`] saves, set once the volumes are online.
+static SAVER: OnceLock<(Arc<RwLock<Catalog>>, Vec<IndexedVolume>)> = OnceLock::new();
+/// `CHANGES` as of the last save; the lock also keeps the saver and a stop from writing the same file at once.
+static SAVED_AT: Mutex<u64> = Mutex::new(0);
 
 /// Where indexing is in its lifecycle.
 enum Phase {
@@ -114,8 +121,9 @@ impl Indexer {
                     Ok(volume) => {
                         content_current &= volume.replayed;
                         let count = volume.index.len();
-                        // Save before publishing so a cache exists immediately.
-                        if let Some(next_usn) = volume.resume_usn {
+                        // A fresh scan is saved before publishing so a cache exists immediately. A loaded one isn't
+                        // rewritten: it plus the journal still gets the next start here.
+                        if let (false, Some(next_usn)) = (volume.replayed, volume.resume_usn) {
                             let _ = cache::save(
                                 drive,
                                 serial,
@@ -157,6 +165,7 @@ impl Indexer {
             };
 
             if !indexed.is_empty() {
+                thread::spawn(crate::contentindex::purge_excluded);
                 // the full content scan only when something may have been missed: a volume scanned from scratch (its
                 // changes while we were off are unknown) or an earlier scan that never finished. Otherwise the
                 // journal replay above already sent every change since the last run to the content index.
@@ -260,34 +269,45 @@ fn bring_volume_online(
     })
 }
 
-/// Periodically refresh each volume's on-disk cache so future startups load
-/// fast and only a small journal tail needs replaying.
+/// Rewrite each volume's on-disk cache, if anything changed since the last save. Called on service stop, so the
+/// next start loads fast and replays only a small journal tail.
+pub fn save_caches() {
+    let Some((catalog, indexed)) = SAVER.get() else { return };
+    let mut saved_at = SAVED_AT.lock();
+    let now = super::ntfs::CHANGES.load(Ordering::Relaxed);
+    if now == *saved_at {
+        return;
+    }
+    *saved_at = now;
+    for vol in indexed {
+        let Some(journal) = journal_state(vol.drive) else {
+            continue;
+        };
+        // written straight from the live index under a read lock: searches go on, no copy of the index. Saved
+        // with the position the watcher has applied, not the journal's end: the watcher trails the end, and
+        // changes in between (a delete) would never be replayed.
+        let catalog = catalog.read();
+        if let Some((index, usn)) = catalog.volume(vol.drive).and_then(|i| Some((i, i.usn?))) {
+            let _ = cache::save(vol.drive, vol.serial, journal.journal_id, usn, index.parts());
+            let _ = crate::datestore::save();
+        }
+    }
+}
+
 fn spawn_cache_saver(catalog: Arc<RwLock<Catalog>>, indexed: Vec<IndexedVolume>) {
+    *SAVED_AT.lock() = super::ntfs::CHANGES.load(Ordering::Relaxed);
+    if SAVER.set((catalog, indexed)).is_err() {
+        return; // one indexer per process
+    }
     thread::spawn(move || {
-        let mut saved_at = super::ntfs::CHANGES.load(Ordering::Relaxed);
         let mut saved_time = std::time::Instant::now();
         loop {
-        thread::sleep(CACHE_SAVE_INTERVAL);
-        let now = super::ntfs::CHANGES.load(Ordering::Relaxed);
-        let changed = now.wrapping_sub(saved_at);
-        if changed == 0 || (changed < CACHE_SAVE_CHANGES && saved_time.elapsed() < CACHE_SAVE_MAX_AGE) {
-            continue;
-        }
-        saved_at = now;
-        saved_time = std::time::Instant::now();
-        for vol in &indexed {
-            let Some(journal) = journal_state(vol.drive) else {
-                continue;
-            };
-            // written straight from the live index under a read lock: searches go on, no copy of the index. Saved
-            // with the position the watcher has applied, not the journal's end: the watcher trails the end, and
-            // changes in between (a delete) would never be replayed.
-            let catalog = catalog.read();
-            if let Some((index, usn)) = catalog.volume(vol.drive).and_then(|i| Some((i, i.usn?))) {
-                let _ = cache::save(vol.drive, vol.serial, journal.journal_id, usn, index.parts());
-                let _ = crate::datestore::save();
+            thread::sleep(CACHE_SAVE_INTERVAL);
+            let changed = super::ntfs::CHANGES.load(Ordering::Relaxed).wrapping_sub(*SAVED_AT.lock());
+            if changed >= CACHE_SAVE_CHANGES || (changed > 0 && saved_time.elapsed() >= CACHE_SAVE_MAX_AGE) {
+                save_caches();
+                saved_time = std::time::Instant::now();
             }
-        }
         }
     });
 }

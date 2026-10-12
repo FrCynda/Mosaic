@@ -467,6 +467,7 @@ struct Ui {
     special: HashSet<String>,        // Desktop, Downloads, Documents, Pictures, Music, Videos: they keep their own shell icon
     kind_checked: HashSet<String>,   // folders whose cached kind was compared with their modified time this run
     kinds_dirty: bool,
+    kinds_saved: std::time::Instant,
     kind_dirs: Vec<Option<String>>,  // the Windows folder whose icon each kind wears (Pictures, Videos, Music, Documents)
     jumbo_png: HashMap<String, Vec<u8>>,            // type key → the shell's 256 px icon
     jumbo: HashMap<(String, i32), Option<Pic>>,     // (type key, px) → decoded at tile size
@@ -885,6 +886,7 @@ pub fn run() {
             poll_y: 0.0,
             kind_checked: HashSet::new(),
             kinds_dirty: false,
+            kinds_saved: std::time::Instant::now(),
             kind_dirs: (0..5).map(|k| if k == 0 { None } else { side::kind_dir(k) }).collect(),
             jumbo_png: HashMap::new(),
             jumbo: HashMap::new(),
@@ -1850,6 +1852,15 @@ impl Ui {
         self.link_ov.clone().flatten()
     }
 
+    fn save_kinds(&mut self) {
+        if self.kinds_dirty {
+            self.kinds_dirty = false;
+            self.kinds_saved = std::time::Instant::now();
+            let text: String = self.kinds.iter().map(|(p, (k, m))| format!("{k}\t{m}\t{p}\n")).collect();
+            let _ = std::fs::write(kinds_path(), text);
+        }
+    }
+
     fn got_kind(&mut self, (p, k, m): (String, u8, u64)) {
         self.kind_pending.remove(&p);
         if self.kinds.len() > 200_000 {
@@ -1858,10 +1869,9 @@ impl Ui {
         if self.kinds.insert(p, (k, m)) != Some((k, m)) {
             self.kinds_dirty = true;
         }
-        if self.kind_pending.is_empty() && self.kinds_dirty {
-            self.kinds_dirty = false;
-            let text: String = self.kinds.iter().map(|(p, (k, m))| format!("{k}\t{m}\t{p}\n")).collect();
-            let _ = std::fs::write(kinds_path(), text);
+        // the file is rewritten whole (MBs): while browsing, at most every 5 minutes; the rest lands on exit
+        if self.kind_pending.is_empty() && self.kinds_saved.elapsed() > std::time::Duration::from_secs(300) {
+            self.save_kinds();
         }
         if k != 0 {
             self.want_thumbs();
@@ -4208,6 +4218,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_DESTROY => {
+            with(|u| u.save_kinds());
             PostQuitMessage(0);
             return 0;
         }
