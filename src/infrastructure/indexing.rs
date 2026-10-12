@@ -17,8 +17,12 @@ use crate::infrastructure::ntfs::{
     catch_up, journal_state, ntfs_fixed_drives, volume_serial, CatchUp, MftReader, UsnWatcher,
 };
 
-/// How often the on-disk cache is refreshed while running.
+/// How often the cache saver looks at what changed.
 const CACHE_SAVE_INTERVAL: Duration = Duration::from_secs(300);
+/// Rewrite the (100+ MB) cache once this many changes piled up — what the next start has to replay — or once an
+/// hour if anything changed at all. Every 5 minutes on any change wrote tens of GB a day on a busy disk.
+const CACHE_SAVE_CHANGES: u64 = 100_000;
+const CACHE_SAVE_MAX_AGE: Duration = Duration::from_secs(3600);
 
 /// Where indexing is in its lifecycle.
 enum Phase {
@@ -261,14 +265,16 @@ fn bring_volume_online(
 fn spawn_cache_saver(catalog: Arc<RwLock<Catalog>>, indexed: Vec<IndexedVolume>) {
     thread::spawn(move || {
         let mut saved_at = super::ntfs::CHANGES.load(Ordering::Relaxed);
+        let mut saved_time = std::time::Instant::now();
         loop {
         thread::sleep(CACHE_SAVE_INTERVAL);
-        // nothing changed since the last save: skip rewriting the whole (100MB+) cache
         let now = super::ntfs::CHANGES.load(Ordering::Relaxed);
-        if now == saved_at {
+        let changed = now.wrapping_sub(saved_at);
+        if changed == 0 || (changed < CACHE_SAVE_CHANGES && saved_time.elapsed() < CACHE_SAVE_MAX_AGE) {
             continue;
         }
         saved_at = now;
+        saved_time = std::time::Instant::now();
         for vol in &indexed {
             let Some(journal) = journal_state(vol.drive) else {
                 continue;

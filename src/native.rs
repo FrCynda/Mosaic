@@ -1183,8 +1183,11 @@ fn pixels(px: &[u8], sw: usize, sh: usize, size: usize) -> (Vec<u8>, i32, i32) {
     (out, dw as i32, dh as i32)
 }
 
+/// Premultiplied BGRA pixels, width, height.
+type Px = (Vec<u8>, i32, i32);
+
 /// A shell helper's PNG as premultiplied BGRA of at most `size` px.
-fn png_pixels(png: &[u8], size: i32) -> Option<(Vec<u8>, i32, i32)> {
+fn png_pixels(png: &[u8], size: i32) -> Option<Px> {
     let mut r = png::Decoder::new(png).read_info().ok()?;
     let mut px = vec![0; r.output_buffer_size()];
     let info = r.next_frame(&mut px).ok()?;
@@ -1271,8 +1274,8 @@ fn fmt_date(ms: i64) -> Vec<u16> {
 
 /// The typed words to bold in names and paths (the web UI's S.terms).
 fn terms(q: &str) -> Vec<Vec<u16>> {
-    let re = regex::Regex::new(r#""[^"]*"|\S+"#).unwrap();
-    re.find_iter(q)
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#""[^"]*"|\S+"#).unwrap());
+    RE.find_iter(q)
         .map(|m| m.as_str())
         .filter(|t| !["ext:", "size:", "dm:", "date:"].iter().any(|p| t.to_lowercase().starts_with(p)))
         .map(|t| t.trim_matches('"'))
@@ -1785,18 +1788,19 @@ impl Ui {
         }
         let (p, hw, size) = (path.to_string(), self.main as isize, self.isz);
         shell::shell_spawn(Box::new(move |dropped| {
-            let png = if dropped { None } else { shell::thumbnail(&p, size, true) };
-            let b: Box<(String, Option<Vec<u8>>, bool)> = Box::new((p, png, dropped));
+            // decoded here, on the helper's thread: the UI thread only uploads the pixels
+            let px = if dropped { None } else { shell::thumbnail(&p, size, true).and_then(|b| png_pixels(&b, size)) };
+            let b: Box<(String, Option<Px>, bool)> = Box::new((p, px, dropped));
             unsafe { PostMessageW(hw as HWND, WM_ICON, 0, Box::into_raw(b) as isize) };
         }));
     }
 
-    fn got_icon(&mut self, (p, png, dropped): (String, Option<Vec<u8>>, bool)) {
+    fn got_icon(&mut self, (p, px, dropped): (String, Option<Px>, bool)) {
         self.pending.remove(&p);
         if dropped {
             return;
         }
-        let pic = png.and_then(|b| png_pixels(&b, self.isz)).and_then(|(px, w, h)| self.upload(&px, w, h));
+        let pic = px.and_then(|(px, w, h)| self.upload(&px, w, h));
         self.own.insert(p, pic);
         unsafe { InvalidateRect(self.list, null(), 0) };
     }
@@ -1888,19 +1892,20 @@ impl Ui {
         for (p, icon_only) in want.into_iter().rev() {
             self.thumb_pending.insert(p.clone());
             shell::shell_spawn(Box::new(move |dropped| {
-                let png = if dropped { None } else { shell::thumbnail(&p, ts, icon_only) };
-                let b: Box<(String, Option<Vec<u8>>, bool, i32)> = Box::new((p, png, dropped, tile));
+                // decoded and resampled here, on the helper's thread: the UI thread only uploads the pixels
+                let px = if dropped { None } else { shell::thumbnail(&p, ts, icon_only).and_then(|b| png_pixels(&b, tile)) };
+                let b: Box<(String, Option<Px>, bool, i32)> = Box::new((p, px, dropped, tile));
                 unsafe { PostMessageW(hw as HWND, WM_THUMB, 0, Box::into_raw(b) as isize) };
             }));
         }
     }
 
-    fn got_thumb(&mut self, (p, png, dropped, tile): (String, Option<Vec<u8>>, bool, i32)) {
+    fn got_thumb(&mut self, (p, px, dropped, tile): (String, Option<Px>, bool, i32)) {
         self.thumb_pending.remove(&p);
         if dropped {
             return;
         }
-        let pic = png.and_then(|b| png_pixels(&b, tile)).and_then(|(px, w, h)| self.upload(&px, w, h));
+        let pic = px.and_then(|(px, w, h)| self.upload(&px, w, h));
         let bytes = |p: &Option<Pic>| p.as_ref().map_or(0, |p| (p.1 * p.2 * 4) as usize);
         self.thumb_bytes += bytes(&pic);
         if let Some(old) = self.thumbs.insert(p.clone(), (pic, tile)) {
@@ -4056,7 +4061,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_ICON => {
-            let p = l as *mut (String, Option<Vec<u8>>, bool);
+            let p = l as *mut (String, Option<Px>, bool);
             if with(|u| u.got_icon(*Box::from_raw(p))).is_none() {
                 PostMessageW(h, m, wp, l);
             }
@@ -4070,7 +4075,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_THUMB => {
-            let p = l as *mut (String, Option<Vec<u8>>, bool, i32);
+            let p = l as *mut (String, Option<Px>, bool, i32);
             if with(|u| u.got_thumb(*Box::from_raw(p))).is_none() {
                 PostMessageW(h, m, wp, l);
             }

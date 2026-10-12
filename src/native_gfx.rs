@@ -150,6 +150,7 @@ impl Canvas {
             }
             let props = D2D1_RENDER_TARGET_PROPERTIES {
                 // on the CPU: same antialiasing, and the GPU driver (~50 MB per process) never loads
+                // (measured: GPU costs +66 MB private for no clear CPU gain when scrolling)
                 r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
                 pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_IGNORE },
                 dpiX: 96.0,

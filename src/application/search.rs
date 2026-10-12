@@ -119,8 +119,9 @@ enum TextTarget {
 }
 
 enum TextKind {
-    /// Substring; pre-cased to match the haystack casing.
-    Plain(String),
+    /// Substring; pre-cased to match the haystack casing. Searched with a prebuilt SIMD finder, not `str::contains`
+    /// (which sets its searcher up again for every one of millions of names).
+    Plain(memchr::memmem::Finder<'static>),
     /// Compiled wildcard / whole-word / regex pattern. `on_lower` matches the
     /// pre-folded lowercase haystack (wildcard/whole-word built from lowercased
     /// literals, so case folding is identical to `Plain`); otherwise it matches
@@ -366,13 +367,7 @@ impl Matcher {
                     (orig, lower)
                 };
                 match kind {
-                    TextKind::Plain(needle) => {
-                        if self.match_case {
-                            orig.contains(needle)
-                        } else {
-                            lower.contains(needle)
-                        }
-                    }
+                    TextKind::Plain(finder) => finder.find(if self.match_case { orig } else { lower }.as_bytes()).is_some(),
                     TextKind::Re { re, on_lower } => {
                         re.is_match(if *on_lower { lower } else { orig })
                     }
@@ -739,7 +734,7 @@ fn phrase_pred(phrase: &str, opts: &SearchOptions, needs_path: &mut bool) -> Opt
     }
     Some(Pred::Text {
         target,
-        kind: TextKind::Plain(needle),
+        kind: plain(needle),
     })
 }
 
@@ -786,7 +781,11 @@ fn text_pred(text: &str, target: TextTarget, opts: &SearchOptions) -> Option<Pre
     if opts.diacritics {
         needle = strip_diacritics(&needle);
     }
-    Some(Pred::Text { target, kind: TextKind::Plain(needle) })
+    Some(Pred::Text { target, kind: plain(needle) })
+}
+
+fn plain(needle: String) -> TextKind {
+    TextKind::Plain(memchr::memmem::Finder::new(needle.as_bytes()).into_owned())
 }
 
 fn ext_allows(name_lower: &str, exts: &[String]) -> bool {

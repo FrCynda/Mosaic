@@ -103,13 +103,14 @@ fn run(h: &SearchHandle) -> Result<(), String> {
             s.spawn(move || loop {
                 let next = queue.lock().pop();
                 let Some(chunk) = next else { break };
+                // hashed before taking the lock: reading 64 files held every hash/dupe search (and the other
+                // workers) behind it
+                let done: Vec<(&String, Hashes)> = chunk.iter().filter_map(|p| Some((p, hash_file(p)?))).collect();
                 let mut g = FILES.write();
                 let files = g.as_mut().unwrap();
-                for p in chunk {
-                    if let Some(hashes) = hash_file(p) {
-                        let (m, size) = now[p];
-                        files.insert(p.clone(), (m, size, hashes));
-                    }
+                for (p, hashes) in done {
+                    let (m, size) = now[p];
+                    files.insert(p.clone(), (m, size, hashes));
                 }
                 drop(g);
                 if let Some(pr) = PROGRESS.lock().as_mut() {
@@ -239,7 +240,19 @@ pub fn dupe_paths() -> std::collections::HashSet<String> {
 /// Whether `path` (any case) should be kept for a hash/dupe query.
 pub fn matches(path: &str, hq: &HashQuery) -> bool {
     match hq {
-        HashQuery::Dupe => dupe_paths().contains(&path.to_lowercase()),
+        HashQuery::Dupe => {
+            // grouped once per cache generation, not once per candidate (that was every hashed file, per row)
+            static DUPES: Mutex<Option<(usize, std::sync::Arc<std::collections::HashSet<String>>)>> = Mutex::new(None);
+            let gen = generation();
+            let set = {
+                let mut d = DUPES.lock();
+                match d.as_ref().filter(|d| d.0 == gen) {
+                    Some(d) => d.1.clone(),
+                    None => d.insert((gen, std::sync::Arc::new(dupe_paths()))).1.clone(),
+                }
+            };
+            set.contains(&path.to_lowercase())
+        }
         _ => hash_matches(path, hq),
     }
 }

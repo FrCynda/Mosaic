@@ -76,3 +76,37 @@ impl ServiceClient {
         read_frame(&mut conn, MAX_RESPONSE)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Round trips against the installed service: `cargo test --release bench_service -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_service() {
+        use super::*;
+        use std::time::Instant;
+        let c = ServiceClient::probe().expect("service up");
+        let med = |f: &dyn Fn()| {
+            let mut t: Vec<f64> = (0..9).map(|_| { let s = Instant::now(); f(); s.elapsed().as_secs_f64() * 1000.0 }).collect();
+            t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            t[4]
+        };
+        println!("BENCH svc_status   median_ms={:.2}", med(&|| { c.status(); }));
+        let o = |q: &str, offset| SearchOptions { query: q.into(), limit: 100, offset, folders_first: true, ..SearchOptions::default() };
+        for q in ["", "win", "ext:jpg;png;gif", "zzqxj"] {
+            // alternate direction so each call is a fresh rank, not a view-cache page
+            let n = std::cell::Cell::new(false);
+            let cold = med(&|| { n.set(!n.get()); c.search(&SearchOptions { ascending: n.get(), ..o(q, 0) }); });
+            c.search(&o(q, 0));
+            let page = med(&|| { c.search(&o(q, 300)); });
+            println!("BENCH svc_q {q:<16} cold_ms={cold:7.2} page_ms={page:6.2}");
+        }
+        // the first search after the service sat idle (its working set trimmed meanwhile)
+        if std::env::var_os("MOSAIC_BENCH_IDLE").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(65));
+            let s = Instant::now();
+            c.search(&o("report", 0));
+            println!("BENCH svc_after_idle_ms={:.2}", s.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+}

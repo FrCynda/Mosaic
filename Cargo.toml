@@ -24,6 +24,7 @@ sha2 = "0.10"
 sha1 = "0.10"
 md-5 = "0.10"
 crc32fast = "1.4"
+memchr = "2" # already in the tree (regex): prebuilt substring finders for name search
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

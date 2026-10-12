@@ -1170,6 +1170,7 @@ dependencies = [
  "drag",
  "image",
  "md-5",
+ "memchr",
  "parking_lot",
  "png",
  "raw-window-handle",

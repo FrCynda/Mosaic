@@ -29,7 +29,7 @@ const USN_REASON_CLOSE: u32 = 0x8000_0000;
 
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 
-/// Batches of changes applied by all watchers, reported in the index status.
+/// Changes applied by all watchers, reported in the index status.
 pub static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Low 48 bits of an NTFS file reference are the MFT record number.
@@ -342,9 +342,7 @@ fn run(
         };
 
         if !ops.is_empty() || (!gap && next_usn != read_from) {
-            if !ops.is_empty() {
-                CHANGES.fetch_add(1, Ordering::Relaxed);
-            }
+            CHANGES.fetch_add(ops.len() as u64, Ordering::Relaxed); // per change: the cache saver weighs how many piled up
             let mut cat = catalog.write();
             if let Some(idx) = cat.volume_mut(drive) {
                 for op in ops {

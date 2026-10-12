@@ -1610,7 +1610,21 @@ pub const LANGS: [&str; 17] = ["en", "es", "ar", "pt", "fr", "sw", "ha", "hi", "
 
 /// Resolves `key` in the active language, then English, then the key itself.
 pub fn t(key: &str) -> &'static str {
-    table(&lang(), key).or_else(|| en(key)).unwrap_or_else(|| Box::leak(key.to_string().into_boxed_str()))
+    // called for every label of every frame: no String copy of the language per call
+    let found = table(LANG.read().unwrap().as_str(), key).or_else(|| en(key));
+    found.unwrap_or_else(|| {
+        // a missing key is leaked once, not once per paint
+        static MISSING: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+        let mut m = MISSING.lock().unwrap();
+        match m.iter().find(|k| **k == key) {
+            Some(k) => k,
+            None => {
+                let k: &'static str = Box::leak(key.to_string().into_boxed_str());
+                m.push(k);
+                k
+            }
+        }
+    })
 }
 
 /// CLDR plural-category rules (which `item.<category>` key `t_count` looks up), per language.

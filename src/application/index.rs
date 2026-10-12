@@ -61,11 +61,12 @@ pub(crate) fn filetime_to_unix_s(ft: u64) -> u32 {
 
 /// One file or folder, 28 bytes (no 8-byte field, so no padding: 10 MB less over 2.5M entries). Created/accessed times aren't kept (Everything doesn't index them by default
 /// either); `dc:`/`da:` filters therefore match nothing.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// `repr(C)` with no padding and only integer fields, so the cache stores the array's bytes as they are.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
 pub struct Rec {
     /// Bytes, 48 bits (256 TB) split in two; all ones for folders and unknown sizes. See [`Rec::size`].
     size_lo: u32,
-    size_hi: u16,
     /// MFT record number; `NONE` marks a retired slot (deleted, or renamed into a new slot).
     record: u32,
     /// MFT record number of the containing folder.
@@ -76,6 +77,7 @@ pub struct Rec {
     mtime: u32,
     /// `FILE_ATTRIBUTE_*`; DIRECTORY marks folders.
     attrs: u32,
+    size_hi: u16,
     /// See [`LEN_MASK`].
     len: u16,
 }
@@ -505,15 +507,30 @@ impl SearchIndex {
         // a plain folder listing: compare parent record numbers instead of rebuilding every path
         let child_of = matcher.only_child().map(|t| self.dir_record(t, false));
         let folders: Option<Vec<u32>> = matcher.only_parents().map(|ts| ts.into_iter().filter_map(|t| self.dir_record(t, true)).collect());
-        let keep = |i: u32| {
-            self.is_live(i as usize)
-                && shown(self.recs[i as usize].attrs)
-                && match (&folders, child_of) {
-                    (Some(set), _) => set.contains(&self.recs[i as usize].record),
-                    (None, Some(dir)) => dir == Some(self.recs[i as usize].parent),
-                    (None, None) => all || self.entry_matches(i as usize, matcher),
+        // Matched in one pass in entry order: records and names are read sequentially (the name order hops at
+        // random through 100+ MB), and neighbours mostly share a folder, so a path search builds each folder's path
+        // once per chunk. 0 = no match, 1 = match, 2 = a folder (or folder shortcut) when grouping folders first.
+        const CHUNK: usize = 8192;
+        let ff = opts.folders_first;
+        let mut flags = vec![0u8; self.recs.len()];
+        flags.par_chunks_mut(CHUNK).enumerate().for_each(|(c, out)| {
+            let mut scratch = PathScratch::default();
+            for (k, o) in out.iter_mut().enumerate() {
+                let i = c * CHUNK + k;
+                let r = &self.recs[i];
+                let hit = r.record != NONE
+                    && shown(r.attrs)
+                    && match (&folders, child_of) {
+                        (Some(set), _) => set.contains(&r.record),
+                        (None, Some(dir)) => dir == Some(r.parent),
+                        (None, None) => all || self.entry_matches(i, matcher, &mut scratch),
+                    };
+                if hit {
+                    *o = if ff && (r.is_dir() || (self.is_lnk(i) && self.lnk_to_folder(i))) { 2 } else { 1 };
                 }
-        };
+            }
+        });
+        let keep = |i: u32| flags[i as usize] != 0;
         let (sort, asc) = (opts.sort, opts.ascending);
         let mut m: Vec<u32>;
         if matches!(sort, SortKey::Name) {
@@ -532,14 +549,35 @@ impl SearchIndex {
             let mut keyed: Vec<(u32, String)> = m.par_iter().map(|&i| (i, self.build_path(i as usize, true))).collect();
             keyed.par_sort_unstable_by(|a, b| a.1.cmp(&b.1));
             m = keyed.into_iter().map(|k| k.0).collect();
+        } else if matches!(sort, SortKey::Ext) {
+            // the key read once per entry, not twice per comparison; its first 8 bytes packed big-endian into an
+            // integer that orders like the string, so most comparisons never touch the names
+            let mut keyed: Vec<(u64, &str, u32)> = m
+                .par_iter()
+                .map(|&i| {
+                    let e = self.ext(i as usize);
+                    let mut b = [0u8; 8];
+                    let n = e.len().min(8);
+                    b[..n].copy_from_slice(&e.as_bytes()[..n]);
+                    (u64::from_be_bytes(b), e, i)
+                })
+                .collect();
+            keyed.par_sort_unstable();
+            m = keyed.into_iter().map(|k| k.2).collect();
         } else {
-            m.par_sort_unstable_by(|&a, &b| self.col_cmp(a as usize, b as usize, sort));
+            let mut keyed: Vec<(i64, u32)> = m.par_iter().map(|&i| (self.num_key(i as usize, sort), i)).collect();
+            keyed.par_sort_unstable();
+            m = keyed.into_iter().map(|k| k.1).collect();
         }
         if !asc {
             m.reverse();
         }
-        if opts.folders_first {
-            m = self.folders_first(m);
+        if ff {
+            // stable split: folders and folder shortcuts first, each group keeping the column order. O(n), so the
+            // presorted name order still serves folders-first searches without a full sort.
+            let mut dirs: Vec<u32> = m.par_iter().copied().filter(|&i| flags[i as usize] == 2).collect();
+            dirs.par_extend(m.par_iter().copied().filter(|&i| flags[i as usize] == 1));
+            m = dirs;
         }
         m
     }
@@ -561,21 +599,6 @@ impl SearchIndex {
         }
         out.extend_from_slice(&head[start..]);
         out
-    }
-
-    /// Stable split: folders and shortcuts to folders first, each group keeping the column order. O(n), so the
-    /// presorted name order still serves folders-first searches without a full sort.
-    fn folders_first(&self, m: Vec<u32>) -> Vec<u32> {
-        // flags read in entry order into a compact table: the split below then hops through 2 MB, not the records
-        let mut folder: Vec<bool> = self.recs.par_iter().map(Rec::is_dir).collect();
-        let lnk_dirs: Vec<usize> =
-            (0..self.recs.len()).into_par_iter().filter(|&i| self.is_live(i) && self.is_lnk(i) && self.lnk_to_folder(i)).collect();
-        for i in lnk_dirs {
-            folder[i] = true;
-        }
-        let mut dirs: Vec<u32> = m.par_iter().copied().filter(|&i| folder[i as usize]).collect();
-        dirs.par_extend(m.par_iter().copied().filter(|&i| !folder[i as usize]));
-        dirs
     }
 
     fn is_lnk(&self, i: usize) -> bool {
@@ -603,19 +626,16 @@ impl SearchIndex {
         v
     }
 
-    /// Compare two entries by a sort column, ascending. `Path` is ranked separately.
-    fn col_cmp(&self, a: usize, b: usize, sort: SortKey) -> std::cmp::Ordering {
-        let (ra, rb) = (&self.recs[a], &self.recs[b]);
+    /// Sort key of a numeric column. Name, Ext and Path are ranked separately.
+    fn num_key(&self, i: usize, sort: SortKey) -> i64 {
+        let r = &self.recs[i];
         match sort {
-            SortKey::Name => self.lower(a).cmp(self.lower(b)),
-            SortKey::Size => size_key(ra).cmp(&size_key(rb)),
-            SortKey::Modified => ra.mtime.cmp(&rb.mtime),
-            SortKey::Attributes => ra.attrs.cmp(&rb.attrs),
-            // Directories show a blank Ext cell in the UI, so sort them as such.
-            SortKey::Ext => self.ext(a).cmp(self.ext(b)),
-            SortKey::Created => self.created_accessed(a).0.cmp(&self.created_accessed(b).0),
-            SortKey::Accessed => self.created_accessed(a).1.cmp(&self.created_accessed(b).1),
-            SortKey::Path => std::cmp::Ordering::Equal,
+            SortKey::Size => size_key(r),
+            SortKey::Modified => r.mtime as i64,
+            SortKey::Attributes => r.attrs as i64,
+            SortKey::Created => self.created_accessed(i).0 as i64,
+            SortKey::Accessed => self.created_accessed(i).1 as i64,
+            SortKey::Name | SortKey::Ext | SortKey::Path => 0,
         }
     }
 
@@ -692,23 +712,38 @@ impl SearchIndex {
         self.first.get(r as usize).is_some_and(|&p| p != NONE && self.is_live(p as usize) && self.recs[p as usize].is_dir() && self.build_path(p as usize, true) == path)
     }
 
-    fn entry_matches(&self, i: usize, matcher: &Matcher) -> bool {
+    fn entry_matches(&self, i: usize, matcher: &Matcher, s: &mut PathScratch) -> bool {
         let r = &self.recs[i];
         let lower = self.lower(i);
         // original-case strings only for match-case searches: everything else reads the lowercased arena
         let case = matcher.match_case();
         let name = if case { self.name(i) } else { Cow::Borrowed(lower) };
-        let (path, path_lower) = if matcher.needs_path() {
-            (if case { self.build_path(i, false) } else { String::new() }, self.build_path(i, true))
-        } else {
-            (String::new(), String::new())
-        };
+        s.path.clear();
+        s.path_lower.clear();
+        if matcher.needs_path() {
+            // the folder's path (cached), then this entry's name: the same string `build_path` makes
+            let parent = r.parent;
+            let (dir, dir_lower) = s.dirs.entry(parent).or_insert_with(|| match self.first.get(parent as usize) {
+                Some(&p) if p != NONE && parent != ROOT_RECORD => {
+                    (if case { self.build_path(p as usize, false) } else { String::new() }, self.build_path(p as usize, true))
+                }
+                _ => (format!("{}:", self.drive), format!("{}:", self.drive.to_ascii_lowercase())),
+            });
+            if case {
+                s.path.push_str(dir);
+                s.path.push('\\');
+                s.path.push_str(&name);
+            }
+            s.path_lower.push_str(dir_lower);
+            s.path_lower.push('\\');
+            s.path_lower.push_str(lower);
+        }
         let (created, accessed) = self.created_accessed(i);
         matcher.eval(&EntryView {
             name: &name,
             name_lower: lower,
-            path: &path,
-            path_lower: &path_lower,
+            path: &s.path,
+            path_lower: &s.path_lower,
             is_dir: r.is_dir(),
             size: (r.size() != u64::MAX).then_some(r.size()),
             modified_ms: r.modified_ms(),
@@ -819,6 +854,14 @@ impl SearchIndex {
     }
 }
 
+/// Reused buffers for path matching: folder record -> (path, lowercased path), and the entry's own paths.
+#[derive(Default)]
+struct PathScratch {
+    dirs: HashMap<u32, (String, String)>,
+    path: String,
+    path_lower: String,
+}
+
 /// Size as a sort/display key: `-1` for directories or unknown size.
 fn size_key(r: &Rec) -> i64 {
     if r.is_dir() || r.size() == u64::MAX {
@@ -920,8 +963,8 @@ mod tests {
         assert_eq!(idx.hit(0).accessed, 900);
         assert_eq!(idx.hit(1).created, 200);
         assert_eq!(idx.hit(1).accessed, 800);
-        assert_eq!(idx.col_cmp(0, 1, SortKey::Created), std::cmp::Ordering::Less); // 100 < 200
-        assert_eq!(idx.col_cmp(0, 1, SortKey::Accessed), std::cmp::Ordering::Greater); // 900 > 800
+        assert!(idx.num_key(0, SortKey::Created) < idx.num_key(1, SortKey::Created)); // 100 < 200
+        assert!(idx.num_key(0, SortKey::Accessed) > idx.num_key(1, SortKey::Accessed)); // 900 > 800
 
         crate::datestore::set_enabled(false);
         assert_eq!(idx.hit(0).created, 0); // gated off: reads nothing back even though it's still stored
@@ -1017,6 +1060,25 @@ mod tests {
     }
 
     #[test]
+    fn path_search_builds_the_same_paths_from_cached_folders() {
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        // 63's parent (99) isn't indexed: like `build_path`, its path is then the drive root
+        let idx = index(vec![dir(50, 5, "Users"), dir(51, 50, "Sub"), raw(62, 51, "c.txt"), raw(60, 50, "a.txt"), raw(61, 5, "b.txt")]);
+        let find = |q: &str, case: bool| {
+            let opts = SearchOptions { query: q.into(), match_case: case, ..SearchOptions::default() };
+            let m = Matcher::compile(&opts).unwrap();
+            let mut v: Vec<String> = idx.ranked(&opts, &m).into_iter().map(|i| idx.build_path(i as usize, false)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(find(r"path:users\sub\", false), [r"C:\Users\Sub\c.txt"]);
+        assert_eq!(find(r"path:c:\users\", false), [r"C:\Users\Sub", r"C:\Users\Sub\c.txt", r"C:\Users\a.txt"]);
+        assert_eq!(find(r"path:Users\Sub", true), [r"C:\Users\Sub", r"C:\Users\Sub\c.txt"]);
+        assert!(find(r"path:users\sub", true).is_empty());
+        assert_eq!(find(r"path:c:\b.txt", false), [r"C:\b.txt"]);
+    }
+
+    #[test]
     fn folder_lookup_cache_follows_renames() {
         let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
         let mut idx = index(vec![dir(50, 5, "Users"), dir(51, 50, "sub"), raw(62, 51, "c.txt")]);
@@ -1079,6 +1141,84 @@ mod tests {
         }
         assert_eq!(idx.recs.capacity(), 2 + 2 * REBUILD_AT, "one more room, not twice the index");
         assert!(idx.names.capacity() <= idx.names.len() + NAME_ROOM + 16);
+    }
+
+    /// `MOSAIC_BENCH_IDX=<path to a real {drive}.idx> cargo test --release bench_real_index -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_real_index() {
+        use crate::application::Catalog;
+        use std::time::Instant;
+        let path = std::env::var("MOSAIC_BENCH_IDX").expect("MOSAIC_BENCH_IDX");
+        // the v4 (bincode) cache: loaded the old way, timed, then saved and reloaded in the current format
+        #[derive(Deserialize, Serialize)]
+        struct OldRec { size_lo: u32, size_hi: u16, record: u32, parent: u32, name: u32, mtime: u32, attrs: u32, len: u16 }
+        #[derive(Deserialize, Serialize)]
+        struct Snap { _v: u32, drive: char, _s: u32, _j: u64, _u: i64, recs: Vec<OldRec>, names: Vec<u8> }
+        let t = Instant::now();
+        let s: Snap = bincode::deserialize_from(std::io::BufReader::new(std::fs::File::open(&path).unwrap())).unwrap();
+        let old_load = t.elapsed();
+        let t = Instant::now();
+        let old_out = std::path::Path::new(&path).with_extension("v4.idx");
+        bincode::serialize_into(std::io::BufWriter::new(std::fs::File::create(&old_out).unwrap()), &s).unwrap();
+        println!("BENCH cache old_bincode_save_ms={}", t.elapsed().as_millis());
+        let recs: Vec<Rec> = s.recs.iter().map(|o| Rec { size_lo: o.size_lo, size_hi: o.size_hi, record: o.record, parent: o.parent, name: o.name, mtime: o.mtime, attrs: o.attrs, len: o.len }).collect();
+        let new_path = std::path::Path::new(&path).with_extension("v5.idx");
+        let t = Instant::now();
+        crate::infrastructure::cache::save_to(&new_path, s.drive, 1, 2, 3, (&recs, &s.names)).unwrap();
+        let save = t.elapsed();
+        let t = Instant::now();
+        let snap = crate::infrastructure::cache::load_from(&new_path, s.drive).unwrap();
+        let load = t.elapsed();
+        println!("BENCH cache old_bincode_load_ms={} raw_save_ms={} raw_load_ms={}", old_load.as_millis(), save.as_millis(), load.as_millis());
+        drop(recs);
+        let t = Instant::now();
+        let mut recs = snap.recs;
+        drop_orphans(&mut recs);
+        let idx = SearchIndex::from_parts(s.drive, recs, snap.names);
+        let build = t.elapsed();
+        let heap = idx.recs.capacity() * 28 + idx.names.capacity() + idx.first.capacity() * 4 + idx.by_name.capacity() * 4;
+        println!("BENCH load_ms={} from_parts_ms={} entries={} index_heap_mb={:.1}", load.as_millis(), build.as_millis(), idx.len(), heap as f64 / 1048576.0);
+        let mut cat = Catalog::default();
+        cat.upsert_volume(idx);
+        let cases: &[(&str, &str, SortKey)] = &[
+            ("empty", "", SortKey::Name),
+            ("word", "win", SortKey::Name),
+            ("rare", "zzqxj", SortKey::Name),
+            ("two_words", "micro soft", SortKey::Name),
+            ("ext", "ext:jpg;png;gif", SortKey::Name),
+            ("glob", "*.dll", SortKey::Name),
+            ("path", r"path:windows\system32", SortKey::Name),
+            ("bare_path", r"users\", SortKey::Name),
+            ("size_sort", "", SortKey::Size),
+            ("mtime_sort", "ext:txt", SortKey::Modified),
+            ("path_sort", "ext:txt", SortKey::Path),
+            ("ext_sort", "", SortKey::Ext),
+            ("child", r#"child:"C:\Windows\System32""#, SortKey::Name),
+            ("child_new", r#"child:"C:\Program Files""#, SortKey::Name),
+        ];
+        for &(label, q, sort) in cases {
+            let mut times = Vec::new();
+            let mut total = 0;
+            for run in 0..6 {
+                cat.volume_mut(s.drive); // bumps the generation: every run is a cold search, not a view-cache hit
+                let opts = SearchOptions { query: q.into(), sort, limit: 100, folders_first: true, match_path: q.contains('\\'), ascending: run % 2 == 0, ..SearchOptions::default() };
+                let t = Instant::now();
+                let r = cat.search(&opts);
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+                total = r.total;
+            }
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!("BENCH {label:<11} median_ms={:8.2} min_ms={:8.2} total={total}", times[3], times[0]);
+        }
+        // paging the cached view (scrolling)
+        let opts = SearchOptions { query: "".into(), limit: 100, folders_first: true, ..SearchOptions::default() };
+        cat.search(&opts);
+        let t = Instant::now();
+        for p in 1..=200 {
+            cat.search(&SearchOptions { offset: p * 100, ..opts.clone() });
+        }
+        println!("BENCH page_scroll  per_page_ms={:.3}", t.elapsed().as_secs_f64() * 1000.0 / 200.0);
     }
 
     #[test]

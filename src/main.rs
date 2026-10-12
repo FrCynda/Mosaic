@@ -88,7 +88,8 @@ const OPS: &[&str] = &["ext:", "size:", "dm:", "dc:", "da:", "date:", "path:", "
 
 /// Turn the UI's query + chip + metadata mode into an engine query.
 fn build_query(q: &str, cat: &str, meta: &str) -> String {
-    let re = regex::Regex::new(r#"[^\s"]*"[^"]*"|\S+"#).unwrap();
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"[^\s"]*"[^"]*"|\S+"#).unwrap());
+    let re = &*RE;
     let mut parts: Vec<String> = Vec::new();
     for m in re.find_iter(q) {
         let t = m.as_str();
@@ -191,11 +192,12 @@ const CONTENT_MAX: usize = 5000;
 
 /// Files matching `query` in the content index that still exist, as index hits.
 fn content_query(query: &str, h: &backend::SearchHandle) -> Result<Vec<application::index::Hit>, String> {
-    let mut hits = Vec::new();
-    for p in h.content(query, CONTENT_MAX)? {
-        let Ok(m) = std::fs::metadata(&p) else { continue }; // gone since it was indexed
+    use rayon::prelude::*;
+    // one stat per hit, in parallel: thousands of them one after another took a good part of a second
+    Ok(h.content(query, CONTENT_MAX)?.into_par_iter().filter_map(|p| {
+        let m = std::fs::metadata(&p).ok()?; // gone since it was indexed
         let modified = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as i64);
-        hits.push(application::index::Hit {
+        Some(application::index::Hit {
             name: p.rsplit('\\').next().unwrap_or(&p).to_string(),
             size: if m.is_dir() { -1 } else { m.len() as i64 },
             modified,
@@ -204,9 +206,8 @@ fn content_query(query: &str, h: &backend::SearchHandle) -> Result<Vec<applicati
             attributes: 0,
             is_dir: m.is_dir(),
             path: p,
-        });
-    }
-    Ok(hits)
+        })
+    }).collect())
 }
 
 /// Shared by [`content_progress`] and [`metadata_progress`]: turns a raw (done, total) reading into
@@ -595,9 +596,6 @@ fn main() {
         shell::helper_main();
         return;
     }
-    std::thread::spawn(|| {
-        ext_info();
-    });
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--service") {
         let _ = host::run();
@@ -606,6 +604,10 @@ fn main() {
     if let Some(a) = args.get(1).filter(|a| a.starts_with("--svc-")) {
         std::process::exit(admin(a));
     }
+    // the window's type search reads this; the service and the one-shots above never do
+    std::thread::spawn(|| {
+        ext_info();
+    });
     let named_native = std::env::current_exe().is_ok_and(|p| p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("mosaic")));
     if named_native || args.iter().any(|a| a == "--native") {
         native::app_id("local.mosaic.native");

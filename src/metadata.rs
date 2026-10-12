@@ -298,9 +298,9 @@ pub fn search(q: &str) -> Vec<Hit> {
 }
 
 fn terms(q: &str) -> (Vec<String>, Vec<String>) {
-    let re = regex::Regex::new(r#"-?"[^"]*"|\S+"#).unwrap();
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"-?"[^"]*"|\S+"#).unwrap());
     let (mut want, mut not) = (Vec::new(), Vec::new());
-    for m in re.find_iter(q) {
+    for m in RE.find_iter(q) {
         let t = m.as_str();
         let (neg, t) = t.strip_prefix('-').map_or((false, t), |r| (true, r));
         let t = t.trim_matches('"').to_lowercase();

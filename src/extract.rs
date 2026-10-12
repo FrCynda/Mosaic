@@ -42,7 +42,8 @@ pub fn decode_str(b: &[u8], cut: bool) -> String {
 /// Tags dropped, paragraph/row breaks kept, common XML entities decoded. Not a real XML parser — just
 /// enough to turn Office/OpenDocument markup into readable plain text.
 pub fn strip_xml(s: &str) -> String {
-    let s = regex::Regex::new(r"(?s)</(w:p|a:p|text:p|text:h|row)[^>]*>").unwrap().replace_all(s, "\n");
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)</(w:p|a:p|text:p|text:h|row)[^>]*>").unwrap());
+    let s = RE.replace_all(s, "\n");
     let mut out = String::new();
     let mut in_tag = false;
     for c in s.chars() {
