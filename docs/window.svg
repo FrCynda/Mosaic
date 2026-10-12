@@ -1,127 +1,119 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" width="1280" height="760" font-family="'Segoe UI Variable Display','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif">
-<defs><clipPath id="win"><rect width="1280" height="760" rx="14"/></clipPath><linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.05"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient></defs>
-<g clip-path="url(#win)"><rect width="1280" height="760" fill="#0f1522"/>
-<rect width="1280" height="44" fill="#0c121d"/><rect width="1280" height="44" fill="url(#sheen)"/>
-<svg x="12" y="9" width="26" height="26" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" width="1400" height="900" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif">
+<defs><clipPath id="win"><rect width="1400" height="900" rx="8"/></clipPath></defs><g clip-path="url(#win)">
+<rect width="1400" height="900" fill="#0f1216"/>
+<rect width="1400" height="56" fill="#181c22"/><g transform="translate(9 6) scale(0.01758)">
   <defs>
-    <linearGradient id="ic-folder" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#2fa2ff"/><stop offset="0.55" stop-color="#2171e6"/><stop offset="1" stop-color="#1443b0"/></linearGradient>
-    <linearGradient id="ic-sheet" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9bb3de"/><stop offset="1" stop-color="#e9f0fc"/></linearGradient>
-    <linearGradient id="ic-p1" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#5fe3c4"/><stop offset="1" stop-color="#1ea0b2"/></linearGradient>
-    <linearGradient id="ic-p2" x1="0.2" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#ffe94f"/><stop offset="1" stop-color="#ff8620"/></linearGradient>
-    <linearGradient id="ic-p3" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#a070ff"/><stop offset="1" stop-color="#5646ff"/></linearGradient>
-    <linearGradient id="ic-p4" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#45b4ff"/><stop offset="1" stop-color="#1368f5"/></linearGradient>
-    <filter id="ic-soft" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/></filter>
+    <linearGradient id="t-folder" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#2fa2ff"/><stop offset="0.55" stop-color="#2171e6"/><stop offset="1" stop-color="#1443b0"/></linearGradient>
+    <linearGradient id="t-sheet" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9bb3de"/><stop offset="1" stop-color="#e9f0fc"/></linearGradient>
+    <linearGradient id="t-p1" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#5fe3c4"/><stop offset="1" stop-color="#1ea0b2"/></linearGradient>
+    <linearGradient id="t-p2" x1="0.2" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#ffe94f"/><stop offset="1" stop-color="#ff8620"/></linearGradient>
+    <linearGradient id="t-p3" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#a070ff"/><stop offset="1" stop-color="#5646ff"/></linearGradient>
+    <linearGradient id="t-p4" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#45b4ff"/><stop offset="1" stop-color="#1368f5"/></linearGradient>
+    <filter id="t-soft" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/></filter>
   </defs>
-  <g transform="translate(512 512) scale(1.4) translate(-544 -509.5)">  <path d="M 490 262 Q 500 257 520 257 H 780 Q 808 257 808 285 V 335 H 490 Z" fill="url(#ic-sheet)" opacity="0.9"/>
-  <path d="M 270 222 H 430 Q 452 222 466 238 L 500 276 Q 512 293 534 293 H 745 Q 778 293 778 326 V 772 H 270 Q 218 772 218 720 V 274 Q 218 222 270 222 Z" fill="url(#ic-folder)"/>
-  <g filter="url(#ic-soft)"><path d="M 452 452 Q 452 436 466 428 L 612 345 Q 624 336 640 336 H 848 Q 870 336 870 358 V 772 Q 870 797 845 797 H 478 Q 452 797 452 772 Z" fill="#ffffff"/></g>
+  <g transform="translate(512 512) scale(1.4) translate(-544 -509.5)">  <path d="M 490 262 Q 500 257 520 257 H 780 Q 808 257 808 285 V 335 H 490 Z" fill="url(#t-sheet)" opacity="0.9"/>
+  <path d="M 270 222 H 430 Q 452 222 466 238 L 500 276 Q 512 293 534 293 H 745 Q 778 293 778 326 V 772 H 270 Q 218 772 218 720 V 274 Q 218 222 270 222 Z" fill="url(#t-folder)"/>
+  <g filter="url(#t-soft)"><path d="M 452 452 Q 452 436 466 428 L 612 345 Q 624 336 640 336 H 848 Q 870 336 870 358 V 772 Q 870 797 845 797 H 478 Q 452 797 452 772 Z" fill="#ffffff"/></g>
   <g stroke-linejoin="round" stroke-width="16">
-    <polygon points="480,458 636,374 638,568 480,616" fill="url(#ic-p1)" stroke="url(#ic-p1)"/>
-    <polygon points="675,374 830,374 830,516 675,562" fill="url(#ic-p2)" stroke="url(#ic-p2)"/>
-    <polygon points="480,660 638,613 638,760 480,760" fill="url(#ic-p3)" stroke="url(#ic-p3)"/>
-    <polygon points="675,603 830,556 830,760 675,760" fill="url(#ic-p4)" stroke="url(#ic-p4)"/>
+    <polygon points="480,458 636,374 638,568 480,616" fill="url(#t-p1)" stroke="url(#t-p1)"/>
+    <polygon points="675,374 830,374 830,516 675,562" fill="url(#t-p2)" stroke="url(#t-p2)"/>
+    <polygon points="480,660 638,613 638,760 480,760" fill="url(#t-p3)" stroke="url(#t-p3)"/>
+    <polygon points="675,603 830,556 830,760 675,760" fill="url(#t-p4)" stroke="url(#t-p4)"/>
   </g>
   </g>
-</svg>
-<text x="46" y="28" font-size="14" fill="#dfe7f2">Mosaic</text>
-<text x="1150" y="28" font-size="14" fill="#8796ad" text-anchor="middle">—</text>
-<text x="1196" y="28" font-size="14" fill="#8796ad" text-anchor="middle">▢</text>
-<text x="1242" y="28" font-size="14" fill="#8796ad" text-anchor="middle">✕</text>
-<rect y="44" width="1280" height="60" fill="#141c2c"/><line x1="0" y1="104" x2="1280" y2="104" stroke="#1f2a3d"/>
-<text x="26" y="82" font-size="26" fill="#dfe7f2" text-anchor="middle">‹</text>
-<text x="56" y="82" font-size="26" fill="#8796ad" text-anchor="middle">›</text>
-<rect x="80" y="56" width="640" height="36" rx="18" fill="#0f1522" stroke="#3380CA" stroke-width="1.5"/>
-<circle cx="102" cy="73" r="6.5" fill="none" stroke="#8796ad" stroke-width="2"/><line x1="107" y1="78" x2="111" y2="82" stroke="#8796ad" stroke-width="2.2" stroke-linecap="round"/>
-<text x="122" y="79" font-family="'Cascadia Code','Cascadia Mono',Consolas,'SFMono-Regular',Menlo,monospace" font-size="15"><tspan fill="#dfe7f2">invoice </tspan><tspan fill="#76C6AF">ext:</tspan><tspan fill="#dfe7f2">pdf </tspan><tspan fill="#76C6AF">dm:</tspan><tspan fill="#dfe7f2">thisyear</tspan></text>
-<rect x="736" y="60" width="35" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="754" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">Aa</text>
-<rect x="779.0" y="60" width="35" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="796" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">ab</text>
-<rect x="822.0" y="60" width="35" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="840" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">.*</text>
-<rect x="865.0" y="60" width="26" height="28" rx="8" fill="#173458" stroke="#3380CA"/><text x="878" y="79" font-size="13" text-anchor="middle" fill="#dfe7f2" font-weight="600">é</text>
-<rect x="899.5" y="60" width="52" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="926" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">Tags</text>
-<rect x="959.5" y="60" width="78" height="28" rx="8" fill="#173458" stroke="#3380CA"/><text x="998" y="79" font-size="13" text-anchor="middle" fill="#dfe7f2" font-weight="600">Content</text>
-<rect x="1150" y="60" width="30" height="28" rx="7" fill="#173458" stroke="#1f2a3d"/><text x="1165" y="80" font-size="15" fill="#dfe7f2" text-anchor="middle">▤</text>
-<rect x="1188" y="60" width="30" height="28" rx="7" fill="#0f1522" stroke="#1f2a3d"/><text x="1203" y="80" font-size="15" fill="#dfe7f2" text-anchor="middle">▦</text>
-<rect x="1226" y="60" width="30" height="28" rx="7" fill="#0f1522" stroke="#1f2a3d"/><text x="1241" y="80" font-size="15" fill="#dfe7f2" text-anchor="middle">◧</text>
-<rect y="105" width="210" height="625" fill="#0c121d"/>
-<rect x="22" y="124" width="18" height="14" rx="3" fill="#6ABAF1"/><rect x="22" y="121" width="8" height="4" rx="1.5" fill="#6ABAF1"/>
-<text x="52" y="136" font-size="14" fill="#8796ad">All</text>
-<rect x="22" y="160" width="18" height="14" rx="3" fill="#76C6AF"/><rect x="22" y="157" width="8" height="4" rx="1.5" fill="#76C6AF"/>
-<text x="52" y="172" font-size="14" fill="#8796ad">Home</text>
-<rect x="22" y="196" width="18" height="14" rx="3" fill="#2F9EB7"/><rect x="22" y="193" width="8" height="4" rx="1.5" fill="#2F9EB7"/>
-<text x="52" y="208" font-size="14" fill="#8796ad">Gallery</text>
-<line x1="18" y1="234" x2="192" y2="234" stroke="#1f2a3d"/>
-<rect x="22" y="242" width="18" height="14" rx="3" fill="#3380CA"/><rect x="22" y="239" width="8" height="4" rx="1.5" fill="#3380CA"/>
-<text x="52" y="254" font-size="14" fill="#8796ad">Desktop</text>
-<rect x="22" y="278" width="18" height="14" rx="3" fill="#2B9597"/><rect x="22" y="275" width="8" height="4" rx="1.5" fill="#2B9597"/>
-<text x="52" y="290" font-size="14" fill="#8796ad">Downloads</text>
-<rect x="8" y="307" width="194" height="30" rx="7" fill="#17253b"/>
-<rect x="22" y="314" width="18" height="14" rx="3" fill="#9aa7b8"/><rect x="22" y="311" width="8" height="4" rx="1.5" fill="#9aa7b8"/>
-<text x="52" y="326" font-size="14" fill="#dfe7f2">Documents</text>
-<rect x="22" y="350" width="18" height="14" rx="3" fill="#6ABAF1"/><rect x="22" y="347" width="8" height="4" rx="1.5" fill="#6ABAF1"/>
-<text x="52" y="362" font-size="14" fill="#8796ad">Pictures</text>
-<rect x="22" y="386" width="18" height="14" rx="3" fill="#e38b5c"/><rect x="22" y="383" width="8" height="4" rx="1.5" fill="#e38b5c"/>
-<text x="52" y="398" font-size="14" fill="#8796ad">Music</text>
-<rect x="22" y="422" width="18" height="14" rx="3" fill="#a77be0"/><rect x="22" y="419" width="8" height="4" rx="1.5" fill="#a77be0"/>
-<text x="52" y="434" font-size="14" fill="#8796ad">Videos</text>
-<line x1="18" y1="460" x2="192" y2="460" stroke="#1f2a3d"/>
-<rect x="22" y="468" width="18" height="14" rx="3" fill="#8796ad"/><rect x="22" y="465" width="8" height="4" rx="1.5" fill="#8796ad"/>
-<text x="52" y="480" font-size="14" fill="#8796ad">Local Disk (C:)</text>
-<rect x="22" y="504" width="18" height="14" rx="3" fill="#8796ad"/><rect x="22" y="501" width="8" height="4" rx="1.5" fill="#8796ad"/>
-<text x="52" y="516" font-size="14" fill="#8796ad">Data (D:)</text>
-<rect x="210" y="105" width="730" height="34" fill="#141c2c"/>
-<text x="232" y="127" font-size="13" fill="#8796ad" font-weight="600">Name ▴</text>
-<text x="470" y="127" font-size="13" fill="#8796ad" font-weight="600">Path</text>
-<text x="760" y="127" font-size="13" fill="#8796ad" font-weight="600">Size</text>
-<text x="836" y="127" font-size="13" fill="#8796ad" font-weight="600">Modified</text>
-<rect x="232" y="149" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="159" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="164" font-size="14" fill="#dfe7f2">Invoice-2026-001.pdf</text>
-<text x="470" y="164" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="164" font-size="13" fill="#8796ad">182 KB</text><text x="836" y="164" font-size="13" fill="#8796ad">03/02/2026</text>
-<rect x="232" y="187" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="197" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="202" font-size="14" fill="#dfe7f2">Invoice-2026-002.pdf</text>
-<text x="470" y="202" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="202" font-size="13" fill="#8796ad">176 KB</text><text x="836" y="202" font-size="13" fill="#8796ad">04/03/2026</text>
-<rect x="214" y="217" width="722" height="34" rx="6" fill="#173458" stroke="#2c5a92"/>
-<rect x="232" y="225" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="235" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="240" font-size="14" fill="#dfe7f2">Invoice-2026-003.pdf</text>
-<text x="470" y="240" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="240" font-size="13" fill="#8796ad">191 KB</text><text x="836" y="240" font-size="13" fill="#8796ad">02/04/2026</text>
-<rect x="232" y="263" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="273" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="278" font-size="14" fill="#dfe7f2">invoice-template.pdf</text>
-<text x="470" y="278" font-size="13" fill="#8796ad">C:\Users\you\Documents\Templates</text>
-<text x="760" y="278" font-size="13" fill="#8796ad">64 KB</text><text x="836" y="278" font-size="13" fill="#8796ad">15/04/2026</text>
-<rect x="232" y="301" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="311" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="316" font-size="14" fill="#dfe7f2">Invoice-2026-004.pdf</text>
-<text x="470" y="316" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="316" font-size="13" fill="#8796ad">188 KB</text><text x="836" y="316" font-size="13" fill="#8796ad">05/05/2026</text>
-<rect x="232" y="339" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="349" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="354" font-size="14" fill="#dfe7f2">hosting-invoice-may.pdf</text>
-<text x="470" y="354" font-size="13" fill="#8796ad">C:\Users\you\Downloads</text>
-<text x="760" y="354" font-size="13" fill="#8796ad">92 KB</text><text x="836" y="354" font-size="13" fill="#8796ad">21/05/2026</text>
-<rect x="232" y="377" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="387" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="392" font-size="14" fill="#dfe7f2">Invoice-2026-005.pdf</text>
-<text x="470" y="392" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="392" font-size="13" fill="#8796ad">201 KB</text><text x="836" y="392" font-size="13" fill="#8796ad">03/06/2026</text>
-<rect x="232" y="415" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="425" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="430" font-size="14" fill="#dfe7f2">Invoice-2026-006.pdf</text>
-<text x="470" y="430" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="430" font-size="13" fill="#8796ad">179 KB</text><text x="836" y="430" font-size="13" fill="#8796ad">01/07/2026</text>
-<rect x="232" y="453" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="463" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="468" font-size="14" fill="#dfe7f2">camera-invoice.pdf</text>
-<text x="470" y="468" font-size="13" fill="#8796ad">C:\Users\you\Downloads</text>
-<text x="760" y="468" font-size="13" fill="#8796ad">120 KB</text><text x="836" y="468" font-size="13" fill="#8796ad">18/08/2026</text>
-<rect x="232" y="491" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="501" width="15" height="7" fill="#e5534b"/>
-<text x="256" y="506" font-size="14" fill="#dfe7f2">Invoice-2026-007.pdf</text>
-<text x="470" y="506" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
-<text x="760" y="506" font-size="13" fill="#8796ad">185 KB</text><text x="836" y="506" font-size="13" fill="#8796ad">02/09/2026</text>
-<rect x="940" y="105" width="340" height="625" fill="#141c2c"/><line x1="940" y1="105" x2="940" y2="730" stroke="#1f2a3d"/>
-<g transform="translate(990 130)"><rect width="240" height="320" rx="6" fill="#f7f8fb"/><rect x="22" y="24" width="70" height="14" rx="3" fill="#317DCF"/><rect x="150" y="26" width="68" height="8" rx="3" fill="#c5ccd8"/><rect x="22" y="56" width="120" height="7" rx="3" fill="#c5ccd8"/><rect x="22" y="70" width="96" height="7" rx="3" fill="#c5ccd8"/><rect x="22" y="110" width="150" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="110" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="136" width="125" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="136" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="162" width="100" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="162" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="188" width="150" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="188" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="214" width="125" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="214" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="240" width="100" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="240" width="32" height="7" rx="3" fill="#d9dee7"/><line x1="22" y1="272" x2="218" y2="272" stroke="#c5ccd8"/><rect x="140" y="284" width="78" height="12" rx="3" fill="#2B9597"/></g>
-<text x="964" y="490" font-size="13" fill="#8796ad">Name</text><text x="1050" y="490" font-size="13" fill="#dfe7f2">Invoice-2026-003.pdf</text>
-<text x="964" y="516" font-size="13" fill="#8796ad">Type</text><text x="1050" y="516" font-size="13" fill="#dfe7f2">PDF document</text>
-<text x="964" y="542" font-size="13" fill="#8796ad">Size</text><text x="1050" y="542" font-size="13" fill="#dfe7f2">191 KB</text>
-<text x="964" y="568" font-size="13" fill="#8796ad">Pages</text><text x="1050" y="568" font-size="13" fill="#dfe7f2">1</text>
-<text x="964" y="594" font-size="13" fill="#8796ad">Modified</text><text x="1050" y="594" font-size="13" fill="#dfe7f2">02/04/2026 10:41</text>
-<rect y="730" width="1280" height="30" fill="#0c121d"/><line x1="0" y1="730" x2="1280" y2="730" stroke="#1f2a3d"/>
-<circle cx="20" cy="745" r="4.5" fill="#3fbf7f"/><text x="32" y="750" font-size="12.5" fill="#8796ad">2,541,861 indexed · live via USN journal</text>
-<text x="1264" y="750" font-size="12.5" fill="#8796ad" text-anchor="end">10 results · 12 ms</text>
-</g></svg>
+</g>
+<text x="30" y="19" font-size="12" fill="#e6e8eb">Mosaic</text>
+<path d="M1265 14.5h10" stroke="#e6e8eb"/><rect x="1310.5" y="9.5" width="9" height="9" fill="none" stroke="#e6e8eb"/><path d="M1356 9.5l9 9m0-9l-9 9" stroke="#e6e8eb"/>
+<text x="20" y="48" font-size="12.5" fill="#e6e8eb">File</text>
+<text x="58" y="48" font-size="12.5" fill="#e6e8eb">Edit</text>
+<text x="99" y="48" font-size="12.5" fill="#e6e8eb">View</text>
+<text x="145" y="48" font-size="12.5" fill="#e6e8eb">Search</text>
+<text x="201" y="48" font-size="12.5" fill="#e6e8eb">Tools</text>
+<text x="249" y="48" font-size="12.5" fill="#e6e8eb">Help</text>
+<path d="M0 55.5H1400" stroke="#262b33"/>
+<rect y="56" width="1400" height="41" fill="#181c22"/><path d="M0 96.5H1400" stroke="#262b33"/>
+<text x="10" y="84" font-size="20" font-weight="700" fill="#7aa2ff">Mosaic</text>
+<rect x="97" y="62" width="48" height="28" rx="6" fill="#1f2a44"/><text x="121" y="80" font-size="12" fill="#7aa2ff" text-anchor="middle">Files</text>
+<path d="M157 76h16m-6-6-6 6 6 6M192 76h16m-6-6 6 6-6 6" stroke="#454c57" stroke-width="1.6" fill="none"/>
+<rect x="231.5" y="62.5" width="442" height="27" rx="4" fill="#0f1216" stroke="#7aa2ff"/>
+<text x="240" y="80" font-size="12" fill="#e6e8eb">invoice</text><rect x="279.0" y="69" width="1" height="15" fill="#e6e8eb"/>
+<rect x="679.5" y="62.5" width="83" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="721.0" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Timestamps</text>
+<rect x="769.5" y="62.5" width="67" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="803.0" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Diacritics</text>
+<rect x="843.5" y="62.5" width="52" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="869.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Regex</text>
+<rect x="901.5" y="62.5" width="84" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="943.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Whole word</text>
+<rect x="992.5" y="62.5" width="79" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="1032.0" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Match case</text>
+<rect x="1078.5" y="62.5" width="70" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="1113.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Metadata</text>
+<rect x="1155.5" y="62.5" width="62" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="1186.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Content</text>
+<rect x="1224.5" y="62.5" width="149" height="27" rx="3" fill="#0f1216" stroke="#262b33"/><text x="1233" y="80.0" font-size="12" fill="#e6e8eb">Everything</text><path d="M1357 74.0l4 4 4-4" stroke="#e6e8eb" fill="none" stroke-width="1.2"/>
+<rect x="10.5" y="105.5" width="200" height="753" rx="6" fill="#181c22" stroke="#262b33"/>
+<path d="M40 120.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#e9a70f"/><rect x="40" y="122" width="16" height="10" rx="1.5" fill="#fcc419"/>
+<text x="64" y="129" font-size="12" fill="#e6e8eb">All</text>
+<path d="M48 145l7.5 6.5h-2v8h-11v-8h-2z" fill="#f0883e"/><rect x="46" y="154" width="4" height="5.5" fill="#7a3e12"/>
+<text x="64" y="156" font-size="12" fill="#e6e8eb">Home</text>
+<rect x="41" y="172" width="14" height="14" rx="1.5" fill="#3b8eea"/><circle cx="51" cy="176" r="1.6" fill="#fff"/><path d="M41 184l5-5 4 4 2-2 3 3v1.5h-14z" fill="#e8f2ff"/>
+<text x="64" y="183" font-size="12" fill="#e6e8eb">Gallery</text>
+<path d="M20 196.5h180" stroke="#262b33"/>
+<rect x="40" y="210" width="16" height="10" rx="1.5" fill="#2d9bf0"/><rect x="40" y="210" width="16" height="3" rx="1" fill="#6cc0ff"/>
+<text x="64" y="219" font-size="12" fill="#e6e8eb">Desktop</text>
+<path d="M40 237.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#17876c"/><rect x="40" y="239" width="16" height="10" rx="1.5" fill="#1fae8c"/><path d="M48 241v5m-2.5-2.2 2.5 2.5 2.5-2.5" stroke="#fff" stroke-width="1.3" fill="none"/>
+<text x="64" y="246" font-size="12" fill="#e6e8eb">Downloads</text>
+<path d="M40 264.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#6c7888"/><rect x="40" y="266" width="16" height="10" rx="1.5" fill="#8d9aab"/><rect x="44" y="269" width="8" height="1.2" fill="#fff"/><rect x="44" y="271.5" width="5.5" height="1.2" fill="#fff"/>
+<text x="64" y="273" font-size="12" fill="#e6e8eb">Documents</text>
+<rect x="41" y="289" width="14" height="14" rx="1.5" fill="#3b8eea"/><circle cx="51" cy="293" r="1.6" fill="#fff"/><path d="M41 301l5-5 4 4 2-2 3 3v1.5h-14z" fill="#e8f2ff"/>
+<text x="64" y="300" font-size="12" fill="#e6e8eb">Pictures</text>
+<path d="M40 318.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#c4513f"/><rect x="40" y="320" width="16" height="10" rx="1.5" fill="#e5735f"/><path d="M47 327.5v-5l4-1v4.5" stroke="#fff" stroke-width="1.2" fill="none"/><circle cx="46" cy="327.5" r="1.3" fill="#fff"/>
+<text x="64" y="327" font-size="12" fill="#e6e8eb">Music</text>
+<path d="M40 345.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#6a3fd8"/><rect x="40" y="347" width="16" height="10" rx="1.5" fill="#8a5cf6"/><path d="M46.5 349.5l4 2.5-4 2.5z" fill="#fff"/>
+<text x="64" y="354" font-size="12" fill="#e6e8eb">Videos</text>
+<path d="M20 367.5h180" stroke="#262b33"/>
+<rect x="40" y="379" width="16" height="11" rx="1.5" fill="#3fa9f5"/><rect x="45" y="391" width="6" height="1.6" fill="#9aa7b6"/>
+<text x="64" y="390" font-size="12" fill="#e6e8eb">This PC</text>
+<rect x="56" y="411" width="16" height="7" rx="1.5" fill="#a9b2bf"/><rect x="58" y="415" width="3" height="1.4" fill="#3fb950"/><path d="M59 407h3v4h-3z" fill="#3b8eea"/><path d="M62 407h3v4h-3z" fill="#5fe3c4"/>
+<text x="80" y="417" font-size="12" fill="#e6e8eb">Local Disk (C:)</text>
+<rect x="40" y="433" width="16" height="11" rx="1.5" fill="#3fa9f5"/><rect x="45" y="445" width="6" height="1.6" fill="#9aa7b6"/><circle cx="52" cy="443" r="3.5" fill="#1fae8c" stroke="#181c22"/>
+<text x="64" y="444" font-size="12" fill="#e6e8eb">Network</text>
+<ellipse cx="48" cy="467.5" rx="5" ry="7" fill="#1b1d21"/><ellipse cx="48" cy="469" rx="3.3" ry="4.5" fill="#f2f3f5"/><path d="M42.5 474h4.5l-1-2zM49 474h4.5l-3.5-2z" fill="#f5b316"/><path d="M46.8 464.5h2.4l-1.2 1.4z" fill="#f5b316"/>
+<text x="64" y="471" font-size="12" fill="#e6e8eb">Linux</text>
+<path d="M20 484.5h180" stroke="#262b33"/>
+<path d="M43 497h12l-3 12h-12z" fill="#2b74d8"/><path d="M44 500l4 3-5 3" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="64" y="507" font-size="12" fill="#e6e8eb">PowerShell</text>
+<path d="M43 524h12l-3 12h-12z" fill="#2b74d8"/><path d="M44 527l4 3-5 3" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="64" y="534" font-size="12" fill="#e6e8eb">PowerShell (Admin)</text>
+<rect x="40" y="551" width="16" height="12" rx="1" fill="#0c0c0c" stroke="#c8ccd2"/><rect x="40" y="551" width="16" height="2.5" fill="#c8ccd2"/>
+<text x="64" y="561" font-size="12" fill="#e6e8eb">Command Prompt</text>
+<rect x="40" y="578" width="16" height="12" rx="1" fill="#0c0c0c" stroke="#c8ccd2"/><rect x="40" y="578" width="16" height="2.5" fill="#c8ccd2"/>
+<text x="64" y="588" font-size="12" fill="#e6e8eb">Command Prompt (Adm…</text>
+<path d="M24 383l3.5 4 3.5-4z" fill="#8b93a0"/>
+<rect x="218.5" y="106.5" width="699" height="29" rx="6" fill="#181c22" stroke="#262b33"/><text x="228" y="125" font-size="12" fill="#8b93a0">Name</text><text x="392" y="125" font-size="12" fill="#8b93a0">Path</text><text x="548" y="125" font-size="12" fill="#8b93a0" text-anchor="end">Size</text><text x="558" y="125" font-size="12" fill="#8b93a0">Type</text><text x="718" y="125" font-size="12" fill="#8b93a0">Modified</text><text x="850" y="125" font-size="12" fill="#8b93a0">Attributes</text><path d="M265 124.5l3.5-6 3.5 6z" fill="#7aa2ff"/>
+<path d="M230 144.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H230z" fill="#e9a70f"/><rect x="230" y="146" width="16" height="10" rx="1.5" fill="#fcc419"/><text x="254" y="153" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">Invoice</tspan>s</text><text x="392" y="153" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="153" font-size="12" fill="#8b93a0" text-anchor="end"></text><text x="558" y="153" font-size="12" fill="#8b93a0">File folder</text><text x="718" y="153" font-size="12" fill="#8b93a0">02/10/2026 18:20</text><text x="850" y="153" font-size="12" fill="#8b93a0"></text>
+<path d="M232.5 169.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 169.5v4h4z" fill="#c4c9d1"/><rect x="231" y="177" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="181" font-size="12" fill="#e6e8eb" xml:space="preserve">camera-<tspan fill="#7aa2ff" font-weight="700">invoice</tspan>.pdf</text><text x="392" y="181" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="181" font-size="12" fill="#8b93a0" text-anchor="end">120 KB</text><text x="558" y="181" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="181" font-size="12" fill="#8b93a0">18/08/2026 14:03</text><text x="850" y="181" font-size="12" fill="#8b93a0">A</text>
+<path d="M232.5 197.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 197.5v4h4z" fill="#c4c9d1"/><rect x="231" y="205" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="209" font-size="12" fill="#e6e8eb" xml:space="preserve">hosting-<tspan fill="#7aa2ff" font-weight="700">invoice</tspan>.pdf</text><text x="392" y="209" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="209" font-size="12" fill="#8b93a0" text-anchor="end">92 KB</text><text x="558" y="209" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="209" font-size="12" fill="#8b93a0">21/05/2026 08:47</text><text x="850" y="209" font-size="12" fill="#8b93a0">A</text>
+<rect x="218" y="222" width="700" height="24" rx="4" fill="#243257"/><path d="M232.5 225.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 225.5v4h4z" fill="#c4c9d1"/><rect x="234.5" y="231.0" width="7" height="1" fill="#9aa1ac"/><rect x="234.5" y="233.5" width="5" height="1" fill="#9aa1ac"/><rect x="234.5" y="236.0" width="7" height="1" fill="#9aa1ac"/><text x="254" y="237" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-notes.txt</text><text x="392" y="237" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="237" font-size="12" fill="#8b93a0" text-anchor="end">1 KB</text><text x="558" y="237" font-size="12" fill="#8b93a0">Text Document</text><text x="718" y="237" font-size="12" fill="#8b93a0">10/10/2026 09:41</text><text x="850" y="237" font-size="12" fill="#8b93a0">A</text>
+<path d="M232.5 253.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 253.5v4h4z" fill="#c4c9d1"/><rect x="231" y="261" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="265" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-q1.pdf</text><text x="392" y="265" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="265" font-size="12" fill="#8b93a0" text-anchor="end">182 KB</text><text x="558" y="265" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="265" font-size="12" fill="#8b93a0">03/04/2026 10:12</text><text x="850" y="265" font-size="12" fill="#8b93a0">A</text>
+<path d="M232.5 281.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 281.5v4h4z" fill="#c4c9d1"/><rect x="231" y="289" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="293" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-q2.pdf</text><text x="392" y="293" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="293" font-size="12" fill="#8b93a0" text-anchor="end">176 KB</text><text x="558" y="293" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="293" font-size="12" fill="#8b93a0">02/07/2026 11:30</text><text x="850" y="293" font-size="12" fill="#8b93a0">A</text>
+<path d="M232.5 309.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 309.5v4h4z" fill="#c4c9d1"/><rect x="231" y="317" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="321" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-q3.pdf</text><text x="392" y="321" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="321" font-size="12" fill="#8b93a0" text-anchor="end">191 KB</text><text x="558" y="321" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="321" font-size="12" fill="#8b93a0">01/10/2026 16:05</text><text x="850" y="321" font-size="12" fill="#8b93a0">A</text>
+<rect x="231" y="338" width="14" height="14" rx="2.5" fill="#2160c4"/><text x="238" y="349" font-size="10" font-weight="700" fill="#fff" text-anchor="middle">W</text><text x="254" y="349" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-template.docx</text><text x="392" y="349" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="349" font-size="12" fill="#8b93a0" text-anchor="end">24 KB</text><text x="558" y="349" font-size="12" fill="#8b93a0">Microsoft Word Document</text><text x="718" y="349" font-size="12" fill="#8b93a0">15/04/2026 19:22</text><text x="850" y="349" font-size="12" fill="#8b93a0">A</text>
+<rect x="231" y="366" width="14" height="14" rx="2.5" fill="#1d7a46"/><text x="238" y="377" font-size="10" font-weight="700" fill="#fff" text-anchor="middle">X</text><text x="254" y="377" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>s-2026.xlsx</text><text x="392" y="377" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="377" font-size="12" fill="#8b93a0" text-anchor="end">38 KB</text><text x="558" y="377" font-size="12" fill="#8b93a0">Microsoft Excel Worksheet</text><text x="718" y="377" font-size="12" fill="#8b93a0">10/10/2026 09:38</text><text x="850" y="377" font-size="12" fill="#8b93a0">A</text>
+<rect x="938.5" y="105.5" width="436" height="753" rx="6" fill="#181c22" stroke="#262b33"/>
+<text x="956" y="137" font-size="13" font-weight="700" fill="#e6e8eb">invoice-notes.txt</text>
+<text x="956" y="156" font-size="12" fill="#8b93a0">1 KB · 10/10/2026 09:41 · C:\Users\you\Documents\Invoices</text>
+<text x="956" y="180" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Invoices 2026</text>
+<text x="956" y="194" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">=============</text>
+<text x="956" y="208" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve"></text>
+<text x="956" y="222" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Q1   182 KB   paid  03/04</text>
+<text x="956" y="236" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Q2   176 KB   paid  02/07</text>
+<text x="956" y="250" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Q3   191 KB   due   15/10</text>
+<text x="956" y="264" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve"></text>
+<text x="956" y="278" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">To do</text>
+<text x="956" y="292" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">- send the Q3 reminder on the 10th</text>
+<text x="956" y="306" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">- hosting renews in November</text>
+<text x="956" y="320" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">- keep the camera receipt (warranty)</text>
+<rect y="862" width="1400" height="38" fill="#181c22"/><path d="M0 862.5H1400" stroke="#262b33"/>
+<text x="10" y="881" font-size="12" fill="#8b93a0">9 items | Size: 1 KB | Date Modified: 10/10/2026 09:41 | Path: C:\Users\you\Documents\Invoices</text>
+<rect x="828.5" y="866.5" width="109" height="23" rx="3" fill="#0f1216" stroke="#262b33"/><text x="837" y="882.0" font-size="12" fill="#e6e8eb">Names</text><path d="M921 876.0l4 4 4-4" stroke="#e6e8eb" fill="none" stroke-width="1.2"/>
+<rect x="948.5" y="866.5" width="60" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="978.5" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">Sidebar</text>
+<rect x="1014.5" y="866.5" width="134" height="22" rx="3" fill="#181c22" stroke="#262b33"/><rect x="1014.5" y="866.5" width="58" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="1043.5" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">Browse</text><text x="1110" y="882" font-size="12" fill="#8b93a0" text-anchor="middle">Subfolders</text>
+<rect x="1149.5" y="866.5" width="68" height="22" rx="3" fill="#181c22" stroke="#262b33"/><text x="1183.5" y="881.5" font-size="12" fill="#8b93a0" text-anchor="middle">Smooth</text>
+<rect x="1223.5" y="866.5" width="61" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="1254.0" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">Preview</text>
+<rect x="1294.5" y="866.5" width="79" height="22" rx="3" fill="#181c22" stroke="#262b33"/><rect x="1294.5" y="866.5" width="38" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="1313.5" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">List</text><text x="1353" y="882" font-size="12" fill="#8b93a0" text-anchor="middle">Grid</text>
+</g><rect x="0.5" y="0.5" width="1399" height="899" rx="8" fill="none" stroke="#2e343d"/></svg>
