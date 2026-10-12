@@ -30,8 +30,9 @@ const CHUNK: usize = 20_000; // files whose paths the bulk scan holds at once
 /// Live changes are applied at most this often: a file rewritten constantly is extracted once per window.
 const LIVE_BATCH: std::time::Duration = std::time::Duration::from_secs(60);
 /// A file re-indexed this recently waits for a later batch: a log or transcript appended to all day was re-extracted
-/// whole every minute, each time a new segment (MBs of SSD writes) for the same text plus a bit.
-const HOT_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(600);
+/// whole every minute, each time a new segment (MBs of SSD writes) for the same text plus a bit. Searches stay
+/// current meanwhile: [`search`] reads what's waiting as it is now.
+const HOT_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
 /// Fixed, not per-account: the indexer (the background service, running as SYSTEM when one's
 /// installed — see `backend.rs`) and a search-only GUI process (running as the interactive user)
@@ -283,26 +284,36 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<(String, f32)>, String> {
     if fresh.is_empty() {
         return Ok(hits);
     }
-    hits.retain(|(p, _)| !fresh.contains(p)); // their indexed text is stale
-    hits.extend(search_fresh(&fresh, query, limit).map_err(|e| format!("content search failed: {e}"))?);
+    let (fresh_hits, read) = search_fresh(&fresh, query, limit).map_err(|e| format!("content search failed: {e}"))?;
+    hits.retain(|(p, _)| !read.contains(p)); // their indexed text is stale
+    hits.extend(fresh_hits);
     hits.sort_by(|a, b| b.1.total_cmp(&a.1));
     hits.truncate(limit);
     Ok(hits)
 }
 
-// ponytail: plain-text/Office files only (IFilter types like PDF would need a subprocess per query), and capped:
-// a mass change (an unzip into Documents) is searched from the index once its batch lands
-fn search_fresh(paths: &[String], query: &str, limit: usize) -> tantivy::Result<Vec<(String, f32)>> {
+// ponytail: plain-text/Office files only (IFilter types like PDF would need a subprocess per query), and capped at
+// 200 files / 32 MB of text: past that (a build, an unzip) the rest is searched from the index, as of its last batch
+/// The hits among `paths` as they are now, and the paths that answer covers (read, or gone).
+fn search_fresh(paths: &[String], query: &str, limit: usize) -> tantivy::Result<(Vec<(String, f32)>, Vec<String>)> {
     let (schema, fields) = schema();
     let index = Index::create_in_ram(schema);
     let mut w: IndexWriter = index.writer_with_num_threads(1, 15_000_000)?;
-    for path in paths.iter().take(200) {
-        if let Some(body) = crate::extract::local_text(path) {
+    let (mut read, mut budget) = (Vec::new(), 32usize << 20);
+    for path in paths {
+        if read.len() == 200 || budget == 0 {
+            break;
+        }
+        if !Path::new(path).exists() {
+            read.push(path.clone());
+        } else if let Some(body) = crate::extract::local_text(path) {
+            budget = budget.saturating_sub(body.len());
             w.add_document(doc!(fields.path => path.as_str(), fields.mtime => 0i64, fields.size => 0i64, fields.body => body))?;
+            read.push(path.clone());
         }
     }
     w.commit()?;
-    Engine::open(index, fields)?.search(query, limit)
+    Ok((Engine::open(index, fields)?.search(query, limit)?, read))
 }
 
 /// Bulk-scan progress, for the status line's "building index" message — `None` once the initial
@@ -490,7 +501,7 @@ fn flush(any: bool) {
 
 pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
     std::thread::spawn(move || {
-        load_churn();
+        load_pending();
         let mut first = std::time::Instant::now();
         let mut recent: std::collections::HashMap<String, std::time::Instant> = Default::default();
         loop {
@@ -537,28 +548,19 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
     });
 }
 
-/// Service stop: land the waiting batch, for at most `within`, and if nothing was left unapplied and a full pass
-/// stands behind the index, leave the marker that lets the next start skip its full pass. Keeps the batch lock
-/// so no new batch starts before the process exits.
+/// Service stop: what's still waiting goes to [`pending_path`] for the next start (indexing it here, hours of hot
+/// files and a day of churn, could take far longer than a stop allows), and if a full pass stands behind the index,
+/// the marker that lets the next start skip its full pass. Keeps the batch lock so no new batch starts before exit.
 pub fn shutdown(within: std::time::Duration) {
-    let deadline = std::time::Instant::now() + within;
     let Some(pending) = PENDING.try_lock_for(within) else { return };
     let pending = parking_lot::MutexGuard::leak(pending); // never unlocked
-    // churn keeps waiting for its daily batch, in a file: a day of it could take far longer than a stop allows
-    let (churn, now): (Vec<_>, Vec<_>) = pending.drain().partition(|(p, _)| churny(p));
-    if !churn.is_empty() {
+    if !pending.is_empty() {
         let since = CHURN_SINCE.load(std::sync::atomic::Ordering::Relaxed);
-        let text: String = std::iter::once(since.to_string()).chain(churn.into_iter().map(|(p, _)| p)).map(|l| l + "\n").collect();
-        let _ = std::fs::write(churn_path(), text);
-    }
-    let mut any = false;
-    for (_, ev) in now {
-        if std::time::Instant::now() > deadline {
-            return; // out of time: changes left unapplied, so no marker; the next start's full pass picks them up
+        let text: String = std::iter::once(since.to_string()).chain(pending.drain().map(|(p, _)| p)).map(|l| l + "\n").collect();
+        if std::fs::write(pending_path(), text).is_err() {
+            return; // not kept: no marker, so the next start's full pass picks these up
         }
-        any |= apply(ev);
     }
-    flush(any);
     if COMPLETE.load(std::sync::atomic::Ordering::Relaxed) {
         let _ = std::fs::write(done_path(), b"");
     }
@@ -575,22 +577,23 @@ fn churny(path: &str) -> bool {
 }
 
 const CHURN_BATCH: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
-/// Unix seconds the current churn window opened (carried over a restart by [`churn_path`]).
+/// Unix seconds the current churn window opened (carried over a restart by [`pending_path`]).
 static CHURN_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Churn still waiting for its batch at a clean stop: the window's start, then one path per line.
-fn churn_path() -> PathBuf {
+/// Changes still waiting at a clean stop: the churn window's start, then one path per line.
+fn pending_path() -> PathBuf {
     dir().with_file_name("contentchurn.txt")
 }
 
-/// Puts back what the last clean stop left waiting, as it stands now (its events weren't kept).
-fn load_churn() {
-    let text = std::fs::read_to_string(churn_path()).unwrap_or_default();
-    let _ = std::fs::remove_file(churn_path());
+/// Puts back what the last clean stop left waiting, as it stands now (its events weren't kept). User files land in
+/// the first batch (cooldowns don't survive a restart); churn keeps its window.
+fn load_pending() {
+    let text = std::fs::read_to_string(pending_path()).unwrap_or_default();
+    let _ = std::fs::remove_file(pending_path());
     let mut lines = text.lines();
     CHURN_SINCE.store(lines.next().and_then(|l| l.parse().ok()).unwrap_or_else(unix_now), std::sync::atomic::Ordering::Relaxed);
     let mut pending = PENDING.lock();
@@ -685,10 +688,13 @@ mod tests {
         let f = std::env::temp_dir().join(format!("fresh_test_{}.txt", std::process::id()));
         std::fs::write(&f, "the quokka smiles").unwrap();
         let p = f.display().to_string();
-        let hits = search_fresh(std::slice::from_ref(&p), "quokka", 10).unwrap();
+        let (hits, read) = search_fresh(std::slice::from_ref(&p), "quokka", 10).unwrap();
         assert_eq!(hits.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(), [p.as_str()]);
-        assert!(search_fresh(&[p], "wombat", 10).unwrap().is_empty());
-        let _ = std::fs::remove_file(f);
+        assert_eq!(read, [p.clone()]);
+        assert!(search_fresh(std::slice::from_ref(&p), "wombat", 10).unwrap().0.is_empty());
+        let _ = std::fs::remove_file(&f);
+        let (hits, read) = search_fresh(std::slice::from_ref(&p), "quokka", 10).unwrap();
+        assert!(hits.is_empty() && read == [p], "a deleted file answers too: its indexed text must go");
     }
 
     #[test]

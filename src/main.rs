@@ -9,6 +9,7 @@ mod extract;
 mod hashcache;
 mod i18n;
 mod infrastructure;
+mod kvlog;
 mod metadata;
 mod native;
 mod shell;

@@ -93,8 +93,7 @@ pub fn sync(h: SearchHandle) {
 fn run(h: &SearchHandle) -> Result<(), String> {
     let exe = exiftool().ok_or("Metadata needs ExifTool (exiftool.exe on PATH)")?;
     if FILES.read().is_none() {
-        let saved: Files = std::fs::read(store()).ok().and_then(|b| bincode::deserialize(&b).ok()).unwrap_or_default();
-        *FILES.write() = Some(saved);
+        *FILES.write() = Some(crate::kvlog::load(&store()));
         GEN.fetch_add(1, Ordering::Relaxed);
     }
     // every candidate from the name index, a page at a time
@@ -111,23 +110,24 @@ fn run(h: &SearchHandle) -> Result<(), String> {
             break;
         }
     }
+    // what changed since the last save, for `kvlog`: the files gone (now), then each batch read
+    let unsaved: Mutex<Vec<String>>;
     let todo: Vec<String> = {
         let mut g = FILES.write();
         let files = g.as_mut().unwrap();
-        let before = files.len();
-        files.retain(|p, _| now.contains_key(p));
-        let todo: Vec<String> = now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect();
-        if todo.is_empty() && files.len() == before {
-            return Ok(()); // nothing changed: don't rewrite the whole (tens of MB) store
+        let gone: Vec<String> = files.keys().filter(|p| !now.contains_key(*p)).cloned().collect();
+        for p in &gone {
+            files.remove(p);
         }
-        todo
+        unsaved = Mutex::new(gone);
+        now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect()
     };
     *PROGRESS.lock() = Some((0, todo.len()));
     let queue = Mutex::new(todo.chunks(BATCH).collect::<Vec<_>>());
     let saved = Mutex::new(Instant::now());
     std::thread::scope(|s| {
         for k in 0..workers() {
-            let (queue, exe, now, saved) = (&queue, &exe, &now, &saved);
+            let (queue, exe, now, saved, unsaved) = (&queue, &exe, &now, &saved, &unsaved);
             s.spawn(move || {
                 loop {
                     // the lock must drop before ExifTool runs: in `while let` it would be held for the whole batch
@@ -142,6 +142,7 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                         files.insert(p.clone(), (m, size, text, fields));
                     }
                     drop(g);
+                    unsaved.lock().extend(chunk.iter().cloned());
                     if let Some(pr) = PROGRESS.lock().as_mut() {
                         pr.0 += chunk.len();
                     }
@@ -150,21 +151,18 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                     let mut s = saved.lock();
                     if s.elapsed() > crate::hashcache::SAVE_EVERY {
                         *s = Instant::now();
-                        let _ = save();
+                        let _ = save(unsaved);
                     }
                 }
             });
         }
     });
-    save()
+    save(&unsaved)
 }
 
-fn save() -> Result<(), String> {
-    let bytes = bincode::serialize(FILES.read().as_ref().unwrap()).map_err(|e| e.to_string())?;
-    let _ = std::fs::create_dir_all(store().parent().unwrap());
-    let tmp = store().with_extension("tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-    std::fs::rename(tmp, store()).map_err(|e| e.to_string())
+fn save(unsaved: &Mutex<Vec<String>>) -> Result<(), String> {
+    let changed = std::mem::take(&mut *unsaved.lock());
+    crate::kvlog::save(&store(), FILES.read().as_ref().unwrap(), &changed)
 }
 
 /// Pull the structured fields out of one ExifTool JSON object (a text string or, for the numeric

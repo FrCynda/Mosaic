@@ -22,7 +22,7 @@ use crate::backend::SearchHandle;
 const SKIP: &str = r"!path:\appdata\ !path:c:\windows\ !path:$recycle.bin";
 const HASH_MAX_BYTES: i64 = 200 << 20;
 const BATCH: usize = 64;
-/// Mid-run checkpoint: each save rewrites the whole store, so a closed app redoes at most this much hashing.
+/// Mid-run checkpoint (an append, see `kvlog`): a closed app redoes at most this much hashing.
 pub const SAVE_EVERY: Duration = Duration::from_secs(300);
 fn workers() -> usize {
     std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2))
@@ -73,8 +73,7 @@ pub fn sync(h: SearchHandle) {
 
 fn run(h: &SearchHandle) -> Result<(), String> {
     if FILES.read().is_none() {
-        let saved: Files = std::fs::read(store()).ok().and_then(|b| bincode::deserialize(&b).ok()).unwrap_or_default();
-        *FILES.write() = Some(saved);
+        *FILES.write() = Some(crate::kvlog::load(&store()));
         GEN.fetch_add(1, Ordering::Relaxed);
     }
     let mut now: HashMap<String, (i64, i64)> = HashMap::new();
@@ -90,23 +89,24 @@ fn run(h: &SearchHandle) -> Result<(), String> {
             break;
         }
     }
+    // what changed since the last save, for `kvlog`: the files gone (now), then each batch hashed
+    let unsaved: Mutex<Vec<String>>;
     let todo: Vec<String> = {
         let mut g = FILES.write();
         let files = g.as_mut().unwrap();
-        let before = files.len();
-        files.retain(|p, _| now.contains_key(p));
-        let todo: Vec<String> = now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect();
-        if todo.is_empty() && files.len() == before {
-            return Ok(()); // nothing changed: don't rewrite the whole store (once a minute while a hash query is up)
+        let gone: Vec<String> = files.keys().filter(|p| !now.contains_key(*p)).cloned().collect();
+        for p in &gone {
+            files.remove(p);
         }
-        todo
+        unsaved = Mutex::new(gone);
+        now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect()
     };
     *PROGRESS.lock() = Some((0, todo.len()));
     let queue = Mutex::new(todo.chunks(BATCH).collect::<Vec<_>>());
     let saved = Mutex::new(Instant::now());
     std::thread::scope(|s| {
         for _ in 0..workers() {
-            let (queue, now, saved) = (&queue, &now, &saved);
+            let (queue, now, saved, unsaved) = (&queue, &now, &saved, &unsaved);
             s.spawn(move || loop {
                 let next = queue.lock().pop();
                 let Some(chunk) = next else { break };
@@ -120,6 +120,7 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                     files.insert(p.clone(), (m, size, hashes));
                 }
                 drop(g);
+                unsaved.lock().extend(chunk.iter().cloned());
                 if let Some(pr) = PROGRESS.lock().as_mut() {
                     pr.0 += chunk.len();
                 }
@@ -127,20 +128,17 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                 let mut s = saved.lock();
                 if s.elapsed() > SAVE_EVERY {
                     *s = Instant::now();
-                    let _ = save();
+                    let _ = save(unsaved);
                 }
             });
         }
     });
-    save()
+    save(&unsaved)
 }
 
-fn save() -> Result<(), String> {
-    let bytes = bincode::serialize(FILES.read().as_ref().unwrap()).map_err(|e| e.to_string())?;
-    let _ = std::fs::create_dir_all(store().parent().unwrap());
-    let tmp = store().with_extension("tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-    std::fs::rename(tmp, store()).map_err(|e| e.to_string())
+fn save(unsaved: &Mutex<Vec<String>>) -> Result<(), String> {
+    let changed = std::mem::take(&mut *unsaved.lock());
+    crate::kvlog::save(&store(), FILES.read().as_ref().unwrap(), &changed)
 }
 
 /// Read `path` once, feeding all four hashers at the same time.
