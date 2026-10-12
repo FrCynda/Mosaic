@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" width="1280" height="760" font-family="'Segoe UI Variable Display','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif">
+<defs><clipPath id="win"><rect width="1280" height="760" rx="14"/></clipPath><linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.05"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient></defs>
+<g clip-path="url(#win)"><rect width="1280" height="760" fill="#0f1522"/>
+<rect width="1280" height="44" fill="#0c121d"/><rect width="1280" height="44" fill="url(#sheen)"/>
+<g transform="translate(16 12) scale(0.078)"><rect width="256" height="256" rx="57" fill="#317DCF"/><circle cx="128" cy="128" r="45" fill="none" stroke="#fff" stroke-width="16"/><line x1="161" y1="161" x2="190" y2="190" stroke="#fff" stroke-width="20" stroke-linecap="round"/></g>
+<text x="46" y="28" font-size="14" fill="#dfe7f2">Mosaic</text>
+<text x="1150" y="28" font-size="14" fill="#8796ad" text-anchor="middle">—</text>
+<text x="1196" y="28" font-size="14" fill="#8796ad" text-anchor="middle">▢</text>
+<text x="1242" y="28" font-size="14" fill="#8796ad" text-anchor="middle">✕</text>
+<rect y="44" width="1280" height="60" fill="#141c2c"/><line x1="0" y1="104" x2="1280" y2="104" stroke="#1f2a3d"/>
+<text x="26" y="82" font-size="26" fill="#dfe7f2" text-anchor="middle">‹</text>
+<text x="56" y="82" font-size="26" fill="#8796ad" text-anchor="middle">›</text>
+<rect x="80" y="56" width="640" height="36" rx="18" fill="#0f1522" stroke="#3380CA" stroke-width="1.5"/>
+<circle cx="102" cy="73" r="6.5" fill="none" stroke="#8796ad" stroke-width="2"/><line x1="107" y1="78" x2="111" y2="82" stroke="#8796ad" stroke-width="2.2" stroke-linecap="round"/>
+<text x="122" y="79" font-family="'Cascadia Code','Cascadia Mono',Consolas,'SFMono-Regular',Menlo,monospace" font-size="15"><tspan fill="#dfe7f2">invoice </tspan><tspan fill="#76C6AF">ext:</tspan><tspan fill="#dfe7f2">pdf </tspan><tspan fill="#76C6AF">dm:</tspan><tspan fill="#dfe7f2">thisyear</tspan></text>
+<rect x="736" y="60" width="35" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="754" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">Aa</text>
+<rect x="779.0" y="60" width="35" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="796" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">ab</text>
+<rect x="822.0" y="60" width="35" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="840" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">.*</text>
+<rect x="865.0" y="60" width="26" height="28" rx="8" fill="#173458" stroke="#3380CA"/><text x="878" y="79" font-size="13" text-anchor="middle" fill="#dfe7f2" font-weight="600">é</text>
+<rect x="899.5" y="60" width="52" height="28" rx="8" fill="#0f1522" stroke="#1f2a3d"/><text x="926" y="79" font-size="13" text-anchor="middle" fill="#8796ad" font-weight="400">Tags</text>
+<rect x="959.5" y="60" width="78" height="28" rx="8" fill="#173458" stroke="#3380CA"/><text x="998" y="79" font-size="13" text-anchor="middle" fill="#dfe7f2" font-weight="600">Content</text>
+<rect x="1150" y="60" width="30" height="28" rx="7" fill="#173458" stroke="#1f2a3d"/><text x="1165" y="80" font-size="15" fill="#dfe7f2" text-anchor="middle">▤</text>
+<rect x="1188" y="60" width="30" height="28" rx="7" fill="#0f1522" stroke="#1f2a3d"/><text x="1203" y="80" font-size="15" fill="#dfe7f2" text-anchor="middle">▦</text>
+<rect x="1226" y="60" width="30" height="28" rx="7" fill="#0f1522" stroke="#1f2a3d"/><text x="1241" y="80" font-size="15" fill="#dfe7f2" text-anchor="middle">◧</text>
+<rect y="105" width="210" height="625" fill="#0c121d"/>
+<rect x="22" y="124" width="18" height="14" rx="3" fill="#6ABAF1"/><rect x="22" y="121" width="8" height="4" rx="1.5" fill="#6ABAF1"/>
+<text x="52" y="136" font-size="14" fill="#8796ad">All</text>
+<rect x="22" y="160" width="18" height="14" rx="3" fill="#76C6AF"/><rect x="22" y="157" width="8" height="4" rx="1.5" fill="#76C6AF"/>
+<text x="52" y="172" font-size="14" fill="#8796ad">Home</text>
+<rect x="22" y="196" width="18" height="14" rx="3" fill="#2F9EB7"/><rect x="22" y="193" width="8" height="4" rx="1.5" fill="#2F9EB7"/>
+<text x="52" y="208" font-size="14" fill="#8796ad">Gallery</text>
+<line x1="18" y1="234" x2="192" y2="234" stroke="#1f2a3d"/>
+<rect x="22" y="242" width="18" height="14" rx="3" fill="#3380CA"/><rect x="22" y="239" width="8" height="4" rx="1.5" fill="#3380CA"/>
+<text x="52" y="254" font-size="14" fill="#8796ad">Desktop</text>
+<rect x="22" y="278" width="18" height="14" rx="3" fill="#2B9597"/><rect x="22" y="275" width="8" height="4" rx="1.5" fill="#2B9597"/>
+<text x="52" y="290" font-size="14" fill="#8796ad">Downloads</text>
+<rect x="8" y="307" width="194" height="30" rx="7" fill="#17253b"/>
+<rect x="22" y="314" width="18" height="14" rx="3" fill="#9aa7b8"/><rect x="22" y="311" width="8" height="4" rx="1.5" fill="#9aa7b8"/>
+<text x="52" y="326" font-size="14" fill="#dfe7f2">Documents</text>
+<rect x="22" y="350" width="18" height="14" rx="3" fill="#6ABAF1"/><rect x="22" y="347" width="8" height="4" rx="1.5" fill="#6ABAF1"/>
+<text x="52" y="362" font-size="14" fill="#8796ad">Pictures</text>
+<rect x="22" y="386" width="18" height="14" rx="3" fill="#e38b5c"/><rect x="22" y="383" width="8" height="4" rx="1.5" fill="#e38b5c"/>
+<text x="52" y="398" font-size="14" fill="#8796ad">Music</text>
+<rect x="22" y="422" width="18" height="14" rx="3" fill="#a77be0"/><rect x="22" y="419" width="8" height="4" rx="1.5" fill="#a77be0"/>
+<text x="52" y="434" font-size="14" fill="#8796ad">Videos</text>
+<line x1="18" y1="460" x2="192" y2="460" stroke="#1f2a3d"/>
+<rect x="22" y="468" width="18" height="14" rx="3" fill="#8796ad"/><rect x="22" y="465" width="8" height="4" rx="1.5" fill="#8796ad"/>
+<text x="52" y="480" font-size="14" fill="#8796ad">Local Disk (C:)</text>
+<rect x="22" y="504" width="18" height="14" rx="3" fill="#8796ad"/><rect x="22" y="501" width="8" height="4" rx="1.5" fill="#8796ad"/>
+<text x="52" y="516" font-size="14" fill="#8796ad">Data (D:)</text>
+<rect x="210" y="105" width="730" height="34" fill="#141c2c"/>
+<text x="232" y="127" font-size="13" fill="#8796ad" font-weight="600">Name ▴</text>
+<text x="470" y="127" font-size="13" fill="#8796ad" font-weight="600">Path</text>
+<text x="760" y="127" font-size="13" fill="#8796ad" font-weight="600">Size</text>
+<text x="836" y="127" font-size="13" fill="#8796ad" font-weight="600">Modified</text>
+<rect x="232" y="149" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="159" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="164" font-size="14" fill="#dfe7f2">Invoice-2026-001.pdf</text>
+<text x="470" y="164" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="164" font-size="13" fill="#8796ad">182 KB</text><text x="836" y="164" font-size="13" fill="#8796ad">03/02/2026</text>
+<rect x="232" y="187" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="197" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="202" font-size="14" fill="#dfe7f2">Invoice-2026-002.pdf</text>
+<text x="470" y="202" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="202" font-size="13" fill="#8796ad">176 KB</text><text x="836" y="202" font-size="13" fill="#8796ad">04/03/2026</text>
+<rect x="214" y="217" width="722" height="34" rx="6" fill="#173458" stroke="#2c5a92"/>
+<rect x="232" y="225" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="235" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="240" font-size="14" fill="#dfe7f2">Invoice-2026-003.pdf</text>
+<text x="470" y="240" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="240" font-size="13" fill="#8796ad">191 KB</text><text x="836" y="240" font-size="13" fill="#8796ad">02/04/2026</text>
+<rect x="232" y="263" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="273" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="278" font-size="14" fill="#dfe7f2">invoice-template.pdf</text>
+<text x="470" y="278" font-size="13" fill="#8796ad">C:\Users\you\Documents\Templates</text>
+<text x="760" y="278" font-size="13" fill="#8796ad">64 KB</text><text x="836" y="278" font-size="13" fill="#8796ad">15/04/2026</text>
+<rect x="232" y="301" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="311" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="316" font-size="14" fill="#dfe7f2">Invoice-2026-004.pdf</text>
+<text x="470" y="316" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="316" font-size="13" fill="#8796ad">188 KB</text><text x="836" y="316" font-size="13" fill="#8796ad">05/05/2026</text>
+<rect x="232" y="339" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="349" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="354" font-size="14" fill="#dfe7f2">hosting-invoice-may.pdf</text>
+<text x="470" y="354" font-size="13" fill="#8796ad">C:\Users\you\Downloads</text>
+<text x="760" y="354" font-size="13" fill="#8796ad">92 KB</text><text x="836" y="354" font-size="13" fill="#8796ad">21/05/2026</text>
+<rect x="232" y="377" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="387" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="392" font-size="14" fill="#dfe7f2">Invoice-2026-005.pdf</text>
+<text x="470" y="392" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="392" font-size="13" fill="#8796ad">201 KB</text><text x="836" y="392" font-size="13" fill="#8796ad">03/06/2026</text>
+<rect x="232" y="415" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="425" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="430" font-size="14" fill="#dfe7f2">Invoice-2026-006.pdf</text>
+<text x="470" y="430" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="430" font-size="13" fill="#8796ad">179 KB</text><text x="836" y="430" font-size="13" fill="#8796ad">01/07/2026</text>
+<rect x="232" y="453" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="463" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="468" font-size="14" fill="#dfe7f2">camera-invoice.pdf</text>
+<text x="470" y="468" font-size="13" fill="#8796ad">C:\Users\you\Downloads</text>
+<text x="760" y="468" font-size="13" fill="#8796ad">120 KB</text><text x="836" y="468" font-size="13" fill="#8796ad">18/08/2026</text>
+<rect x="232" y="491" width="15" height="19" rx="2.5" fill="#f2f4f8"/><rect x="232" y="501" width="15" height="7" fill="#e5534b"/>
+<text x="256" y="506" font-size="14" fill="#dfe7f2">Invoice-2026-007.pdf</text>
+<text x="470" y="506" font-size="13" fill="#8796ad">C:\Users\you\Documents\Invoices</text>
+<text x="760" y="506" font-size="13" fill="#8796ad">185 KB</text><text x="836" y="506" font-size="13" fill="#8796ad">02/09/2026</text>
+<rect x="940" y="105" width="340" height="625" fill="#141c2c"/><line x1="940" y1="105" x2="940" y2="730" stroke="#1f2a3d"/>
+<g transform="translate(990 130)"><rect width="240" height="320" rx="6" fill="#f7f8fb"/><rect x="22" y="24" width="70" height="14" rx="3" fill="#317DCF"/><rect x="150" y="26" width="68" height="8" rx="3" fill="#c5ccd8"/><rect x="22" y="56" width="120" height="7" rx="3" fill="#c5ccd8"/><rect x="22" y="70" width="96" height="7" rx="3" fill="#c5ccd8"/><rect x="22" y="110" width="150" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="110" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="136" width="125" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="136" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="162" width="100" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="162" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="188" width="150" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="188" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="214" width="125" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="214" width="32" height="7" rx="3" fill="#d9dee7"/><rect x="22" y="240" width="100" height="7" rx="3" fill="#d9dee7"/><rect x="186" y="240" width="32" height="7" rx="3" fill="#d9dee7"/><line x1="22" y1="272" x2="218" y2="272" stroke="#c5ccd8"/><rect x="140" y="284" width="78" height="12" rx="3" fill="#2B9597"/></g>
+<text x="964" y="490" font-size="13" fill="#8796ad">Name</text><text x="1050" y="490" font-size="13" fill="#dfe7f2">Invoice-2026-003.pdf</text>
+<text x="964" y="516" font-size="13" fill="#8796ad">Type</text><text x="1050" y="516" font-size="13" fill="#dfe7f2">PDF document</text>
+<text x="964" y="542" font-size="13" fill="#8796ad">Size</text><text x="1050" y="542" font-size="13" fill="#dfe7f2">191 KB</text>
+<text x="964" y="568" font-size="13" fill="#8796ad">Pages</text><text x="1050" y="568" font-size="13" fill="#dfe7f2">1</text>
+<text x="964" y="594" font-size="13" fill="#8796ad">Modified</text><text x="1050" y="594" font-size="13" fill="#dfe7f2">02/04/2026 10:41</text>
+<rect y="730" width="1280" height="30" fill="#0c121d"/><line x1="0" y1="730" x2="1280" y2="730" stroke="#1f2a3d"/>
+<circle cx="20" cy="745" r="4.5" fill="#3fbf7f"/><text x="32" y="750" font-size="12.5" fill="#8796ad">2,541,861 indexed · live via USN journal</text>
+<text x="1264" y="750" font-size="12.5" fill="#8796ad" text-anchor="end">10 results · 12 ms</text>
+</g></svg>
