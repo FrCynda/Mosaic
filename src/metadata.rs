@@ -96,10 +96,14 @@ fn run(h: &SearchHandle) -> Result<(), String> {
         *FILES.write() = Some(crate::kvlog::load(&store()));
         GEN.fetch_add(1, Ordering::Relaxed);
     }
-    // every candidate from the name index, a page at a time
+    // candidates from the name index, a page at a time: those modified since yesterday, or all of them now and then
+    // (see `hashcache::FULL_EVERY`)
+    static LISTED: Mutex<Option<Instant>> = Mutex::new(None);
+    let full = LISTED.lock().is_none_or(|t| t.elapsed() > crate::hashcache::FULL_EVERY);
+    let since = if full { "" } else { " dm:yesterday.." };
     let mut now: HashMap<String, (i64, i64)> = HashMap::new();
     for offset in (0..).step_by(100_000) {
-        let opts = SearchOptions { query: format!("ext:{EXTS} {SKIP}"), limit: 100_000, offset, ..SearchOptions::default() };
+        let opts = SearchOptions { query: format!("ext:{EXTS} {SKIP}{since}"), limit: 100_000, offset, ..SearchOptions::default() };
         let r = h.search(&opts);
         if let Some(e) = r.error {
             return Err(e);
@@ -115,11 +119,14 @@ fn run(h: &SearchHandle) -> Result<(), String> {
     let todo: Vec<String> = {
         let mut g = FILES.write();
         let files = g.as_mut().unwrap();
-        let gone: Vec<String> = files.keys().filter(|p| !now.contains_key(*p)).cloned().collect();
+        let gone: Vec<String> = if full { files.keys().filter(|p| !now.contains_key(*p)).cloned().collect() } else { Vec::new() };
         for p in &gone {
             files.remove(p);
         }
         unsaved = Mutex::new(gone);
+        if full {
+            *LISTED.lock() = Some(Instant::now());
+        }
         now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect()
     };
     *PROGRESS.lock() = Some((0, todo.len()));

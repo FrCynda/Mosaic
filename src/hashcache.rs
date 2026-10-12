@@ -24,6 +24,10 @@ const HASH_MAX_BYTES: i64 = 200 << 20;
 const BATCH: usize = 64;
 /// Mid-run checkpoint (an append, see `kvlog`): a closed app redoes at most this much hashing.
 pub const SAVE_EVERY: Duration = Duration::from_secs(300);
+/// A sync lists only what was modified since yesterday; the whole candidate set (millions of paths over the pipe,
+/// ~45 MB a minute while such a query was up) only this often, to see deletions and copies (which keep their mtime).
+pub const FULL_EVERY: Duration = Duration::from_secs(1800);
+static LISTED: Mutex<Option<Instant>> = Mutex::new(None);
 fn workers() -> usize {
     std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2))
 }
@@ -76,9 +80,11 @@ fn run(h: &SearchHandle) -> Result<(), String> {
         *FILES.write() = Some(crate::kvlog::load(&store()));
         GEN.fetch_add(1, Ordering::Relaxed);
     }
+    let full = LISTED.lock().is_none_or(|t| t.elapsed() > FULL_EVERY);
+    let since = if full { "" } else { " dm:yesterday.." };
     let mut now: HashMap<String, (i64, i64)> = HashMap::new();
     for offset in (0..).step_by(100_000) {
-        let opts = SearchOptions { query: format!("size:<{HASH_MAX_BYTES} {SKIP}"), limit: 100_000, offset, ..SearchOptions::default() };
+        let opts = SearchOptions { query: format!("size:<{HASH_MAX_BYTES} {SKIP}{since}"), limit: 100_000, offset, ..SearchOptions::default() };
         let r = h.search(&opts);
         if let Some(e) = r.error {
             return Err(e);
@@ -94,11 +100,14 @@ fn run(h: &SearchHandle) -> Result<(), String> {
     let todo: Vec<String> = {
         let mut g = FILES.write();
         let files = g.as_mut().unwrap();
-        let gone: Vec<String> = files.keys().filter(|p| !now.contains_key(*p)).cloned().collect();
+        let gone: Vec<String> = if full { files.keys().filter(|p| !now.contains_key(*p)).cloned().collect() } else { Vec::new() };
         for p in &gone {
             files.remove(p);
         }
         unsaved = Mutex::new(gone);
+        if full {
+            *LISTED.lock() = Some(Instant::now());
+        }
         now.iter().filter(|(p, (m, _))| files.get(*p).is_none_or(|e| e.0 != *m)).map(|(p, _)| p.clone()).collect()
     };
     *PROGRESS.lock() = Some((0, todo.len()));
