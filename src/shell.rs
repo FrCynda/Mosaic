@@ -827,16 +827,16 @@ unsafe fn own_window_shown() -> bool {
 
 /// Drag `paths` out as Explorer does, under `image` (premultiplied BGRA, its width and height: the first item's
 /// thumbnail or icon), moved, copied or linked as the target says (a move on the same drive). Returns once
-/// dropped or cancelled.
-pub fn drag_out(paths: &[&str], host: isize, image: Option<(Vec<u8>, i32, i32)>) {
+/// dropped (true) or cancelled.
+pub fn drag_out(paths: &[&str], host: isize, image: Option<(Vec<u8>, i32, i32)>) -> bool {
     use windows::Win32::Foundation::{COLORREF, POINT};
     use windows::Win32::Graphics::Gdi::{CreateDIBSection, BITMAPINFOHEADER};
     use windows::Win32::System::Com::{CoCreateInstance, IDataObject, CLSCTX_INPROC_SERVER};
-    use windows::Win32::System::Ole::{IDropSource, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
-    use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDragSourceHelper2, SHDoDragDrop, DSH_ALLOWDROPDESCRIPTIONTEXT, SHDRAGIMAGE};
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDragSourceHelper2, DSH_ALLOWDROPDESCRIPTIONTEXT, SHDRAGIMAGE};
     let host = windows::Win32::Foundation::HWND(host as _);
     unsafe {
-        let Some(data) = context_menu::<IDataObject>(paths, false, host) else { return };
+        let Some(data) = context_menu::<IDataObject>(paths, false, host) else { return false };
         if let Ok(h) = CoCreateInstance::<_, IDragSourceHelper2>(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) {
             let _ = h.SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT.0 as u32); // room for "Move to …" under it
             let mut set = false;
@@ -858,7 +858,10 @@ pub fn drag_out(paths: &[&str], host: isize, image: Option<(Vec<u8>, i32, i32)>)
                 let _ = h.InitializeFromWindow(None, None, &data);
             }
         }
-        let _ = SHDoDragDrop(host, &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK);
+        // windows-sys's: the windows crate folds DRAGDROP_S_DROP and DRAGDROP_S_CANCEL into the same Ok
+        let mut done = 0;
+        let allowed = (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK).0;
+        windows_sys::Win32::UI::Shell::SHDoDragDrop(host.0, windows::core::Interface::as_raw(&data), std::ptr::null_mut(), allowed, &mut done) == 0x0004_0100 // DRAGDROP_S_DROP
     }
 }
 

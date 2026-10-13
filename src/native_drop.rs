@@ -378,6 +378,9 @@ pub(super) unsafe fn dropped(l: LPARAM) {
                 let copy = d.effect == DROPEFFECT_COPY;
                 let to = |p: &String| std::path::Path::new(&dest).join(std::path::Path::new(p).file_name().unwrap_or_default()).to_string_lossy().into_owned();
                 let pairs: Vec<(String, String)> = d.files.iter().filter(|p| !std::path::Path::new(&to(p)).exists()).map(|p| (to(p), p.clone())).collect();
+                if !copy {
+                    preview::release(&d.files);
+                }
                 match fileops::transfer(&d.files, &dest, copy, main as isize) {
                     Ok(()) => {
                         if !pairs.is_empty() {
@@ -389,11 +392,8 @@ pub(super) unsafe fn dropped(l: LPARAM) {
                     Err(e) => t("status.failed").replace("{e}", &e),
                 }
             };
-            std::thread::sleep(Duration::from_millis(300)); // the USN journal needs a moment to report it
             with(|u| {
-                for p in u.visible() {
-                    u.with_pane(p, |v| v.run(true));
-                }
+                u.relist_soon();
                 u.flash(msg);
                 if u.tp.sounds {
                     beep();

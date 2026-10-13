@@ -2650,16 +2650,16 @@ unsafe fn copy_other(copy: bool) {
     }
     let to = |p: &String| std::path::Path::new(&dir).join(std::path::Path::new(p).file_name().unwrap_or_default()).to_string_lossy().into_owned();
     let pairs: Vec<(String, String)> = paths.iter().filter(|p| !std::path::Path::new(&to(p)).exists()).map(|p| (to(p), p.clone())).collect();
+    if !copy {
+        preview::release(&paths);
+    }
     match fileops::transfer(&paths, &dir, copy, main as isize) {
         Ok(()) => {
             if !pairs.is_empty() {
                 did(if copy { Undo::Made(pairs.into_iter().map(|p| p.0).collect()) } else { Undo::Moved(pairs) });
             }
-            std::thread::sleep(Duration::from_millis(300));
             with(|u| {
-                for p in u.visible() {
-                    u.with_pane(p, |v| v.run(true));
-                }
+                u.relist_soon();
                 u.flash(t(if copy { "status.copied" } else { "status.cut" }).replace("{n}", &plural(paths.len())));
             });
         }

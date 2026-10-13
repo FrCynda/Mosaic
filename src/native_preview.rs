@@ -296,6 +296,23 @@ pub fn clear() {
     with(|p| p.clear());
 }
 
+/// About to move, delete or rename `paths`: if the pane shows one of them (or something inside one), let go of it,
+/// else a playing video holds the file and the shell waits on it ("File In Use"). True if it did.
+pub fn release(paths: &[String]) -> bool {
+    with(|p| {
+        let k = p.key.to_lowercase();
+        let hit = !k.is_empty() && paths.iter().any(|f| {
+            let f = f.trim_end_matches('\\').to_lowercase();
+            k == f || k.starts_with(&format!("{f}\\"))
+        });
+        if hit {
+            p.clear();
+        }
+        hit
+    })
+    .unwrap_or(false)
+}
+
 /// Redraw now: `theme()` is read fresh on every paint, but the pane is its own window, so the main
 /// window's `InvalidateRect` never reaches it — a theme change needs this to show up without delay.
 pub fn invalidate() {

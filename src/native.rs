@@ -843,6 +843,7 @@ struct Ui {
     press: Option<Press>,
     auto: Option<Auto>,
     flash: Option<(String, Instant)>,
+    fast: Option<Instant>, // since files changed here: the index is asked often for a moment, the lists keep up with it
     hits: Vec<(RECT, Hit)>,
     head_h: i32,
     menu_h: i32, // the File/Edit/View/Search strip above the tab row
@@ -1404,6 +1405,7 @@ pub fn run() {
             press: None,
             auto: None,
             flash: None,
+            fast: None,
             hits: Vec::new(),
             head_h: 0,
             menu_h: 0,
@@ -3192,6 +3194,13 @@ impl Ui {
         args.q = self.scoped(&args.q);
         let _ = self.jobs.send(Job { seq: self.seq, who: self.id, args, h: self.backend.handle() });
     }
+    /// Files changed here (moved, deleted…): for two seconds the index is asked every 50 ms (the service hears of
+    /// a change the moment it lands) and the panes on screen list again each time it changed, without the pause
+    /// kept between live refreshes. A status call is a pipe round trip: nothing next to the refresh itself.
+    fn relist_soon(&mut self) {
+        self.fast = Some(Instant::now());
+        unsafe { SetTimer(self.main, T_POLL, 50, None) };
+    }
     /// The pane a search result is for: the one whose newest search it is.
     fn pane_by_seq(&self, seq: u64) -> Option<usize> {
         if seq == self.seq {
@@ -3368,6 +3377,10 @@ impl Ui {
     /// Twice a second: re-run the search when the index changed (live updates, indexing progress). `true` = offer
     /// the service install.
     fn poll(&mut self) -> bool {
+        if self.fast.is_some_and(|t| t.elapsed() > Duration::from_secs(2)) {
+            self.fast = None;
+            unsafe { SetTimer(self.main, T_POLL, 500, None) };
+        }
         let st = self.backend.status();
         // a busy service refuses a connection now and then (every pipe instance taken while it scans); only an
         // unreachable one for ten polls in a row (5 s) is worth offering to install
@@ -3404,7 +3417,8 @@ impl Ui {
         // the time: never while scrolling, and no more often than 8x the cost of the last refresh (2 s at least).
         let scrolling = self.y != self.poll_y;
         self.poll_y = self.y;
-        let due = self.live_at.elapsed() >= (self.live_cost * 8).max(Duration::from_secs(2));
+        let gap = if self.fast.is_some() { self.live_cost } else { (self.live_cost * 8).max(Duration::from_secs(2)) };
+        let due = self.live_at.elapsed() >= gap;
         if (count != self.objects || changes != self.changes || meta) && (self.guest || !self.typing) && self.press.is_none() && !scrolling && due {
             self.meta_gen = crate::metadata::generation();
             (self.objects, self.changes) = (count, changes); // `done` skips a result that's the same as before
@@ -6059,21 +6073,25 @@ unsafe fn undo() {
     let gone = |p: &String| !std::path::Path::new(p).exists();
     let ok = match UNDO.with(|s| s.borrow_mut().pop()) {
         None => return with(|u| u.flash(t("status.nothing_undo").into())).unwrap_or(()),
-        Some(Undo::Renamed(now, was)) => !gone(&now) && (gone(&was) || now.to_lowercase() == was.to_lowercase()) && std::fs::rename(&now, &was).is_ok(),
+        Some(Undo::Renamed(now, was)) => {
+            preview::release(std::slice::from_ref(&now));
+            !gone(&now) && (gone(&was) || now.to_lowercase() == was.to_lowercase()) && std::fs::rename(&now, &was).is_ok()
+        }
         Some(Undo::Recycled(paths)) => fileops::restore(&paths) > 0,
         Some(Undo::Made(paths)) => {
             let there: Vec<String> = paths.into_iter().filter(|p| !gone(p)).collect();
+            preview::release(&there);
             !there.is_empty() && fileops::delete_many(&there, true).is_ok()
         }
         Some(Undo::Moved(pairs)) => {
             let back: Vec<(String, String)> = pairs.into_iter().filter(|(now, was)| !gone(now) && gone(was)).collect();
+            preview::release(&back.iter().map(|b| b.0.clone()).collect::<Vec<_>>());
             !back.is_empty() && fileops::move_many(&back).is_ok()
         }
     };
-    std::thread::sleep(Duration::from_millis(400)); // the USN journal needs a moment to report it
     with(|u| {
         u.flash(t(if ok { "status.undone" } else { "status.nothing_undo" }).into());
-        u.run(true);
+        u.relist_soon();
     });
 }
 
@@ -6081,6 +6099,9 @@ unsafe fn undo() {
 /// and may be cancelled). Names already there are left out: the shell asks about those, or makes "- Copy"s.
 fn note_paste(dir: &str) {
     let Some((files, cut)) = shell::clipboard_get() else { return };
+    if cut {
+        preview::release(&files);
+    }
     let dest = std::path::Path::new(dir);
     let pairs: Vec<(String, String)> = files.into_iter().filter_map(|f| {
         let to = dest.join(std::path::Path::new(&f).file_name()?);
@@ -6128,7 +6149,7 @@ unsafe fn new_folder(dir: &str) {
         Some(Ok(p)) => {
             did(Undo::Made(vec![p.to_string_lossy().into_owned()]));
             LISTED.set(Some((p.to_string_lossy().into_owned(), true, Instant::now() + Duration::from_secs(10))));
-            with(|u| u.run(true));
+            with(|u| u.relist_soon());
         }
         Some(Err(e)) => {
             with(|u| u.flash(t("status.failed").replace("{e}", &e.to_string())));
@@ -6176,6 +6197,7 @@ unsafe fn end_rename(keep: bool) {
         return;
     }
     let to = from.with_file_name(&name);
+    preview::release(std::slice::from_ref(&path));
     let msg = match std::fs::rename(from, &to) {
         Ok(()) => {
             did(Undo::Renamed(to.to_string_lossy().into_owned(), path.clone()));
@@ -6186,7 +6208,7 @@ unsafe fn end_rename(keep: bool) {
     };
     with(|u| {
         u.flash(msg);
-        u.run(true);
+        u.relist_soon();
     });
 }
 
@@ -6269,15 +6291,15 @@ unsafe fn act(a: Act) {
             if !confirm(main, &t(if recycle { "confirm.recycle" } else { "confirm.delete_now" }).replace("{n}", &plural(n))) {
                 return;
             }
+            preview::release(&paths);
             let _ = crate::infrastructure::fileops::delete_many(&paths, recycle);
             let gone: Vec<String> = paths.iter().filter(|p| !std::path::Path::new(p).exists()).cloned().collect();
             if recycle && !gone.is_empty() {
                 did(Undo::Recycled(gone.clone()));
             }
             let gone = gone.len();
-            std::thread::sleep(Duration::from_millis(400)); // the USN journal needs a moment to report it
             with(|u| {
-                u.run(true);
+                u.relist_soon();
                 u.set_sel(Sel::default(), None, Some(None));
             });
             if gone == 0 {
@@ -7132,7 +7154,16 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                         let _ = tx.send(if skip { None } else { shell::thumbnail(&first, ask, false) });
                     }));
                     let image = rx.recv_timeout(Duration::from_millis(400)).ok().flatten().and_then(|png| png_pixels(&png, size));
-                    shell::drag_out(&paths.iter().map(String::as_str).collect::<Vec<_>>(), h as isize, image);
+                    // a playing preview would hold the file: the move would wait on it ("File In Use")
+                    let had = preview::release(&paths);
+                    if shell::drag_out(&paths.iter().map(String::as_str).collect::<Vec<_>>(), h as isize, image) {
+                        withp(h, |u| u.relist_soon()); // dropped (moved by Explorer, maybe): shown as soon as it lands
+                    } else if had {
+                        withp(h, |u| {
+                            u.pv_key.clear(); // cancelled: shown again
+                            u.want_preview();
+                        });
+                    }
                 }
             }
             return 0;

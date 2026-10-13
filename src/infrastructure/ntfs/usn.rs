@@ -10,7 +10,7 @@ use std::mem::{size_of, zeroed};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
@@ -278,17 +278,19 @@ fn run(
         idx.usn = Some(next_usn); // the loaded or scanned index is current up to here
     }
 
+    // idle: the next read waits on the journal (a second at most, so the stop flag is still honoured soon) and
+    // returns the moment a change lands, instead of polling it every 0.4 s
+    let mut wait = false;
     while !stop.load(Ordering::Relaxed) {
-        // Non-blocking read: return immediately with whatever is queued, so the
-        // stop flag is always honoured promptly. Poll when the journal is idle.
         let request = ReadUsnJournalDataV0 {
             start_usn: next_usn,
             reason_mask: 0xFFFF_FFFF,
             return_only_on_close: 0,
-            timeout: 0,
-            bytes_to_wait_for: 0,
+            timeout: wait as u64, // seconds
+            bytes_to_wait_for: wait as u64,
             usn_journal_id: journal_id,
         };
+        let asked = Instant::now();
 
         let read = unsafe {
             volume.device_io_control(
@@ -326,9 +328,10 @@ fn run(
         next_usn = i64::from_le_bytes(out[0..8].try_into().unwrap());
 
         let ops = if returned > 8 {
+            wait = false;
             parse_records(&out[..returned], reader.as_ref())
         } else {
-            // Nothing new — back off before polling again.
+            // Nothing new.
             // Once enough changes piled up, sort under a read lock and only compact under the write lock, so
             // searches (scrolling) never wait on the sort. Safe: this thread is the only one that mutates this volume.
             let order = catalog.read().volume(drive).filter(|i| i.rebuild_due()).map(|i| i.live_name_order());
@@ -337,7 +340,10 @@ fn run(
                     idx.rebuild(order);
                 }
             }
-            thread::sleep(Duration::from_millis(400));
+            if wait && asked.elapsed() < Duration::from_millis(300) {
+                thread::sleep(Duration::from_millis(400)); // the wait wasn't honoured (a volume that can't): poll
+            }
+            wait = true;
             Vec::new()
         };
 
