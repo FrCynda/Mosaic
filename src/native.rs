@@ -7123,12 +7123,13 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             UpdateWindow(h);
             if let Some(Some(paths)) = r {
                 if !paths.is_empty() {
-                    // the first item's thumbnail, from a shell worker (its helper already running); not long waited for
-                    let size = withp(h, |u| u.px(96)).unwrap_or(96);
+                    // the first item's thumbnail at the grid's tile size (in the list too), from a shell worker (its
+                    // helper already running); not long waited for
+                    let (size, ask) = withp(h, |u| (u.tile(), u.tsize())).unwrap_or((96, 256));
                     let (tx, rx) = std::sync::mpsc::channel();
                     let first = paths[0].clone();
                     shell::shell_spawn(Box::new(move |skip| {
-                        let _ = tx.send(if skip { None } else { shell::thumbnail(&first, size, false) });
+                        let _ = tx.send(if skip { None } else { shell::thumbnail(&first, ask, false) });
                     }));
                     let image = rx.recv_timeout(Duration::from_millis(400)).ok().flatten().and_then(|png| png_pixels(&png, size));
                     shell::drag_out(&paths.iter().map(String::as_str).collect::<Vec<_>>(), h as isize, image);
