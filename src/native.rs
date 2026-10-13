@@ -5858,6 +5858,163 @@ thread_local! {
     static LISTED: RefCell<Option<(String, bool, Instant)>> = const { RefCell::new(None) };
     /// What Ctrl+Z takes back, newest last.
     static UNDO: RefCell<Vec<Undo>> = const { RefCell::new(Vec::new()) };
+    /// The text field open now (one at a time): its padding, narrowest width, text height, whether it names a file.
+    static FIELD: std::cell::Cell<(i32, i32, i32, bool)> = const { std::cell::Cell::new((0, 0, 0, false)) };
+}
+
+/// What Windows refuses in a file's name.
+const BAD_NAME: &str = "\\/:*?\"<>|";
+
+/// A text field over `r` (`parent`'s coordinates) for naming anything: the theme's background inside a rounded accent
+/// border, the text padded, centred and where it was, the box widening as it's typed into. `text` starts with its
+/// first `sel` UTF-16 units selected (-1: all), `hint` shows while it's empty, and `file` refuses what a file name
+/// can't have. Ctrl+A selects all, Ctrl+Backspace deletes a word.
+pub(super) unsafe fn field(parent: HWND, r: RECT, text: &str, sel: isize, hint: &str, file: bool) -> HWND {
+    let Some((font, scale)) = with(|u| (u.edit_font, u.scale)) else { return null_mut() };
+    let p = |v: f64| (v * scale).round() as i32;
+    let dc = GetDC(parent);
+    let old = SelectObject(dc, font);
+    let mut tm: TEXTMETRICW = zeroed();
+    GetTextMetricsW(dc, &mut tm);
+    SelectObject(dc, old);
+    ReleaseDC(parent, dc);
+    let (pad, h) = (p(8.0), (tm.tmHeight + p(10.0)).max(r.bottom - r.top));
+    FIELD.set((pad, p(150.0), tm.tmHeight, file));
+    let e = CreateWindowExW(0, wz("EDIT").as_ptr(), null(), WS_CHILD | ES_AUTOHSCROLL as u32, (r.left - pad).max(0), (r.top + r.bottom - h) / 2, p(150.0), h, parent, null_mut(), GetModuleHandleW(null()), null());
+    if e.is_null() {
+        return e;
+    }
+    windows_sys::Win32::UI::Shell::SetWindowSubclass(e, Some(field_proc), 1, 0);
+    SetWindowTheme(e, wz("DarkMode_CFD").as_ptr(), null());
+    SendMessageW(e, WM_SETFONT, font as usize, 0);
+    SetWindowTextW(e, wz(text).as_ptr());
+    let hint = wz(hint);
+    SendMessageW(e, 0x1501, 1, hint.as_ptr() as isize); // EM_SETCUEBANNER, shown while focused too
+    SendMessageW(e, 0x00B1, 0, sel); // EM_SETSEL
+    fit(e, true);
+    ShowWindow(e, SW_SHOW);
+    SetFocus(e);
+    e
+}
+
+/// Widens (or narrows back) field `e` to its text, within its parent, and rounds its corners.
+unsafe fn fit(e: HWND, force: bool) {
+    let (pad, min_w, ..) = FIELD.get();
+    let n = GetWindowTextLengthW(e);
+    let mut b = vec![0u16; n as usize + 1];
+    GetWindowTextW(e, b.as_mut_ptr(), n + 1);
+    let dc = GetDC(e);
+    let old = SelectObject(dc, SendMessageW(e, WM_GETFONT, 0, 0) as HGDIOBJ);
+    let mut sz: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, b.as_ptr(), n, &mut sz);
+    SelectObject(dc, old);
+    ReleaseDC(e, dc);
+    let (mut wr, mut pr): (RECT, RECT) = (zeroed(), zeroed());
+    GetWindowRect(e, &mut wr);
+    MapWindowPoints(null_mut(), GetParent(e), &mut wr as *mut RECT as *mut POINT, 2);
+    GetClientRect(GetParent(e), &mut pr);
+    let (w, h) = ((sz.cx + 4 * pad).min(pr.right - wr.left - 2).max(min_w), wr.bottom - wr.top);
+    if !force && w == wr.right - wr.left {
+        return;
+    }
+    SetWindowPos(e, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    SetWindowRgn(e, CreateRoundRectRgn(0, 0, w + 1, h + 1, pad, pad), 1);
+    // scrolled while it was narrower: back to the start, then to the caret
+    let (mut a, mut z) = (0u32, 0u32);
+    SendMessageW(e, 0x00B0, &mut a as *mut u32 as usize, &mut z as *mut u32 as isize); // EM_GETSEL
+    SendMessageW(e, 0x00B1, 0, 0);
+    SendMessageW(e, 0x00B1, a as usize, z as isize);
+}
+
+unsafe extern "system" fn field_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM, _: usize, _: usize) -> LRESULT {
+    let (pad, _, th, file) = FIELD.get();
+    match m {
+        WM_NCCALCSIZE => {
+            // the padding is the frame, so the text is centred and the caret never touches the border
+            let r = &mut *(l as *mut RECT);
+            let v = ((r.bottom - r.top - th) / 2).max(0);
+            *r = RECT { left: r.left + pad, top: r.top + v, right: (r.right - pad).max(r.left + pad), bottom: r.bottom - v };
+            return 0;
+        }
+        WM_NCPAINT => {
+            let dc = GetWindowDC(h);
+            let (mut wr, mut cr) = (zeroed::<RECT>(), zeroed::<RECT>());
+            GetWindowRect(h, &mut wr);
+            GetClientRect(h, &mut cr);
+            let mut o = POINT { x: 0, y: 0 };
+            ClientToScreen(h, &mut o);
+            let (ox, oy) = (o.x - wr.left, o.y - wr.top);
+            ExcludeClipRect(dc, ox, oy, ox + cr.right, oy + cr.bottom);
+            let (w, hh) = (wr.right - wr.left, wr.bottom - wr.top);
+            let bg = CreateSolidBrush(gdi(theme().bg));
+            FillRect(dc, &RECT { left: 0, top: 0, right: w, bottom: hh }, bg);
+            DeleteObject(bg);
+            let pen = CreatePen(PS_INSIDEFRAME, (pad / 8).max(1), gdi(theme().accent));
+            let (op, ob) = (SelectObject(dc, pen), SelectObject(dc, GetStockObject(NULL_BRUSH)));
+            RoundRect(dc, 0, 0, w, hh, pad, pad);
+            SelectObject(dc, op);
+            SelectObject(dc, ob);
+            DeleteObject(pen);
+            ReleaseDC(h, dc);
+            return 0;
+        }
+        WM_CHAR if wp == 1 => {
+            SendMessageW(h, 0x00B1, 0, -1); // Ctrl+A
+            return 0;
+        }
+        WM_CHAR if wp == 0x7F => {
+            // Ctrl+Backspace: the word before the caret (and the spaces after it)
+            let (mut a, mut z) = (0u32, 0u32);
+            SendMessageW(h, 0x00B0, &mut a as *mut u32 as usize, &mut z as *mut u32 as isize);
+            if a == z {
+                let n = GetWindowTextLengthW(h);
+                let mut b = vec![0u16; n as usize + 1];
+                GetWindowTextW(h, b.as_mut_ptr(), n + 1);
+                let s = String::from_utf16_lossy(&b[..a as usize]);
+                let t = s.trim_end();
+                let w = t.trim_end_matches(char::is_alphanumeric);
+                let k = if w.len() < t.len() { w.len() } else { t.len() - t.chars().last().map_or(0, char::len_utf8) }; // a lone mark: just it
+                SendMessageW(h, 0x00B1, s[..k].encode_utf16().count(), a as isize);
+            }
+            SendMessageW(h, 0x00C2, 1, wz("").as_ptr() as isize); // EM_REPLACESEL, undoable
+            return 0;
+        }
+        WM_CHAR if file && char::from_u32(wp as u32).is_some_and(|c| BAD_NAME.contains(c)) => {
+            bad_name_tip(h);
+            return 0;
+        }
+        WM_NCDESTROY => {
+            windows_sys::Win32::UI::Shell::RemoveWindowSubclass(h, Some(field_proc), 1);
+        }
+        _ => {}
+    }
+    let r = windows_sys::Win32::UI::Shell::DefSubclassProc(h, m, wp, l);
+    if file && m == WM_PASTE {
+        // pasted: what a name can't have goes
+        let n = GetWindowTextLengthW(h);
+        let mut b = vec![0u16; n as usize + 1];
+        GetWindowTextW(h, b.as_mut_ptr(), n + 1);
+        let s = String::from_utf16_lossy(&b[..n as usize]);
+        if s.contains(|c| BAD_NAME.contains(c) || c < ' ') {
+            let clean: String = s.chars().filter(|&c| !BAD_NAME.contains(c) && c >= ' ').collect();
+            SetWindowTextW(h, wz(&clean).as_ptr());
+            SendMessageW(h, 0x00B1, usize::MAX >> 1, (usize::MAX >> 1) as isize);
+            bad_name_tip(h);
+        }
+    }
+    if matches!(m, WM_CHAR | WM_KEYDOWN | WM_PASTE | WM_CUT | WM_CLEAR | WM_UNDO) {
+        fit(h, false);
+    }
+    r
+}
+
+/// The characters a file name can't have, in a tip under field `h`.
+unsafe fn bad_name_tip(h: HWND) {
+    use windows_sys::Win32::UI::Controls::EDITBALLOONTIP;
+    let text = wz(&BAD_NAME.chars().map(String::from).collect::<Vec<_>>().join("  "));
+    let title = wz("");
+    let tip = EDITBALLOONTIP { cbStruct: size_of::<EDITBALLOONTIP>() as u32, pszTitle: title.as_ptr(), pszText: text.as_ptr(), ttiIcon: 0 };
+    SendMessageW(h, 0x1503, 0, &tip as *const _ as isize); // EM_SHOWBALLOONTIP
 }
 
 /// A file operation done here, as Ctrl+Z reverses it. ponytail: no redo (Ctrl+Y); drag-and-drop moves aren't recorded.
@@ -5966,27 +6123,22 @@ unsafe fn new_folder(dir: &str) {
 /// Enter or a click elsewhere keeps it, Esc doesn't.
 unsafe fn start_rename() {
     end_rename(true);
-    let Some(Some((list, path, is_dir, r, font))) = with(|u| {
+    let Some(Some((list, path, is_dir, r))) = with(|u| {
         let i = u.focus.filter(|&i| u.sel.has(i)).or_else(|| u.sel.iter().next())?;
         u.show_row(i);
         u.ensure(i / PG);
         let row = u.get(i)?;
-        Some((u.list, row.path.clone(), row.is_dir, u.name_box(i), u.edit_font))
+        Some((u.list, row.path.clone(), row.is_dir, u.name_box(i)))
     }) else {
         return;
     };
     UpdateWindow(list);
     let name = std::path::Path::new(&path).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-    let edit = CreateWindowExW(0, wz("EDIT").as_ptr(), wz(&name).as_ptr(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32, r.left, r.top, r.right - r.left, r.bottom - r.top, list, null_mut(), GetModuleHandleW(null()), null());
-    if edit.is_null() {
-        return;
-    }
-    SendMessageW(edit, WM_SETFONT, font as usize, 1);
-    SetWindowTheme(edit, wz("DarkMode_CFD").as_ptr(), null());
     let stem = if is_dir { name.len() } else { name.rfind('.').filter(|&k| k > 0).unwrap_or(name.len()) };
-    SendMessageW(edit, 0x00B1, 0, name[..stem].encode_utf16().count() as isize); // EM_SETSEL
-    RENAMING.set(Some((edit, path)));
-    SetFocus(edit);
+    let edit = field(list, r, &name, name[..stem].encode_utf16().count() as isize, "", true);
+    if !edit.is_null() {
+        RENAMING.set(Some((edit, path)));
+    }
 }
 
 unsafe fn end_rename(keep: bool) {

@@ -1813,19 +1813,13 @@ pub(super) unsafe fn mru_switch(back: bool) {
     });
 }
 
-/// A line of text typed over `r` (main window coordinates) in place, starting as `init`: Enter or a click elsewhere
-/// keeps it, Esc doesn't.
-pub(super) unsafe fn ask(main: HWND, r: RECT, init: &str) -> Option<String> {
-    let Some(font) = with(|u| u.edit_font) else { return None };
-    let e = CreateWindowExW(0, wz("EDIT").as_ptr(), null(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32, r.left, r.top, (r.right - r.left).max(120), (r.bottom - r.top).max(20), main, null_mut(), GetModuleHandleW(null()), null());
+/// A line of text typed over `r` (main window coordinates) in place, starting as `init` (`hint` while empty): Enter
+/// or a click elsewhere keeps it, Esc doesn't.
+pub(super) unsafe fn ask(main: HWND, r: RECT, init: &str, hint: &str) -> Option<String> {
+    let e = field(main, r, init, -1, hint, false);
     if e.is_null() {
         return None;
     }
-    SetWindowTheme(e, wz("DarkMode_CFD").as_ptr(), null());
-    SendMessageW(e, WM_SETFONT, font as usize, 1);
-    SetWindowTextW(e, wz(init).as_ptr());
-    SendMessageW(e, 0x00B1, 0, -1); // EM_SETSEL: all
-    SetFocus(e);
     let mut msg: MSG = zeroed();
     let mut keep = true;
     let mut redo: Option<MSG> = None;
@@ -2146,7 +2140,7 @@ pub(super) unsafe fn tab_act(a: TA) {
                 }
                 (RECT { right: r.right.max(r.left + u.px(160)), ..r }, u.tabs[k].o.title.clone().unwrap_or_else(|| u.tab_name(k)))
             }) else { return };
-            if let Some(s) = ask(main, r, &name) {
+            if let Some(s) = ask(main, r, &name, &with(|u| u.tab_name(k)).unwrap_or_default()) {
                 with(|u| {
                     if let Some(t) = u.tabs.get_mut(k) {
                         t.o.title = (!s.is_empty()).then_some(s);
@@ -2187,7 +2181,7 @@ pub(super) unsafe fn tab_act(a: TA) {
         }
         TA::IconCustom(k) => {
             let Some(r) = with(|u| u.drawn(k)) else { return };
-            if let Some(s) = ask(main, RECT { right: r.left + 160, ..r }, "") {
+            if let Some(s) = ask(main, r, "", t("tab.icon")) {
                 tab_act(TA::Icon(k, (!s.is_empty()).then_some(s)));
             }
         }
@@ -2283,7 +2277,7 @@ pub(super) unsafe fn tab_act(a: TA) {
                 let r = u.hits.iter().find(|h| h.1 == Hit::Group(g)).map_or(u.search_box, |h| h.0);
                 (RECT { right: r.left + u.px(180), ..r }, u.group(g).map_or(String::new(), |x| x.name.clone()))
             }) else { return };
-            if let Some(s) = ask(main, r, &name) {
+            if let Some(s) = ask(main, r, &name, t("tab.group_new")) {
                 with(|u| {
                     if let Some(x) = u.groups.iter_mut().find(|x| x.id == g) {
                         x.name = s;
@@ -2435,7 +2429,7 @@ pub(super) unsafe fn tab_act(a: TA) {
         }
         TA::WsSave => {
             let Some(r) = with(|u| RECT { right: u.search_box.left + u.px(260), ..u.search_box }) else { return };
-            let Some(name) = ask(main, r, t("ws.name")).filter(|s| !s.is_empty()) else { return };
+            let Some(name) = ask(main, r, "", t("ws.name")).filter(|s| !s.is_empty()) else { return };
             let Some(s) = with(|u| u.session_of(&(0..u.tabs.len()).collect::<Vec<_>>())) else { return };
             let mut v = load_workspaces();
             v.retain(|w| w.0 != name);
