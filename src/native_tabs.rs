@@ -102,7 +102,7 @@ pub(super) struct TabPrefs {
 impl Default for TabPrefs {
     fn default() -> Self {
         TabPrefs {
-            fused: 1,
+            fused: 1 | 2,
             color_style: 0,
             width: 1,
             fit: 0,
@@ -352,9 +352,32 @@ const KEYS: [(&str, &str, &str); 18] = [
     ("result_tab", "Ctrl+Shift+Enter", "act.open_parent_tab"),
 ];
 
+/// The names a split tab shows: each pane's; past 4, the first 3 and "+N" for the rest.
+fn seg_names(panes: &[(usize, String)]) -> Vec<String> {
+    let mut v: Vec<String> = panes.iter().map(|p| p.1.clone()).collect();
+    if v.len() > 4 {
+        let more = format!("+{}", v.len() - 3);
+        v.truncate(3);
+        v.push(more);
+    }
+    v
+}
+/// Widths for pieces wanting `want` in `room`: those that fit whole keep their width, the rest share what's left.
+fn fair(want: &[i32], room: i32) -> Vec<i32> {
+    let mut order: Vec<usize> = (0..want.len()).collect();
+    order.sort_by_key(|&i| want[i]);
+    let (mut out, mut left) = (vec![0; want.len()], room);
+    for (n, &i) in order.iter().enumerate() {
+        out[i] = want[i].min(left / (want.len() - n) as i32);
+        left -= out[i];
+    }
+    out
+}
+
 /// How a tab is drawn: worked out from it and the prefs, also kept by a closing tab while it folds away.
 pub(super) struct Face {
     pub(super) name: String,
+    pub(super) split: bool, // its panes' names side by side ([`seg_names`]) instead of `name`
     pub(super) panes: Vec<(usize, String)>, // in `root`: each pane and its place's name
     pub(super) root: Node,
     pub(super) color: Option<u32>,
@@ -995,6 +1018,22 @@ impl Ui {
             .or_else(|| rule_color(&self.tp.rules, &dir()))
             .or_else(|| self.tp.drive_color.then(|| drive_color(&dir())).flatten())
     }
+    /// How many names tab `k` shows side by side: each pane's, when split tabs show them (at most 4, see [`seg_names`]).
+    fn names_shown(&self, k: usize) -> usize {
+        let t = &self.tabs[k];
+        if self.tp.fused & 2 == 0 || t.o.title.is_some() || t.o.pinned || self.tp.pos == 2 {
+            return 1;
+        }
+        let n = match &t.o.asleep {
+            Some((r, _)) => r.leaves().len(),
+            None => t.root.leaves().len(),
+        };
+        n.clamp(1, 4)
+    }
+    /// Tab `k`'s width in plain tabs: longer by most of one for each further name.
+    fn span(&self, k: usize) -> f64 {
+        1.0 + 0.6 * (self.names_shown(k) - 1) as f64
+    }
     pub(super) fn face(&self, k: usize) -> Face {
         let t = &self.tabs[k];
         let (root, panes): (Node, Vec<(usize, String)>) = match &t.o.asleep {
@@ -1003,13 +1042,11 @@ impl Ui {
         };
         let awake = t.o.asleep.is_none();
         let marks: String = [(t.o.locked, "🔒"), (t.o.muted, "🔕"), (t.o.live, "⚡"), (t.o.scope.is_some(), "◎")].iter().filter(|m| m.0).map(|m| m.1).collect();
-        let name = if panes.len() > 1 && self.tp.fused & 2 != 0 && t.o.title.is_none() {
-            panes.iter().map(|p| p.1.as_str()).collect::<Vec<_>>().join(" | ")
-        } else {
-            self.tab_name(k)
-        };
+        let split = self.names_shown(k) > 1;
+        let name = if panes.len() > 1 && self.tp.fused & 2 != 0 && t.o.title.is_none() { panes.iter().map(|p| p.1.as_str()).collect::<Vec<_>>().join(" | ") } else { self.tab_name(k) };
         Face {
             name,
+            split,
             panes,
             root,
             color: self.tab_color(k),
@@ -1138,7 +1175,8 @@ impl Ui {
         let pinw = px(40);
         let width_of = |it: &Item, tw: i32| match it {
             Item::Tab(k) if self.tabs[*k].o.pinned => pinw,
-            Item::Tab(_) | Item::Hole => tw,
+            Item::Tab(k) => (tw as f64 * self.span(*k)).round() as i32,
+            Item::Hole => tw,
             Item::Label(g) => label_w(*g),
             Item::Tree(..) => 0,
         };
@@ -1151,8 +1189,15 @@ impl Ui {
             match self.tp.fit {
                 0 => {
                     let fixed = total(0); // labels, pinned tabs, gaps and the +
-                    let n = items.iter().filter(|i| matches!(i, Item::Hole) || matches!(i, Item::Tab(k) if shown(i) && !self.tabs[*k].o.pinned)).count().max(1) as i32;
-                    tw = ((room - fixed) / n).min(maxw);
+                    let n: f64 = items
+                        .iter()
+                        .map(|i| match i {
+                            Item::Hole => 1.0,
+                            Item::Tab(k) if shown(i) && !self.tabs[*k].o.pinned => self.span(*k),
+                            _ => 0.0,
+                        })
+                        .sum();
+                    tw = (((room - fixed) as f64 / n.max(1.0)) as i32).min(maxw);
                     if tw < px(56) {
                         tw = px(56).max(maxw / 2);
                         scroll = true;
@@ -1515,7 +1560,34 @@ impl Ui {
             }
             let end = if close.is_some() { x_r.left - px(2) } else { full.right - px(8) };
             let badge = if multi && self.tp.fused & 4 != 0 { px(18) } else { 0 };
-            if let Some(tl) = self.gfx.layout(&w(&name), if on { fs } else { fr }, (end - tx - badge).max(1) as f32, flh as f32) {
+            let font = if on { fs } else { fr };
+            if fc.split && !vert {
+                // each pane's name, side by side: short ones whole, long ones sharing what's left, cut with …
+                let mut segs = seg_names(&fc.panes);
+                if let Some(l) = segs.last_mut() {
+                    l.push_str(&name[fc.name.len()..]); // the count and marks, after the last
+                }
+                let gap = px(13);
+                let room = (end - tx - badge - gap * (segs.len() as i32 - 1)).max(1);
+                let ws = fair(&segs.iter().map(|s| self.gfx.width(s, font) + 1).collect::<Vec<_>>(), room);
+                let mut x = tx;
+                for (i, (s, sw)) in segs.iter().zip(ws).enumerate() {
+                    if i > 0 {
+                        let dx = x - gap / 2 - 1;
+                        cv.fill(&RECT { left: dx, top: cy - px(6), right: dx + 1, bottom: cy + px(6) }, theme().line, a as f32);
+                    }
+                    if let Some(tl) = self.gfx.layout(&w(s), font, sw.max(1) as f32, flh as f32) {
+                        cv.text_a(&tl, x, ty, if near { theme().text } else { theme().muted }, ta);
+                    }
+                    x += sw + gap;
+                }
+                if badge > 0 {
+                    let bx = x - gap + px(5);
+                    let b = RECT { left: bx, top: cy - px(7), right: bx + px(14), bottom: cy + px(7) };
+                    cv.rrect_a(&b, rad(7.0), Some(theme().line), None, a as f32);
+                    put_mid(&self.gfx, cv, &fc.panes.len().to_string(), &self.gfx.f.small, &b, cy - self.gfx.f.lh / 2 + px(1), theme().text);
+                }
+            } else if let Some(tl) = self.gfx.layout(&w(&name), font, (end - tx - badge).max(1) as f32, flh as f32) {
                 let tw = gfx::metrics(&tl).width.ceil() as i32;
                 cv.text_a(&tl, tx, ty, if near { theme().text } else { theme().muted }, ta);
                 if badge > 0 {
@@ -3187,6 +3259,16 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_tab_names_share_the_room() {
+        assert_eq!(fair(&[30, 200], 150), vec![30, 120]); // the short one whole, the long one cut
+        assert_eq!(fair(&[30, 40], 150), vec![30, 40]);
+        assert_eq!(fair(&[200, 200], 100), vec![50, 50]);
+        let p = |n: usize| (0..n).map(|i| (i, format!("d{i}"))).collect::<Vec<_>>();
+        assert_eq!(seg_names(&p(4)), ["d0", "d1", "d2", "d3"]);
+        assert_eq!(seg_names(&p(6)), ["d0", "d1", "d2", "+3"]);
+    }
 
     #[test]
     fn colours_from_drive_and_rules() {
