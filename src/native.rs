@@ -1258,6 +1258,10 @@ fn version_info(name: &str) -> Vec<u8> {
 
 // ---- entry ---------------------------------------------------------------------------------------------------
 pub fn run() {
+    // started from inside a folder, the window (and its helpers) would hold it open: it couldn't be moved or deleted
+    if let Some(d) = std::env::current_exe().ok().as_deref().and_then(std::path::Path::parent) {
+        let _ = std::env::set_current_dir(d);
+    }
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         dark_menus();
@@ -1706,6 +1710,20 @@ fn go_place(target: &str, mosaic: bool) {
     } else {
         shell::open(target);
     }
+}
+
+/// A middle-click on a place: a folder (or Home) in a new tab behind this one, as a browser's middle-click does;
+/// anything else as a click.
+fn go_place_tab(target: &str, mosaic: bool) {
+    let q = match target {
+        "home:" => "home:".to_string(),
+        t if std::path::Path::new(t).is_dir() => match with(|u| u.browse_q(t)) {
+            Some(q) => q,
+            None => return,
+        },
+        _ => return go_place(target, mosaic),
+    };
+    with(|u| u.new_tab_bg(&q, u.cur + 1));
 }
 
 unsafe fn toggle_preview() {
@@ -6590,14 +6608,6 @@ unsafe fn offer_install(main: HWND) {
     });
 }
 
-struct Win(HWND);
-impl raw_window_handle::HasWindowHandle for Win {
-    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        let h = std::num::NonZeroIsize::new(self.0 as isize).ok_or(raw_window_handle::HandleError::Unavailable)?;
-        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::Win32WindowHandle::new(h).into()) })
-    }
-}
-
 // ---- window procedures ---------------------------------------------------------------------------------------
 unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
     match m {
@@ -7113,9 +7123,15 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             UpdateWindow(h);
             if let Some(Some(paths)) = r {
                 if !paths.is_empty() {
-                    let icon = drag::Image::Raw(include_bytes!("../icons/drag.png").to_vec());
-                    let files = paths.into_iter().map(std::path::PathBuf::from).collect();
-                    let _ = drag::start_drag(&Win(h), drag::DragItem::Files(files), icon, |_, _| {}, Default::default());
+                    // the first item's thumbnail, from a shell worker (its helper already running); not long waited for
+                    let size = withp(h, |u| u.px(96)).unwrap_or(96);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let first = paths[0].clone();
+                    shell::shell_spawn(Box::new(move |skip| {
+                        let _ = tx.send(if skip { None } else { shell::thumbnail(&first, size, false) });
+                    }));
+                    let image = rx.recv_timeout(Duration::from_millis(400)).ok().flatten().and_then(|png| png_pixels(&png, size));
+                    shell::drag_out(&paths.iter().map(String::as_str).collect::<Vec<_>>(), h as isize, image);
                 }
             }
             return 0;

@@ -608,7 +608,7 @@ unsafe fn prewarm(host: windows_sys::Win32::Foundation::HWND) {
 unsafe fn build_menu(paths: &[&str], bg: bool, ext: bool, host: windows_sys::Win32::Foundation::HWND) -> Option<(windows::Win32::UI::Shell::IContextMenu, isize, Vec<MenuItem>)> {
     use windows::Win32::UI::WindowsAndMessaging::HMENU;
     use windows_sys::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, WM_INITMENUPOPUP};
-    let cm = context_menu(paths, bg, windows::Win32::Foundation::HWND(host as _))?;
+    let cm: windows::Win32::UI::Shell::IContextMenu = context_menu(paths, bg, windows::Win32::Foundation::HWND(host as _))?;
     let menu = CreatePopupMenu();
     let flags = if bg { 0 } else { 0x10 } | if ext { 0x100 } else { 0 }; // CMF_CANRENAME, CMF_EXTENDEDVERBS
     if cm.QueryContextMenu(HMENU(menu as _), 0, 1, 0x7fff, flags).is_err() {
@@ -825,9 +825,46 @@ unsafe fn own_window_shown() -> bool {
     found
 }
 
-/// The shell's menu for `paths` (all in one folder: from that folder, as Explorer asks; from several: from the
-/// desktop, by full path), or with `bg` for the empty space of the folder `paths[0]`.
-unsafe fn context_menu(paths: &[&str], bg: bool, host: windows::Win32::Foundation::HWND) -> Option<windows::Win32::UI::Shell::IContextMenu> {
+/// Drag `paths` out as Explorer does, under `image` (premultiplied BGRA, its width and height: the first item's
+/// thumbnail or icon), moved, copied or linked as the target says (a move on the same drive). Returns once
+/// dropped or cancelled.
+pub fn drag_out(paths: &[&str], host: isize, image: Option<(Vec<u8>, i32, i32)>) {
+    use windows::Win32::Foundation::{COLORREF, POINT};
+    use windows::Win32::Graphics::Gdi::{CreateDIBSection, BITMAPINFOHEADER};
+    use windows::Win32::System::Com::{CoCreateInstance, IDataObject, CLSCTX_INPROC_SERVER};
+    use windows::Win32::System::Ole::{IDropSource, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::UI::Shell::{CLSID_DragDropHelper, IDragSourceHelper2, SHDoDragDrop, DSH_ALLOWDROPDESCRIPTIONTEXT, SHDRAGIMAGE};
+    let host = windows::Win32::Foundation::HWND(host as _);
+    unsafe {
+        let Some(data) = context_menu::<IDataObject>(paths, false, host) else { return };
+        if let Ok(h) = CoCreateInstance::<_, IDragSourceHelper2>(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER) {
+            let _ = h.SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT.0 as u32); // room for "Move to …" under it
+            let mut set = false;
+            if let Some((px, w, ht)) = image {
+                let mut bi: BITMAPINFO = zeroed();
+                bi.bmiHeader = BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -ht, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB.0, ..zeroed() };
+                let mut bits = std::ptr::null_mut();
+                if let Ok(bm) = CreateDIBSection(None, &bi, DIB_RGB_COLORS, &mut bits, None, 0) {
+                    std::ptr::copy_nonoverlapping(px.as_ptr(), bits as *mut u8, px.len().min((w * ht * 4) as usize));
+                    // held by the pointer a little below its middle, as Explorer's
+                    let di = SHDRAGIMAGE { sizeDragImage: SIZE { cx: w, cy: ht }, ptOffset: POINT { x: w / 2, y: ht * 3 / 4 }, hbmpDragImage: bm, crColorKey: COLORREF(0xFFFF_FFFF) };
+                    set = h.InitializeFromBitmap(&di, &data).is_ok(); // the helper owns the bitmap now
+                    if !set {
+                        let _ = DeleteObject(bm);
+                    }
+                }
+            }
+            if !set {
+                let _ = h.InitializeFromWindow(None, None, &data);
+            }
+        }
+        let _ = SHDoDragDrop(host, &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK);
+    }
+}
+
+/// The shell's menu (or other UI object: a drag's data) for `paths` (all in one folder: from that folder, as
+/// Explorer asks; from several: from the desktop, by full path), or with `bg` for the empty space of the folder `paths[0]`.
+unsafe fn context_menu<T: windows::core::Interface>(paths: &[&str], bg: bool, host: windows::Win32::Foundation::HWND) -> Option<T> {
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{ILFindLastID, ILFree, IShellFolder, SHBindToParent, SHGetDesktopFolder, SHParseDisplayName};
     let pidls: Vec<*mut ITEMIDLIST> = paths

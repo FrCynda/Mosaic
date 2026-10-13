@@ -18,7 +18,6 @@ image = { version = "0.25", default-features = false, features = ["gif"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tantivy = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-drag = "2"
 unicode-normalization = "0.1"
 sha2 = "0.10"
 sha1 = "0.10"
@@ -36,7 +35,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_Graphics_Dwm", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_Globalization",
     "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Ole", "Win32_UI_Controls_Dialogs", "Win32_System_SystemServices",
 ] }
-raw-window-handle = "0.6" # already in the tree (drag uses it): lets the native window start a file drag
 # the native window draws with Direct2D + DirectWrite
 windows61 = { package = "windows", version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi"] }
 windows-numerics = "0.2"

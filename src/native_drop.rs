@@ -1,10 +1,13 @@
 //! Files dragged onto the window (from Explorer, another app, or a pane here): onto a tab (its folder), the +
-//! (folders open in new tabs), a pane (its folder), a folder in a pane, or a pane's edge (folders open beside it).
+//! (folders open in new tabs), a pane (its folder), or a folder in a pane. No zone is drawn: the dragged image
+//! says where it goes ("Move to Documents").
 //! Copied or moved by the shell (`fileops::transfer`, its progress and questions), never through the clipboard.
 //! A tab held over for a moment opens, a folder held over opens in its pane.
 
 use super::*;
 use std::sync::atomic::{AtomicU32, Ordering};
+use windows::Win32::System::Com::IDataObject;
+use windows::Win32::UI::Shell::IDropTargetHelper;
 use windows_sys::Win32::System::Ole::{RegisterDragDrop, RevokeDragDrop, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE};
 
 pub(super) const WM_DROPPED: u32 = WM_APP + 44; // lParam: a boxed `Dropped`
@@ -15,7 +18,6 @@ enum Spot {
     NewTab,
     Pane(usize, String),
     Item(usize, String),
-    Edge(usize, u8),
 }
 pub(super) struct Dropped {
     files: Vec<String>,
@@ -28,7 +30,14 @@ struct Over {
     spot: Option<Spot>,
     since: Instant,
     sprung: bool,
+    /// the drag's data and the shell's helper drawing its image over this window
+    data: Option<IDataObject>,
+    helper: Option<IDropTargetHelper>,
+    /// the words last put under the dragged image
+    said: Option<Say>,
 }
+/// Under the dragged image: its icon (DROPIMAGE_MOVE…), a message with %1, and the name for %1.
+type Say = (i32, String, String);
 thread_local!(static OVER: RefCell<Option<Over>> = const { RefCell::new(None) });
 
 #[repr(C)]
@@ -149,48 +158,25 @@ fn parent_of(p: &str) -> Option<String> {
 }
 
 impl Ui {
-    /// Where a drag at screen point `pt` points, and the box and words to show for it.
-    fn spot_at(&mut self, pt: Pointl, files: &[String]) -> Option<(Spot, RECT)> {
+    /// Where a drag at screen point `pt` points.
+    fn spot_at(&mut self, pt: Pointl, files: &[String]) -> Option<Spot> {
         let mut p = POINT { x: pt.x, y: pt.y };
         unsafe { ScreenToClient(self.main, &mut p) };
         let (x, y) = (p.x, p.y);
-        let dirs = files.iter().any(|f| is_dir_path(f));
-        match self.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| (h.0, h.1)) {
-            Some((_, Hit::Tab(k) | Hit::TabClose(k))) => return Some((Spot::Tab(k), self.drawn(k))),
-            Some((r, Hit::NewTab)) if dirs => return Some((Spot::NewTab, r)),
+        match self.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1) {
+            Some(Hit::Tab(k) | Hit::TabClose(k)) => return Some(Spot::Tab(k)),
+            Some(Hit::NewTab) if files.iter().any(|f| is_dir_path(f)) => return Some(Spot::NewTab),
             _ => {}
         }
-        let &(id, r) = self.areas.iter().find(|(_, r)| inside(r, x, y))?;
-        if dirs {
-            let e = self.px(24);
-            let d = [x - r.left, r.right - x, y - r.top, r.bottom - y];
-            if let Some(side) = (0..4).filter(|&s| d[s] < e).min_by_key(|&s| d[s]) {
-                let half = match side {
-                    0 => RECT { right: (r.left + r.right) / 2, ..r },
-                    1 => RECT { left: (r.left + r.right) / 2, ..r },
-                    2 => RECT { bottom: (r.top + r.bottom) / 2, ..r },
-                    _ => RECT { top: (r.top + r.bottom) / 2, ..r },
-                };
-                return Some((Spot::Edge(id, side as u8), half));
-            }
-        }
+        let &(id, _) = self.areas.iter().find(|(_, r)| inside(r, x, y))?;
         let item = self.with_pane(id, |u| {
-            let (lx, ly) = (x - u.org.x, y - u.org.y);
-            let i = u.item_at(lx, ly)?;
-            let row = u.get(i)?;
-            if !row.is_dir {
-                return None;
-            }
-            let (sx, sy) = u.spot(i);
-            let wd = if u.grid { u.cell_x(i % u.ncols()).1 - u.cell_x(i % u.ncols()).0 } else { u.cw() };
-            let (l, t) = (u.org.x + sx as i32, u.org.y + sy as i32);
-            Some((row.path.clone(), RECT { left: l, top: t, right: l + wd, bottom: t + u.rh() }))
+            let row = u.get(u.item_at(x - u.org.x, y - u.org.y)?)?;
+            row.is_dir.then(|| row.path.clone())
         });
-        if let Some((d, rr)) = item {
-            return Some((Spot::Item(id, d), rr));
+        match item {
+            Some(d) => Some(Spot::Item(id, d)),
+            None => Some(Spot::Pane(id, self.pane_dir(id)?)),
         }
-        let d = self.pane_dir(id)?;
-        Some((Spot::Pane(id, d), r))
     }
     fn spot_dir(&self, s: &Spot) -> Option<String> {
         match s {
@@ -199,11 +185,11 @@ impl Ui {
             _ => None,
         }
     }
-    /// A drag moved to `pt`: the zone shown, a tab or folder held over opened. Returns the drop's effect.
-    fn drag_over(&mut self, keys: u32, pt: Pointl, allowed: u32) -> u32 {
-        let Some(mut o) = OVER.with(|o| o.borrow_mut().take()) else { return DROPEFFECT_NONE };
-        let got = self.spot_at(pt, &o.files);
-        let spot = got.as_ref().map(|g| g.0.clone());
+    /// A drag moved to `pt`: a tab or folder held over opened. Returns the drop's effect and the words for under
+    /// the dragged image ("Move to Documents"); a new tab or a pane's edge shows its zone instead.
+    fn drag_over(&mut self, keys: u32, pt: Pointl, allowed: u32) -> (u32, Option<Say>) {
+        let Some(mut o) = OVER.with(|o| o.borrow_mut().take()) else { return (DROPEFFECT_NONE, None) };
+        let spot = self.spot_at(pt, &o.files);
         if spot != o.spot {
             (o.spot, o.since, o.sprung) = (spot.clone(), Instant::now(), false);
         }
@@ -223,67 +209,129 @@ impl Ui {
         }
         let eff = match &spot {
             None => DROPEFFECT_NONE,
-            Some(Spot::NewTab | Spot::Edge(..)) => {
+            Some(Spot::NewTab) => {
                 if allowed & DROPEFFECT_LINK != 0 { DROPEFFECT_LINK } else { DROPEFFECT_COPY & allowed }
             }
             Some(s) => self.spot_dir(s).map_or(DROPEFFECT_NONE, |d| effect(keys, &o.files, &d, allowed)),
         };
-        let label = match (&spot, eff) {
-            (Some(Spot::NewTab), _) => t("drop.new_tab").to_string(),
-            (Some(Spot::Edge(..)), _) => t("drop.beside").to_string(),
-            (Some(s), e) if e != DROPEFFECT_NONE => {
+        let say = match (&spot, eff) {
+            (None, _) | (_, DROPEFFECT_NONE) => None,
+            (Some(Spot::NewTab), _) => Some((6, t("drop.new_tab").to_string(), String::new())), // DROPIMAGE_LABEL: words only
+            (Some(s), e) => {
                 let name = self.spot_dir(s).map_or(String::new(), |d| place_name(&self.browse_q(&d)));
-                t(match e {
-                    DROPEFFECT_MOVE => "drop.move",
-                    DROPEFFECT_LINK => "drop.link",
-                    _ => "drop.copy",
-                })
-                .replace("{name}", &name)
+                let (img, key) = match e {
+                    DROPEFFECT_MOVE => (2, "drop.move"), // DROPIMAGE_MOVE: the shell's arrow
+                    DROPEFFECT_LINK => (4, "drop.link"),
+                    _ => (1, "drop.copy"),
+                };
+                Some((img, t(key).replace("{name}", "%1"), name))
             }
-            _ => String::new(),
         };
-        self.aim(got.filter(|_| eff != DROPEFFECT_NONE).map(|g| g.1), label);
         self.step_ui();
         OVER.with(|x| *x.borrow_mut() = Some(o));
-        eff
+        (eff, say)
     }
 }
 fn is_dir_path(p: &str) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_dir())
 }
 
+fn wpt(pt: Pointl) -> windows::Win32::Foundation::POINT {
+    windows::Win32::Foundation::POINT { x: pt.x, y: pt.y }
+}
+/// Put `say` under the dragged image (`None`: the source's own words again). Explorer's drags, and ours, show it.
+unsafe fn describe(data: &IDataObject, say: &Option<Say>) {
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
+    use windows::Win32::UI::Shell::{DROPDESCRIPTION, DROPIMAGETYPE};
+    use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    let mut d: DROPDESCRIPTION = std::mem::zeroed();
+    d.r#type = DROPIMAGETYPE(-1); // DROPIMAGE_INVALID
+    if let Some((img, msg, ins)) = say {
+        let z = |s: &str| {
+            let mut a = [0u16; 260];
+            a.iter_mut().take(259).zip(s.encode_utf16()).for_each(|(a, b)| *a = b);
+            a
+        };
+        (d.r#type, d.szMessage, d.szInsert) = (DROPIMAGETYPE(*img), z(msg), z(ins)); // packed: whole fields only
+    }
+    let h = GlobalAlloc(GMEM_MOVEABLE, size_of::<DROPDESCRIPTION>());
+    if h.is_null() {
+        return;
+    }
+    std::ptr::write(GlobalLock(h) as *mut DROPDESCRIPTION, d);
+    GlobalUnlock(h);
+    let f = FORMATETC { cfFormat: RegisterClipboardFormatW(wz("DropDescription").as_ptr()) as u16, ptd: null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 };
+    let m = STGMEDIUM { tymed: TYMED_HGLOBAL.0 as u32, u: STGMEDIUM_0 { hGlobal: HGLOBAL(h) }, pUnkForRelease: std::mem::ManuallyDrop::new(None) };
+    if data.SetData(&f, &m, true).is_err() {
+        GlobalFree(h);
+    }
+}
+/// The drag left or dropped: its image off this window, its words cleared.
+unsafe fn done(o: Option<Over>) {
+    let Some(o) = o else { return };
+    if let (Some(d), Some(_)) = (&o.data, &o.said) {
+        describe(d, &None);
+    }
+    if let Some(h) = &o.helper {
+        let _ = h.DragLeave();
+    }
+}
+
 unsafe extern "system" fn enter(this: *mut Target, data: *mut c_void, keys: u32, pt: Pointl, eff: *mut u32) -> i32 {
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     let fs = files(data);
     if fs.is_empty() {
         *eff = DROPEFFECT_NONE;
         return 0;
     }
-    OVER.with(|o| *o.borrow_mut() = Some(Over { files: fs, spot: None, since: Instant::now(), sprung: false }));
+    let data: Option<IDataObject> = windows::core::Interface::from_raw_borrowed(&data).cloned();
+    let helper: Option<IDropTargetHelper> = CoCreateInstance(&windows::Win32::UI::Shell::CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok();
+    if let (Some(h), Some(d), Some(m)) = (&helper, &data, with(|u| u.main)) {
+        let _ = h.DragEnter(windows::Win32::Foundation::HWND(m), d, &wpt(pt), windows::Win32::System::Ole::DROPEFFECT(*eff));
+    }
+    OVER.with(|o| *o.borrow_mut() = Some(Over { files: fs, spot: None, since: Instant::now(), sprung: false, data, helper, said: None }));
     over(this, keys, pt, eff)
 }
 unsafe extern "system" fn over(_: *mut Target, keys: u32, pt: Pointl, eff: *mut u32) -> i32 {
     let allowed = *eff;
-    *eff = with(|u| u.drag_over(keys, pt, allowed)).unwrap_or(DROPEFFECT_NONE);
+    let (e, say) = with(|u| u.drag_over(keys, pt, allowed)).unwrap_or((DROPEFFECT_NONE, None));
+    *eff = e;
     if let Some(m) = with(|u| u.main) {
         UpdateWindow(m);
+    }
+    // outside the borrow: the source may be another process
+    let Some((data, helper, changed)) = OVER.with(|o| {
+        let mut o = o.borrow_mut();
+        let o = o.as_mut()?;
+        let changed = o.said != say;
+        o.said.clone_from(&say);
+        Some((o.data.clone(), o.helper.clone(), changed))
+    }) else {
+        return 0;
+    };
+    if let (Some(d), true) = (&data, changed) {
+        describe(d, &say);
+    }
+    if let Some(h) = helper {
+        let _ = h.DragOver(&wpt(pt), windows::Win32::System::Ole::DROPEFFECT(e));
     }
     0
 }
 unsafe extern "system" fn leave(_: *mut Target) -> i32 {
-    OVER.with(|o| o.borrow_mut().take());
-    with(|u| {
-        u.aim(None, String::new());
-        u.step_ui();
-    });
+    done(OVER.with(|o| o.borrow_mut().take()));
     0
 }
-unsafe extern "system" fn drop_in(this: *mut Target, _: *mut c_void, keys: u32, pt: Pointl, eff: *mut u32) -> i32 {
+unsafe extern "system" fn drop_in(_: *mut Target, _: *mut c_void, keys: u32, pt: Pointl, eff: *mut u32) -> i32 {
     let allowed = *eff;
-    let e = with(|u| u.drag_over(keys, pt, allowed)).unwrap_or(DROPEFFECT_NONE);
-    let o = OVER.with(|o| o.borrow_mut().take());
-    leave(this);
+    let e = with(|u| u.drag_over(keys, pt, allowed).0).unwrap_or(DROPEFFECT_NONE);
+    let mut o = OVER.with(|o| o.borrow_mut().take());
+    let (files, spot) = o.as_mut().map(|o| (std::mem::take(&mut o.files), o.spot.take())).unwrap_or_default();
+    done(o);
     *eff = DROPEFFECT_NONE;
-    let Some(Over { files, spot: Some(spot), .. }) = o else { return 0 };
+    let Some(spot) = spot else { return 0 };
     if e == DROPEFFECT_NONE {
         return 0;
     }
@@ -306,14 +354,6 @@ pub(super) unsafe fn dropped(l: LPARAM) {
             with(|u| {
                 for f in &dirs {
                     u.open_tab(f);
-                }
-            });
-        }
-        Spot::Edge(p, side) => {
-            with(|u| {
-                u.activate(p);
-                for f in &dirs {
-                    u.open_beside(f, side);
                 }
             });
         }

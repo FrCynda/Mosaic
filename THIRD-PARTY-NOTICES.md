@@ -110,7 +110,7 @@ winapi-x86_64-pc-windows-gnu (MIT/Apache-2.0), rust-stemmers (MIT/BSD-3-Clause),
 **Apache-2.0:** sketches-ddsketch, sync_wrapper, tao, zopfli.
 
 **Apache-2.0 OR MIT:** atomic-waker, autocfg, bit-set, bit-vec, cargo_toml, ctor,
-ctor-proc-macro, drag, dtor, dtor-proc-macro, equivalent, fastrand, idna_adapter, indexmap,
+ctor-proc-macro, dtor, dtor-proc-macro, equivalent, fastrand, idna_adapter, indexmap,
 libappindicator, libappindicator-sys, muda, pin-project-lite, portable-atomic,
 portable-atomic-util, rustc-hash, tauri, tauri-build, tauri-codegen, tauri-macros,
 tauri-runtime, tauri-runtime-wry, tauri-utils, utf8_iter, uuid, window-vibrancy, wry.
@@ -148,5 +148,4 @@ icu_properties, icu_properties_data, icu_provider, litemap, potential_utf, tinys
 yoke, yoke-derive, zerofrom, zerofrom-derive, zerotrie, zerovec, zerovec-derive.
 
 **Other permissive dual/triple licenses:** r-efi (MIT OR Apache-2.0 OR LGPL-2.1-or-later — used
-here under MIT or Apache-2.0, never the LGPL option); raw-window-handle (MIT OR Apache-2.0 OR
-Zlib); miniz_oxide (MIT OR Zlib OR Apache-2.0); adler2 (0BSD OR MIT OR Apache-2.0).
+here under MIT or Apache-2.0, never the LGPL option); miniz_oxide (MIT OR Zlib OR Apache-2.0); adler2 (0BSD OR MIT OR Apache-2.0).

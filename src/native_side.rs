@@ -470,6 +470,18 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
             return 0;
         }
+        WM_MBUTTONDOWN => {
+            let (x, y) = xy(l);
+            with(|s| s.press = s.item_at(x, y));
+            return 0;
+        }
+        WM_MBUTTONUP => {
+            let (x, y) = xy(l);
+            if let Some(Some((target, mosaic))) = with(|s| s.up(x, y)) {
+                super::go_place_tab(&target, mosaic);
+            }
+            return 0;
+        }
         WM_CAPTURECHANGED => {
             with(|s| {
                 if s.grab.take().is_some() {
