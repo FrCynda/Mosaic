@@ -442,6 +442,31 @@ pub fn menu_verb(dir: &str, verb: &str, x: i32, y: i32) {
     menu_ask(serde_json::json!({ "cmd": "verb", "paths": [dir], "verb": verb, "x": x, "y": y }), false);
 }
 
+/// A verb of item `path`'s own menu run without the menu ("pintohome": pin to Quick access).
+pub fn item_verb(path: &str, verb: &str) {
+    menu_ask(serde_json::json!({ "cmd": "verb", "paths": [path], "verb": verb, "bg": false, "x": 0, "y": 0 }), false);
+}
+
+/// Windows Terminal in `dir` (wt.exe, the app execution alias).
+pub fn wt(dir: &str) {
+    let _ = Command::new("wt.exe").args(["-d", dir]).spawn();
+}
+
+/// A shortcut `lnk` to `target`.
+pub fn make_link(target: &str, lnk: &str) -> bool {
+    use windows::core::Interface;
+    use windows::Win32::System::Com::{CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let Ok(link) = CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) else { return false };
+        if link.SetPath(PCWSTR(wide(target).as_ptr())).is_err() {
+            return false;
+        }
+        link.cast::<IPersistFile>().is_ok_and(|f| f.Save(PCWSTR(wide(lnk).as_ptr()), true).is_ok())
+    }
+}
+
 /// The process reference shell extensions hold while they work on after the menu closes (a copy's progress, a
 /// Properties dialog): `SHSetInstanceExplorer`'s object, a bare IUnknown that only counts.
 static REFS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -621,7 +646,7 @@ unsafe fn serve(host: windows_sys::Win32::Foundation::HWND, line: &str) {
             }
         }
         Some("verb") => {
-            if let Some((cm, menu, _)) = build_menu(&paths, true, false, host) {
+            if let Some((cm, menu, _)) = build_menu(&paths, v["bg"] != false, false, host) {
                 invoke(&cm, host, Err(v["verb"].as_str().unwrap_or("")), x, y, false, false);
                 DestroyMenu(menu as _);
             }

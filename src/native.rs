@@ -10,6 +10,11 @@ mod side;
 mod preview;
 #[path = "native_themes.rs"]
 mod themes;
+#[path = "native_tabs.rs"]
+mod tabs;
+#[path = "native_drop.rs"]
+mod dnd;
+use tabs::*;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -220,8 +225,8 @@ fn col_resize(mut w: [i32; 5], k: usize, d: i32, min: i32) -> [i32; 5] {
     w
 }
 /// The classic File/Edit/View/Search/Tools/Help strip above the tab row, like a conventional desktop app's.
-fn menu_bar_labels() -> [&'static str; 6] {
-    [t("menubar.file"), t("menubar.edit"), t("menubar.view"), t("menubar.search"), t("menubar.tools"), t("menubar.help")]
+fn menu_bar_labels() -> [&'static str; 7] {
+    [t("menubar.file"), t("menubar.edit"), t("menubar.view"), t("menubar.tabs"), t("menubar.search"), t("menubar.tools"), t("menubar.help")]
 }
 /// The grid sizes Explorer's View submenu names (extra large, large, medium, small icons); 0 is Details, the list.
 const VIEWS: [(&str, i32); 5] = [("menu.icons_xl", MAX_SIZE), ("menu.icons_l", 160), ("menu.icons_m", 96), ("menu.icons_s", 48), ("menu.details", 0)];
@@ -480,6 +485,10 @@ enum Hit {
     Pane(usize),      // a split pane's caption: click to focus it, drag it elsewhere or onto the tab strip
     PaneClose(usize), // … the × on it
     Gutter(usize),    // the gap between two split panes (the split's id): drag to resize
+    Group(u64),       // a tab group's label in the strip: click to fold it, drag it to move the group
+    TabList,          // ▾ after the tabs: every tab in a menu
+    Scroll(bool),     // the strip's ‹ › when its tabs scroll (true: on to the right)
+    TreePane(usize, usize), // vertical tabs: a split tab's pane under it (tab, pane)
 }
 
 /// How a tab's room is shared: one pane, or two parts side by side (`vert`) or stacked. `shown` is the share `a`
@@ -592,21 +601,27 @@ impl Node {
             Node::Split { ratio, shown, vel, a, b, .. } => spring(shown, vel, *ratio, dt, 22.0, 0.0005) | a.animate(dt) | b.animate(dt),
         }
     }
-    /// Each pane's box in `r`, and each split's (id, box, the gap between its parts, side by side).
-    fn place(&self, r: RECT, gap: i32, leaves: &mut Vec<(usize, RECT)>, gutters: &mut Vec<(usize, RECT, RECT, bool)>) {
+    /// Each pane's box in `r`, and each split's (id, box, the gap between its parts, side by side). Panes in
+    /// `fold.0` are folded to a bar `fold.1` thick.
+    fn place(&self, r: RECT, gap: i32, fold: (&[usize], i32), leaves: &mut Vec<(usize, RECT)>, gutters: &mut Vec<(usize, RECT, RECT, bool)>) {
         match self {
             Node::Leaf(id) => leaves.push((*id, r)),
             Node::Split { id, vert, shown, a, b, .. } => {
                 let len = (if *vert { r.right - r.left } else { r.bottom - r.top } - gap).max(0);
-                let k = (len as f64 * shown.clamp(0.0, 1.0)).round() as i32;
+                let folded = |n: &Node| matches!(n, Node::Leaf(l) if fold.0.contains(l));
+                let k = match (folded(a), folded(b)) {
+                    (true, false) => fold.1.min(len),
+                    (false, true) => (len - fold.1).max(0),
+                    _ => (len as f64 * shown.clamp(0.0, 1.0)).round() as i32,
+                };
                 let (ra, g, rb) = if *vert {
                     (RECT { right: r.left + k, ..r }, RECT { left: r.left + k, right: r.left + k + gap, ..r }, RECT { left: r.left + k + gap, ..r })
                 } else {
                     (RECT { bottom: r.top + k, ..r }, RECT { top: r.top + k, bottom: r.top + k + gap, ..r }, RECT { top: r.top + k + gap, ..r })
                 };
                 gutters.push((*id, r, g, *vert));
-                a.place(ra, gap, leaves, gutters);
-                b.place(rb, gap, leaves, gutters);
+                a.place(ra, gap, fold, leaves, gutters);
+                b.place(rb, gap, fold, leaves, gutters);
             }
         }
     }
@@ -640,17 +655,19 @@ struct Tab {
     v: f64,
     to: f64,
     born: Option<Instant>,
+    uid: u64,       // stays the tab's as tabs move around
+    used: u64,      // when it was last shown (`Ui::tick_n`): the Ctrl+Tab order, and which tabs sleep first
+    o: TabOpts,     // its title, colour, pin… (native_tabs.rs)
 }
 impl Tab {
     fn new(pane: usize) -> Tab {
-        Tab { root: Node::Leaf(pane), focus: pane, x: f64::NAN, v: 0.0, to: 0.0, born: None }
+        Tab { root: Node::Leaf(pane), focus: pane, x: f64::NAN, v: 0.0, to: 0.0, born: None, uid: new_uid(), used: 0, o: TabOpts::default() }
     }
 }
-/// A closed tab folding away where it was: its left edge, name, whether it was split, and when it closed.
+/// A closed tab folding away where it was: its slot, how it looked, and when it closed.
 struct Ghost {
-    x: f64,
-    name: String,
-    split: bool,
+    r: RECT,
+    face: Face,
     at: Instant,
 }
 /// How long a tab takes to unfold as it opens, and to fold away as it closes.
@@ -675,6 +692,7 @@ struct Drag {
 enum Grab {
     Tab(usize),
     Pane(usize),
+    Group(u64),
 }
 /// Where a dragged tab or pane lands: on a side of a pane (0 left, 1 right, 2 top, 3 bottom), of the whole tab, or
 /// in the tab strip at an index.
@@ -858,7 +876,6 @@ struct Ui {
     dying: Vec<usize>,          // panes closing: shrinking away, then dropped
     drag: Option<Drag>,
     hole: Option<usize>,        // a pane dragged over the tab strip: the slot opened for it
-    strip: (i32, i32, i32),     // the tab strip: first slot's left, slot width, gap
     ov: Option<Ov>,
     zone: Option<Zone>,
     chip: Option<(HWND, Canvas, String, bool)>, // what's being dragged (a split tab?), following the pointer
@@ -910,6 +927,24 @@ struct Ui {
     kind_dirs: Vec<Option<String>>,  // the Windows folder whose icon each kind wears (Pictures, Videos, Music, Documents)
     jumbo_png: HashMap<String, Vec<u8>>,            // type key → the shell's 256 px icon
     jumbo: HashMap<(String, i32), Option<Pic>>,     // (type key, px) → decoded at tile size
+    busy: Option<Instant>, // its search hasn't answered yet: since when
+    want_y: Option<f64>,  // where a restored pane scrolls to once its first result lands
+    // tabs beyond the basics (native_tabs.rs)
+    tp: TabPrefs,               // how tabs look and behave, saved with the settings
+    groups: Vec<Group>,
+    closed: Vec<(TabSpec, usize)>, // closed tabs, newest last, and where they were
+    tick_n: u64,                // bumped on every tab switch: `Tab::used`
+    slot_rs: Vec<RECT>,         // each tab's slot (with any hole), by tab index
+    hole_r: RECT,               // the hole a pane dragged over the strip opened
+    strip_r: RECT,              // the strip's whole area
+    scroll: (f64, i32),         // scrolling tabs: how far along, and how far it can go
+    card: Option<(HWND, Canvas, Panel)>, // the card shown over the window: a tab pointed at, the switcher, a note
+    card_for: Option<usize>,    // … the tab it waits to show for
+    saved: String,              // the session as last written (without scroll positions)
+    polls: u32,
+    secondary: bool,            // a window opened from another (a tab dragged out): never writes the session
+    merged: bool,               // … emptied into another window: nothing to save on the way out
+    cmp: HashMap<String, u8>,   // compare mode: file → 1 only here, 2 differs (from the other pane's folder)
 }
 
 /// What each pane of a split has its own of. The focused pane's live in `Ui`'s fields of the same names, where all
@@ -982,6 +1017,8 @@ view! {
     thumb_pending: HashSet<String>,
     link_ov: Option<Option<Pic>>,
     jumbo: HashMap<(String, i32), Option<Pic>>,
+    busy: Option<Instant>,
+    want_y: Option<f64>,
 }
 
 thread_local!(static UI: RefCell<Option<Ui>> = const { RefCell::new(None) });
@@ -1251,8 +1288,10 @@ pub fn run() {
         SetWindowTheme(edit, wz("DarkMode_CFD").as_ptr(), null()); // dark caret/selection/context menu
         let list = CreateWindowExW(0, cl.as_ptr(), null(), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 10, 10, main, null_mut(), inst, null()); // the rename field sits on it
 
-        // the grid's jumbo type icons come from SHGetImageList, which needs COM on this thread
-        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+        // the grid's jumbo type icons come from SHGetImageList, which needs COM on this thread; OLE takes drops
+        windows_sys::Win32::System::Ole::OleInitialize(null_mut());
+        dnd::register(main);
+        dnd::register(list);
         let tip = CreateWindowExW(WS_EX_TOPMOST, wz("tooltips_class32").as_ptr(), null(), 0x02 | 0x01, 0, 0, 0, 0, main, null_mut(), inst, null()); // TTS_NOPREFIX | TTS_ALWAYSTIP
         SetWindowTheme(tip, wz("DarkMode_Explorer").as_ptr(), null());
         add_tip(tip, list, true);
@@ -1393,7 +1432,6 @@ pub fn run() {
             dying: Vec::new(),
             drag: None,
             hole: None,
-            strip: (0, 1, 0),
             ov: None,
             zone: None,
             chip: None,
@@ -1444,6 +1482,23 @@ pub fn run() {
             kind_dirs: (0..5).map(|k| if k == 0 { None } else { side::kind_dir(k) }).collect(),
             jumbo_png: HashMap::new(),
             jumbo: HashMap::new(),
+            busy: None,
+            want_y: None,
+            tp: serde_json::from_str(&get("tabs")).unwrap_or_default(),
+            groups: Vec::new(),
+            closed: Vec::new(),
+            tick_n: 0,
+            slot_rs: Vec::new(),
+            hole_r: zeroed(),
+            strip_r: zeroed(),
+            scroll: (0.0, 0),
+            card: None,
+            card_for: None,
+            saved: String::new(),
+            polls: 0,
+            secondary: false,
+            merged: false,
+            cmp: HashMap::new(),
         };
         std::thread::spawn(|| {
             crate::home_query(); // warm Home's folder list so the first click on it is instant
@@ -1457,6 +1512,7 @@ pub fn run() {
         SendMessageW(edit, WM_SETFONT, ui.edit_font as usize, 0);
         ui.run(false);
         UI.with(|u| *u.borrow_mut() = Some(ui));
+        with(|u| u.restore());
         with(|u| u.layout());
         SetTimer(main, T_POLL, 500, None);
         ShowWindow(main, SW_SHOW);
@@ -1514,7 +1570,7 @@ fn open_item(p: &str) {
         _ => p,
     };
     if with(|u| u.browse > 0).unwrap_or(false) && std::fs::metadata(p).is_ok_and(|m| m.is_dir()) {
-        with(|u| u.browse_to(p));
+        with(|u| u.go_dir(p));
     } else {
         shell::open(p);
     }
@@ -1526,6 +1582,15 @@ unsafe fn dispatch(msg: &MSG) {
         TranslateMessage(msg);
         DispatchMessageW(msg);
         return;
+    }
+    if msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN {
+        let a = with(|u| {
+            let in_list = u.on_list(msg.hwnd, |_| ()).is_some();
+            (msg.hwnd == u.main || msg.hwnd == u.edit || in_list).then(|| u.tab_key(msg.wParam as u16, in_list)).flatten()
+        });
+        if let Some(Some(a)) = a {
+            return tab_act(a);
+        }
     }
     if msg.message == WM_SYSKEYDOWN && msg.wParam == VK_UP as usize && with(|u| u.browse_up()) == Some(true) {
         return; // Alt+Up: one folder up, as in Explorer
@@ -1633,7 +1698,7 @@ fn go_place(target: &str, mosaic: bool) {
         }
         return shell::open_special("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}");
     }
-    if with(|u| (mosaic && u.browse > 0).then(|| u.browse_to(target))) == Some(Some(())) {
+    if with(|u| (mosaic && u.browse > 0).then(|| u.go_dir(target))) == Some(Some(())) {
         return;
     }
     if target.starts_with("shell:") {
@@ -2096,6 +2161,12 @@ impl Ui {
     }
     /// A pane listing `q`, with the focused one's options, its own window (hidden until laid out) and no history.
     fn new_pane(&mut self, q: &str) -> usize {
+        let id = self.new_pane_idle(q);
+        self.with_pane(id, |u| u.run(false));
+        id
+    }
+    /// … not searching yet.
+    fn new_pane_idle(&mut self, q: &str) -> usize {
         let list = unsafe { CreateWindowExW(0, wz("MosaicList").as_ptr(), null(), WS_CHILD | WS_CLIPCHILDREN, 0, 0, 10, 10, self.main, null_mut(), GetModuleHandleW(null()), null()) };
         unsafe { add_tip(self.tip, list, true) };
         let id = self.panes.len();
@@ -2159,8 +2230,10 @@ impl Ui {
             thumb_pending: HashSet::new(),
             link_ov: None,
             jumbo: HashMap::new(),
+            busy: None,
+            want_y: None,
         }));
-        self.with_pane(id, |u| u.run(false));
+        dnd::register(list);
         id
     }
     /// Drop a pane that isn't focused.
@@ -2168,6 +2241,7 @@ impl Ui {
         if let Some(v) = self.panes.get_mut(id).and_then(Option::take) {
             unsafe {
                 add_tip(self.tip, v.list, false);
+                dnd::revoke(v.list);
                 DestroyWindow(v.list);
             }
         }
@@ -2229,8 +2303,11 @@ impl Ui {
         unsafe { GetWindowTextW(self.edit, b.as_mut_ptr(), n + 1) };
         let q = String::from_utf16_lossy(&b[..n as usize]);
         if q != self.args.q {
+            let old = listed_dir(&self.args.q);
             self.args.q = q;
             self.run(false);
+            let new = listed_dir(&self.args.q);
+            self.navsync(old, new);
         }
     }
     /// Close pane `id` (the tab, when it's the only one): it shrinks away as its neighbour takes the room.
@@ -2281,10 +2358,6 @@ impl Ui {
     }
 
     // -- tabs
-    /// A tab's name: its focused pane's place.
-    fn tab_name(&self, k: usize) -> String {
-        self.pane_name(self.tabs[k].focus)
-    }
     fn tab_of(&self, pane: usize) -> Option<usize> {
         self.tabs.iter().position(|t| t.root.leaves().contains(&pane))
     }
@@ -2293,10 +2366,12 @@ impl Ui {
         if k == self.cur || k >= self.tabs.len() {
             return;
         }
+        self.wake(k);
         self.bury(true);
         let had = unsafe { GetFocus() } == self.list;
         let old = self.visible();
         self.last = self.id;
+        let was = self.cur;
         self.cur = k;
         let f = self.tabs[k].focus;
         self.activate(f);
@@ -2310,12 +2385,13 @@ impl Ui {
             unsafe { SetFocus(self.list) };
         }
         self.invalidate_all();
+        self.shown_tab(was);
     }
     /// A new tab at `at` showing `q`, with no history behind it.
     fn new_tab(&mut self, q: &str, at: usize) {
         let at = at.min(self.tabs.len());
         let id = self.new_pane(q);
-        self.tabs.insert(at, Tab { born: Some(Instant::now()), ..Tab::new(id) });
+        self.tabs.insert(at, Tab { born: (!self.tp.still).then(Instant::now), ..Tab::new(id) });
         if at <= self.cur {
             self.cur += 1;
         }
@@ -2328,27 +2404,7 @@ impl Ui {
     }
     /// Close tab `k` and its panes; the last one closes the window, as Explorer's does.
     fn close_tab(&mut self, k: usize) {
-        if self.tabs.len() == 1 {
-            unsafe { PostMessageW(self.main, WM_CLOSE, 0, 0) };
-            return;
-        }
-        if k == self.cur {
-            self.switch_tab(if k + 1 < self.tabs.len() { k + 1 } else { k - 1 }); // the one to its right, else its left
-        }
-        // it folds away where it is while the ones after it slide over its place
-        let (x, name, split) = (self.tabs[k].x, self.tab_name(k), self.tabs[k].root.leaves().len() > 1);
-        if x.is_finite() {
-            self.ghosts.push(Ghost { x, name, split, at: Instant::now() });
-        }
-        let t = self.tabs.remove(k);
-        if k < self.cur {
-            self.cur -= 1;
-        }
-        for p in t.root.leaves() {
-            self.drop_pane(p);
-        }
-        self.layout();
-        self.invalidate();
+        self.drop_tab(k, true);
     }
 
     // -- dragging tabs and panes
@@ -2357,8 +2413,16 @@ impl Ui {
         let Some(&(_, hit)) = self.hits.iter().find(|(r, _)| inside(r, x, y)) else { return false };
         let grab = match hit {
             Hit::Tab(k) => Grab::Tab(k),
+            Hit::Group(g) => Grab::Group(g),
             Hit::Pane(id) => {
                 if self.dying.contains(&id) {
+                    return true;
+                }
+                if self.tabs[self.cur].o.folded.contains(&id) {
+                    // a folded pane's caption: unfolds it
+                    self.tabs[self.cur].o.folded.retain(|&p| p != id);
+                    self.layout();
+                    self.invalidate_all();
                     return true;
                 }
                 self.activate(id);
@@ -2402,28 +2466,29 @@ impl Ui {
         match g {
             Grab::Tab(k) => self.tab_name(k),
             Grab::Pane(id) => self.pane_name(id),
+            Grab::Group(g) => self.groups.iter().find(|x| x.id == g).map_or(String::new(), |x| x.name.clone()),
         }
     }
     /// Tab slot `i` in the strip.
     fn slot(&self, i: usize) -> RECT {
-        let (x0, tw, gap) = self.strip;
-        let left = x0 + i as i32 * (tw + gap);
-        RECT { left, top: self.px(6), right: left + tw, bottom: self.menu_h }
+        if self.hole == Some(i) {
+            return self.hole_r;
+        }
+        self.slot_rs.get(i).copied().unwrap_or(self.hole_r)
     }
     /// Where a drop at (x, y) would land: the tab strip, an edge of the whole tab's room, or a side of a pane. Near
     /// where two sides of a pane meet, the one it pointed at before (`was`) holds until the other is clearly nearer:
     /// no flicker along the diagonal.
     fn dock_at(&self, x: i32, y: i32, g: Grab, was: Option<Dock>) -> Option<Dock> {
-        let (x0, tw, gap) = self.strip;
-        if y < self.menu_h + self.px(6) && x >= x0 - self.px(24) {
-            let n = self.tabs.len() as i32;
+        if self.on_strip(x, y) {
             return Some(Dock::Strip(match g {
-                Grab::Tab(_) => ((x - x0) / (tw + gap)).clamp(0, n - 1) as usize,
-                Grab::Pane(_) => ((x - x0 + (tw + gap) / 2) / (tw + gap)).clamp(0, n) as usize,
+                Grab::Tab(k) => self.strip_index(x, y, |j| j != k),
+                Grab::Pane(_) => self.strip_index(x, y, |_| true),
+                Grab::Group(gid) => self.strip_index(x, y, |j| self.tabs[j].o.group != Some(gid)),
             }));
         }
-        if matches!(g, Grab::Tab(k) if k == self.cur) {
-            return None; // the tab on screen into itself: nowhere
+        if matches!(g, Grab::Tab(k) if k == self.cur) || matches!(g, Grab::Group(_)) {
+            return None; // the tab on screen into itself, a group anywhere but the strip: nowhere
         }
         let c = self.content;
         if !inside(&c, x, y) {
@@ -2438,10 +2503,10 @@ impl Ui {
                 }
                 root.settle();
                 let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
-                root.place(c, self.px(8), &mut leaves, &mut gutters);
+                root.place(c, self.px(8), (&[], 0), &mut leaves, &mut gutters);
                 leaves
             }
-            Grab::Tab(_) => self.areas.clone(),
+            Grab::Tab(_) | Grab::Group(_) => self.areas.clone(),
         };
         // the room's own edges, once it's split: a part across the whole tab
         let band = self.px(22);
@@ -2511,6 +2576,7 @@ impl Ui {
             }
             d.on = true;
             if let Grab::Tab(k) = d.grab {
+                self.wake(k); // asleep: its panes back, to dock them
                 if k == self.cur && self.tabs.len() > 1 {
                     // the tab on screen lifted out: the window shows the one before it meanwhile
                     let to = self.tab_of(self.last).filter(|&j| j != k).unwrap_or(if k > 0 { k - 1 } else { 1 });
@@ -2544,6 +2610,14 @@ impl Ui {
                 Some(self.slot(j))
             }
             (Grab::Tab(k), None) => Some(self.slot(k)), // back home
+            (Grab::Group(gid), Some(Dock::Strip(j))) => {
+                // the group moves along as it goes
+                let before: Vec<u64> = self.tabs.iter().map(|t| t.uid).collect();
+                self.move_group(gid, j);
+                moved = self.tabs.iter().map(|t| t.uid).collect::<Vec<_>>() != before;
+                None
+            }
+            (Grab::Group(_), _) => None,
             (Grab::Pane(_), Some(Dock::Strip(i))) => {
                 hole = Some(i);
                 Some(self.slot(i))
@@ -2570,9 +2644,43 @@ impl Ui {
         self.hole = None;
         self.aim(None, String::new());
         let to = if commit { d.to } else { None };
+        // a tab dropped outside the window: into the Mosaic window there, else a window of its own
+        if let (true, true, None, Grab::Tab(k)) = (commit, d.on, to, d.grab) {
+            let mut pt = POINT { x: 0, y: 0 };
+            let mut wr: RECT = unsafe { zeroed() };
+            unsafe {
+                GetCursorPos(&mut pt);
+                GetWindowRect(self.main, &mut wr);
+            }
+            if !inside(&wr, pt.x, pt.y) {
+                let json = self.json_of(&[k]);
+                let gone = match window_at(self.main, pt) {
+                    Some(h) => unsafe { send_tabs(h, &json, false) },
+                    None => self.tabs.len() > 1 && spawn_window(&json, Some(pt)),
+                };
+                if gone {
+                    if self.tabs.len() == 1 {
+                        self.merged = true; // its one tab went on: nothing left here to keep
+                        unsafe { PostMessageW(self.main, WM_CLOSE, 0, 0) };
+                    } else {
+                        self.drop_tab(k, false);
+                    }
+                    self.layout();
+                    self.invalidate_all();
+                    return;
+                }
+            }
+        }
         match (d.grab, d.on, to) {
+            (Grab::Group(g), false, _) if commit => {
+                if let Some(x) = self.groups.iter_mut().find(|x| x.id == g) {
+                    x.folded = !x.folded;
+                }
+            }
+            (Grab::Group(_), ..) => self.order_tabs(),
             (Grab::Tab(k), false, _) if commit => self.switch_tab(k),
             (Grab::Tab(k), true, Some(to @ (Dock::Pane(..) | Dock::Root(_)))) if k != self.cur => {
+                self.wake(k);
                 let t = self.tabs.remove(k);
                 if k < self.cur {
                     self.cur -= 1;
@@ -2580,7 +2688,13 @@ impl Ui {
                 self.dock(t.root, to);
                 self.activate(t.focus);
             }
-            (Grab::Tab(k), true, _) if d.lifted => self.switch_tab(k),
+            (Grab::Tab(k), true, _) => {
+                if d.lifted {
+                    self.switch_tab(k);
+                }
+                self.regroup(k);
+                self.order_tabs();
+            }
             (Grab::Pane(p), true, Some(Dock::Strip(i))) => {
                 // out to a tab of its own, where the strip opened for it
                 if self.tabs[self.cur].root.detach(p) {
@@ -2588,7 +2702,10 @@ impl Ui {
                         let next = self.visible()[0];
                         self.activate(next);
                     }
-                    self.tabs.insert(i, Tab::new(p));
+                    let mut t = Tab::new(p);
+                    // dropped between two tabs of a group: one of it
+                    t.o.group = self.tabs.get(i).and_then(|x| x.o.group).filter(|&g| i > 0 && self.tabs[i - 1].o.group == Some(g));
+                    self.tabs.insert(i, t);
                     if i <= self.cur {
                         self.cur += 1;
                     }
@@ -2624,12 +2741,13 @@ impl Ui {
                 Node::Leaf(p)
             }
             Grab::Tab(k) => self.tabs[k].root.clone(),
+            Grab::Group(_) => return None,
         };
         let ids = sub.leaves();
         root.dock(sub, to, usize::MAX);
         root.settle();
         let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
-        root.place(self.content, self.px(8), &mut leaves, &mut gutters);
+        root.place(self.content, self.px(8), (&[], 0), &mut leaves, &mut gutters);
         leaves.into_iter().filter(|l| ids.contains(&l.0)).map(|l| l.1).reduce(|a, b| RECT {
             left: a.left.min(b.left),
             top: a.top.min(b.top),
@@ -2848,7 +2966,7 @@ impl Ui {
             }
         }
         self.ghosts.retain(|g| g.at.elapsed().as_secs_f64() < TAB_OUT);
-        if slid || !self.ghosts.is_empty() || self.tabs.iter().any(|t| t.born.is_some()) {
+        if slid || !self.ghosts.is_empty() || self.tabs.iter().any(|t| t.born.is_some()) || self.spinning() {
             unsafe { InvalidateRect(self.main, null(), 0) };
             moved = true;
         }
@@ -2900,6 +3018,7 @@ impl Ui {
             || self.ov.as_ref().is_some_and(|o| o.r != o.to || o.a != if o.on { 1.0 } else { 0.0 } || o.v != [0.0; 4])
             || self.tabs.iter().any(|t| t.x != t.to || t.v != 0.0 || t.born.is_some())
             || !self.ghosts.is_empty()
+            || self.spinning()
             || self.plus.0.is_finite() && (self.plus.0 != self.plus.2 || self.plus.1 != 0.0)
             || self.gut_lit.1 != if hot { 1.0 } else { 0.0 }
             || self.tabs[self.cur].root.moving()
@@ -3047,9 +3166,13 @@ impl Ui {
         self.fresh |= !keep;
         if keep {
             self.live_at = Instant::now(); // `done` turns it into the refresh's cost, then its finish
+        } else {
+            self.busy = Some(Instant::now());
         }
         self.terms = terms(&self.args.q);
-        let _ = self.jobs.send(Job { seq: self.seq, who: self.id, args: self.args.clone(), h: self.backend.handle() });
+        let mut args = self.args.clone();
+        args.q = self.scoped(&args.q);
+        let _ = self.jobs.send(Job { seq: self.seq, who: self.id, args, h: self.backend.handle() });
     }
     /// The pane a search result is for: the one whose newest search it is.
     fn pane_by_seq(&self, seq: u64) -> Option<usize> {
@@ -3063,6 +3186,7 @@ impl Ui {
         if seq != self.seq {
             return;
         }
+        self.busy = None;
         let fresh = std::mem::take(&mut self.fresh);
         if !fresh {
             (self.live_cost, self.live_at) = (self.live_at.elapsed(), Instant::now());
@@ -3128,6 +3252,11 @@ impl Ui {
             }
         }
         self.clamp();
+        if let Some(y) = self.want_y.take() {
+            // a restored tab: where it was scrolled to
+            (self.y, self.target, self.glide.0) = (y, y, y);
+            self.clamp();
+        }
         // what's on screen now: slide what moved from where it was, outline what's new
         (self.fx, self.slide, self.born) = (None, HashMap::new(), HashSet::new());
         if !fresh && !self.scanning {
@@ -3191,6 +3320,13 @@ impl Ui {
         self.cl.rrect_a(&r, rad + g as f32, None, Some(theme().accent), a);
         self.cl.rrect_a(&RECT { left: r.left + 1, top: r.top + 1, right: r.right - 1, bottom: r.bottom - 1 }, rad + g as f32 - 1.0, None, Some(theme().accent), a);
     }
+    /// Compare mode: a bar at the item's left, green when only this side has it, orange when the two differ.
+    fn cmp_mark(&self, path: &str, bx: &RECT) {
+        let Some(&k) = self.cmp.get(&path.to_lowercase()) else { return };
+        let c = if k == 1 { 0x3CB371 } else { 0xF2994A };
+        let r = RECT { left: bx.left, top: bx.top + self.px(3), right: bx.left + self.px(3), bottom: bx.bottom - self.px(3) };
+        self.cl.rrect(&r, 1.5, Some(c), None);
+    }
     /// How far from its place an item is still drawn while it slides there after a live refresh.
     fn lag(&self, path: &str) -> (f64, f64) {
         let (Some(t), Some(&(x, y))) = (self.fx, self.slide.get(path)) else { return (0.0, 0.0) };
@@ -3223,7 +3359,10 @@ impl Ui {
             return true;
         }
         let (count, changes) = (st.count, st.changes);
-        self.each_visible(|u| u.poll_view(count, changes));
+        if !self.tabs[self.cur].o.muted {
+            self.each_visible(|u| u.poll_view(count, changes));
+        }
+        self.tab_poll(count, changes);
         // Cached off `st` (not re-read in `status()`'s text builder below): when a background
         // service does the actual indexing, this is the only way that progress reaches the GUI at
         // all, over the IPC status response — re-querying it per paint would mean a pipe round trip
@@ -3581,10 +3720,14 @@ impl Ui {
             Hit::Split => t("tip.split").into(),
             Hit::Search => String::new(),
             Hit::Menu(i) => menu_bar_labels().get(i).copied().unwrap_or_default().into(),
-            // in full: the tab may cut it short; a split one's every pane
-            Hit::Tab(k) => self.tabs[k].root.leaves().into_iter().map(|p| self.pane_name(p)).collect::<Vec<_>>().join("  ·  "),
+            // in full: the tab may cut it short (its card says more)
+            Hit::Tab(k) => if self.tp.cards { String::new() } else { self.tab_name(k) },
             Hit::TabClose(_) => format!("{} (Ctrl+W)", t("tab.close")),
             Hit::NewTab => format!("{} (Ctrl+T)", t("tab.new")),
+            Hit::Group(_) => String::new(),
+            Hit::TabList => t("tab.recent").into(),
+            Hit::Scroll(_) => String::new(),
+            Hit::TreePane(_, p) => self.qname(&self.pane_q(p)),
         }
     }
 
@@ -3628,6 +3771,7 @@ impl Ui {
         self.clamp();
         self.band_update();
         unsafe { InvalidateRect(self.list, null(), 0) };
+        self.sync_scroll();
     }
     fn animating(&mut self) -> bool {
         if self.split_x.is_some() || self.grip_a != self.grip_want() || self.ui_moving() || FADE.read().unwrap().is_some() || themes::moving() {
@@ -3830,6 +3974,7 @@ impl Ui {
         }
         self.invalidate();
         self.want_preview();
+        self.linked();
     }
 
     /// What the preview pane should show: the one selected file, else a note.
@@ -4035,16 +4180,7 @@ impl Ui {
             0x44 if ctrl && !in_search => return Some(Some(Act::Del)),
             0x5A if ctrl && !in_search => return Some(Some(Act::Undo)),
             0x31..=0x36 if ctrl && shift => return Some(Some(Act::View(VIEWS[(vk as usize - 0x31).min(4)].1))),
-            // tabs: Ctrl+T new, Ctrl+W close (the focused pane of a split one), Ctrl+(Shift+)Tab next / previous,
-            // Ctrl+1…8 that one, Ctrl+9 the last; Ctrl+\ splits the pane (Ctrl+Shift+\ below), as in VS Code
-            0x54 if ctrl => self.new_tab("home:", self.tabs.len()),
-            0x57 if ctrl => self.close_pane(self.id),
-            0xDC if ctrl => self.split_here(if shift { 3 } else { 1 }),
-            VK_TAB if ctrl => {
-                let n = self.tabs.len();
-                self.switch_tab((if shift { self.cur + n - 1 } else { self.cur + 1 }) % n);
-            }
-            0x31..=0x39 if ctrl => self.switch_tab(if vk == 0x39 { self.tabs.len() - 1 } else { vk as usize - 0x31 }),
+            // tabs: `tab_key` (native_tabs.rs), ahead of this
             0x43 | 0x58 if ctrl && self.sel.count() > 0 && !text_sel => return Some(Some(if vk == 0x43 { Act::Copy } else { Act::Cut })),
             _ => return None,
         }
@@ -4204,48 +4340,31 @@ impl Ui {
             GetClientRect(self.main, &mut c);
             let (wd, ht) = (c.right, c.bottom);
             let (g, lh) = (&self.gfx, self.gfx.f.lh);
-            let px = |v: i32| (v as f64 * self.scale).round() as i32;
+            let scale = self.scale;
+            let px = move |v: i32| (v as f64 * scale).round() as i32;
             let mut hits = Vec::new();
             // header, as Everything's toolbar: back / forward, then the search box across the window and the filter
             // dropdown at its right, both compact (4px padding + 1px border, twice)
             let box_h = lh + px(10);
             let tab_h = lh + px(12);
-            self.menu_h = lh + px(20);
-            self.head_h = self.menu_h + tab_h + px(12) + 1;
             // the classic File/Edit/View/Search strip, flush against the top of the header
             let mut mx = px(8);
             for (i, label) in menu_bar_labels().iter().enumerate() {
                 let w = g.width(label, &g.f.reg) + px(20);
-                hits.push((RECT { left: mx, top: px(6), right: mx + w, bottom: self.menu_h - px(4) }, Hit::Menu(i)));
+                hits.push((RECT { left: mx, top: px(6), right: mx + w, bottom: lh + px(16) }, Hit::Menu(i)));
                 mx += w;
             }
-            // the tabs, along the rest of that strip, standing on the toolbar: 220px each, narrower when they don't all
-            // fit, then +. A pane dragged over the strip opens a slot for itself (`hole`).
-            let (tt, tb) = (px(6), self.menu_h);
-            let x0 = mx + px(20);
-            let n = self.tabs.len() as i32 + self.hole.is_some() as i32;
-            let room = wd - px(16) - px(36) - x0 - px(2) * n;
-            let tw = (room / n.max(1)).clamp(px(64), px(220));
-            let snap = self.strip.1 != tw || self.strip.0 != x0; // resized: no sliding, they'd trail the edge
-            self.strip = (x0, tw, px(2));
-            for k in 0..self.tabs.len() {
-                let s = k as i32 + self.hole.is_some_and(|h| k >= h) as i32;
-                let r = RECT { left: x0 + s * (tw + px(2)), top: tt, right: x0 + s * (tw + px(2)) + tw, bottom: tb };
-                let t = &mut self.tabs[k];
-                t.to = r.left as f64;
-                if snap || t.x.is_nan() {
-                    (t.x, t.v) = (t.to, 0.0);
-                }
-                hits.push((tab_x(&RECT { bottom: tb - px(4), ..r }, px(20)), Hit::TabClose(k))); // first: found before the tab under it
-                hits.push((r, Hit::Tab(k)));
+            // the tabs (native_tabs.rs): along the rest of that strip, standing on the toolbar; or above the status
+            // bar; or down the left side
+            let pos = self.tp.pos;
+            self.menu_h = lh + px(20);
+            if pos == 0 {
+                let area = RECT { left: mx + px(20), top: px(6), right: wd - px(16), bottom: ht };
+                let sh = self.place_strip(area, &mut hits);
+                self.menu_h = self.menu_h.max(px(6) + sh);
             }
-            let (nx, ns) = (x0 + n * (tw + px(2)) + px(6), px(28));
-            let ny = tt + (tb - tt - ns) / 2;
-            self.plus.2 = nx as f64;
-            if snap || self.plus.0.is_nan() {
-                (self.plus.0, self.plus.1) = (self.plus.2, 0.0);
-            }
-            hits.push((RECT { left: nx, top: ny, right: nx + ns, bottom: ny + ns }, Hit::NewTab));
+            self.head_h = self.menu_h + tab_h + px(12) + 1;
+            let g = &self.gfx;
             let side = px(10);
             let mut x = side;
             let select = |opts: &[(&str, &str)]| opts.iter().map(|o| g.width(o.0, &g.f.reg)).max().unwrap_or(0) + px(8) + px(26) + 2; // widest option + padding + arrow
@@ -4325,11 +4444,26 @@ impl Ui {
             let min_list = px(220);
             // the side panels: flush against the window's edges, from the toolbar down to the status bar, a hairline
             // between them and the lists, which run right up to it (no strip of background between)
-            let (top, bottom) = (self.head_h, self.status_top);
+            let (top, mut bottom) = (self.head_h, self.status_top);
+            let mut left = 0;
+            match pos {
+                1 => {
+                    let area = RECT { left: px(8), top: 0, right: wd - px(8), bottom: ht };
+                    let sh = self.strip_height(area);
+                    let area = RECT { top: bottom - sh - px(4), ..area };
+                    self.place_strip(area, &mut hits);
+                    bottom = area.top - px(4);
+                }
+                2 => {
+                    left = px(210);
+                    self.place_strip(RECT { left: 0, top, right: left, bottom }, &mut hits);
+                }
+                _ => {}
+            }
             // the places panel, left of the list: it gives way first on a narrow window
             let side_w = if self.show_side && wd >= px(760) { px(side::WIDTH) } else { 0 };
-            let left = side_w;
-            MoveWindow(self.side, 0, top, side_w.max(1), (bottom - top).max(1), 1);
+            MoveWindow(self.side, left, top, side_w.max(1), (bottom - top).max(1), 1);
+            let left = left + side_w;
             ShowWindow(self.side, if side_w > 0 { SW_SHOWNA } else { SW_HIDE });
             let max_pane = (wd - min_list - left - px(preview::GAP)).max(0);
             let auto = ((wd as f64 * 0.4) as i32).clamp(px(240), px(960)).min(wd / 2).min(max_pane);
@@ -4348,11 +4482,17 @@ impl Ui {
             // the panes share the room: each its caption (once split), column header and list
             self.content = RECT { left, top: lh_y, right, bottom };
             let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
-            self.tabs[self.cur].root.place(self.content, px(8), &mut leaves, &mut gutters);
+            let o = &self.tabs[self.cur].o;
+            let cap = lh + px(14);
+            match o.zoom {
+                // zoomed: the one pane takes the room, the others wait
+                Some(z) => Node::Leaf(z).place(self.content, px(8), (&[], 0), &mut leaves, &mut gutters),
+                None => self.tabs[self.cur].root.place(self.content, px(8), (&o.folded, cap), &mut leaves, &mut gutters),
+            }
             for &(sid, _, g, _) in &gutters {
                 hits.push((g, Hit::Gutter(sid)));
             }
-            let multi = leaves.len() > 1;
+            let multi = leaves.len() > 1 && (self.tp.captions || !self.tabs[self.cur].o.folded.is_empty());
             for &(id, r) in &leaves {
                 let first = (id == self.id).then_some(first);
                 self.with_pane(id, |u| u.place_pane(r, multi, first, &mut hits));
@@ -4437,6 +4577,7 @@ impl Ui {
             ("timestamps", (self.timestamps as u8).to_string()),
             ("theme", theme_name()),
             ("lang", crate::i18n::lang()),
+            ("tabs", serde_json::to_string(&self.tp).unwrap_or_default()),
         ]);
         let _ = std::fs::write(p, serde_json::to_string(&m).unwrap_or_default());
     }
@@ -4508,11 +4649,28 @@ impl Ui {
             Hit::Filter | Hit::Sort | Hit::Preview | Hit::Side | Hit::Lang | Hit::Menu(_) => return Some(hit),
             Hit::Back | Hit::Fwd => self.go_hist(hit == Hit::Back),
             Hit::Tab(k) => self.switch_tab(k),
-            Hit::TabClose(k) => self.close_tab(k),
+            Hit::TabClose(k) => self.drop_tab(k, true),
             Hit::Pane(id) => self.activate(id),
             Hit::PaneClose(id) => self.close_pane(id),
             Hit::Gutter(_) | Hit::ColEdge(..) => {}
-            Hit::NewTab => self.new_tab("home:", self.tabs.len()),
+            Hit::NewTab => self.new_tab("home:", self.cur + 1),
+            Hit::TabList => return Some(hit),
+            Hit::Group(g) => {
+                if let Some(x) = self.groups.iter_mut().find(|x| x.id == g) {
+                    x.folded = !x.folded;
+                }
+                self.layout();
+            }
+            Hit::Scroll(right) => {
+                let d = self.px(200);
+                self.scroll_strip(if right { d } else { -d });
+            }
+            Hit::TreePane(k, p) => {
+                if k != self.cur {
+                    self.switch_tab(k);
+                }
+                self.activate(p);
+            }
             Hit::Tags | Hit::Content => {
                 if hit == Hit::Tags {
                     self.args.tags = !self.args.tags;
@@ -4621,19 +4779,6 @@ impl Ui {
                     put(g, cv, label, &g.f.reg, r.left + px(9), ty, theme().text);
                     cv.chevron((r.right - px(13)) as f32, (r.top + r.bottom) as f32 / 2.0, rad(3.5), true, theme().text, rad(1.25));
                 }
-                Hit::Tab(k) if k != self.cur => self.paint_tab(k, r), // the open one last: it overlaps its neighbours
-                Hit::NewTab => {
-                    let dx = self.plus.0.round() as i32 - r.left; // sliding along as tabs open and close
-                    let r = RECT { left: r.left + dx, right: r.right + dx, ..r };
-                    if hot(h) {
-                        cv.rrect(&r, rad(6.0), Some(theme().hl), None);
-                    }
-                    // a plus of two bars, crisper than the glyph
-                    let (cx, cy, half, th) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2, px(6), ((1.5 * self.scale).round() as i32).max(1));
-                    let c = if hot(h) { theme().text } else { theme().muted };
-                    cv.fill(&RECT { left: cx - half, top: cy - th / 2, right: cx + half, bottom: cy - th / 2 + th }, c, 1.0);
-                    cv.fill(&RECT { left: cx - th / 2, top: cy - half, right: cx - th / 2 + th, bottom: cy + half }, c, 1.0);
-                }
                 Hit::Tag => {
                     if hot(h) {
                         cv.rrect(&r, rad(4.0), Some(theme().hl), None);
@@ -4672,16 +4817,11 @@ impl Ui {
                 _ => {}
             }
         }
-        // tabs just closed, folding away under the ones sliding over their place
-        let (tw, top) = (self.strip.1, self.px(6));
-        for gh in &self.ghosts {
-            let a = 1.0 - ease_out(gh.at.elapsed().as_secs_f64() / TAB_OUT);
-            let x = gh.x.round() as i32;
-            self.draw_tab(RECT { left: x, top, right: x + tw, bottom: self.menu_h }, a, &gh.name, gh.split, false, false, false, None);
+        if self.tp.pos == 1 {
+            let y = self.strip_r.top - self.px(4);
+            cv.fill(&RECT { top: y, bottom: y + 1, ..c }, theme().line, 1.0);
         }
-        if let Some(&(r, _)) = self.hits.iter().find(|x| x.1 == Hit::Tab(self.cur)) {
-            self.paint_tab(self.cur, r);
-        }
+        self.paint_strip();
         // Browse | Subfolders: neither, one, never both
         for pass in [false, true] {
             for &(r, h) in &self.hits {
@@ -4746,70 +4886,6 @@ impl Ui {
         self.cm.end();
     }
 
-    /// Tab `k`, its slot `r`. The open one stands on the toolbar, one piece with it (a card with rounded top corners
-    /// and flared feet); the others are just their names, lit on hover, with a hairline between two quiet ones.
-    fn paint_tab(&self, k: usize, r: RECT) {
-        if matches!(&self.drag, Some(Drag { grab: Grab::Tab(j), on: true, .. }) if *j == k) {
-            return; // in hand: the chip and the landing zone show it
-        }
-        // where it slides to its slot from
-        let dx = self.tabs[k].x.round() as i32 - r.left;
-        let r = RECT { left: r.left + dx, right: r.right + dx, ..r };
-        let a = self.tabs[k].born.map_or(1.0, |b| ease_out(b.elapsed().as_secs_f64() / TAB_IN));
-        let on = k == self.cur;
-        let lit = |j: usize| matches!(self.hot, Some(Hit::Tab(i) | Hit::TabClose(i)) if i == j);
-        let near = on || lit(k);
-        let sep = !near && k + 1 < self.tabs.len() && k + 1 != self.cur && !lit(k + 1);
-        let close = near.then_some(self.hot == Some(Hit::TabClose(k)));
-        self.draw_tab(r, a, &self.tab_name(k), self.tabs[k].root.leaves().len() > 1, on, near, sep, close);
-    }
-    /// A tab button in slot `r`, `a` of the way unfolded (0: a sliver, faded out; 1: all there): opening tabs grow
-    /// out of their left edge, closing ones fold back into it. `close`: its × shows (and whether it's pointed at).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_tab(&self, r: RECT, a: f64, name: &str, split: bool, on: bool, near: bool, sep: bool, close: Option<bool>) {
-        let (g, cv, lh) = (&self.gfx, &self.cm, self.gfx.f.lh);
-        let px = |v: i32| (v as f64 * self.scale).round() as i32;
-        let full = r;
-        let r = RECT { right: r.left + ((r.right - r.left) as f64 * a).round() as i32, ..r };
-        let wd = r.right - r.left;
-        if wd < px(2) {
-            return;
-        }
-        let rad = |v: f64| ((v * self.scale) as f32).min(wd as f32 / 2.0);
-        let fade = |c: u32| mix(theme().bg, c, a as f32);
-        if on {
-            // over the strip's bottom line: the tab opens onto the toolbar
-            cv.tab(&RECT { bottom: r.bottom + 1, ..r }, rad(8.0), rad(8.0), fade(theme().card), Some(fade(theme().line)));
-        } else if near {
-            cv.rrect(&RECT { left: r.left + px(2), top: r.top + px(1), right: r.right - px(2), bottom: r.bottom - px(5) }, rad(7.0), Some(fade(theme().hl)), None);
-        } else if sep && a >= 1.0 {
-            let (x, my, half) = (r.right + px(1), (r.top + r.bottom - px(4)) / 2, (r.bottom - r.top) / 4);
-            cv.fill(&RECT { left: x, top: my - half, right: x + 1, bottom: my + half }, theme().line, 1.0);
-        }
-        // laid out for the whole slot, cut at the edge as it unfolds: the name doesn't reflow every frame
-        let ty = r.top + (r.bottom - r.top - px(4) - lh) / 2 + px(if on { 1 } else { 0 });
-        let x = tab_x(&RECT { bottom: full.bottom - px(4), ..full }, px(20));
-        let mut tx = r.left + px(14);
-        cv.clip(&RECT { left: r.left, top: r.top, right: r.right - px(6).min(wd / 4), bottom: r.bottom });
-        if split {
-            split_glyph(cv, tx, (r.top + r.bottom - px(4)) / 2 - px(4), px(12), px(9), fade(if on { theme().accent } else { theme().muted }), self.scale);
-            tx += px(19);
-        }
-        let name: Vec<u16> = name.encode_utf16().collect();
-        let end = if near { x.left - px(2) } else { full.right - px(10) };
-        if let Some(tl) = g.layout(&name, if on { &g.f.semi } else { &g.f.reg }, (end - tx).max(1) as f32, lh as f32) {
-            cv.text_a(&tl, tx, ty, if near { theme().text } else { theme().muted }, a as f32);
-        }
-        cv.unclip();
-        if let Some(hot) = close.filter(|_| a >= 1.0) {
-            let (cx, cy) = ((x.left + x.right) as f32 / 2.0, (x.top + x.bottom) as f32 / 2.0);
-            if hot {
-                cv.circle(cx, cy, rad(9.0), if on { theme().hl } else { theme().line }, 1.0);
-            }
-            cv.cross(cx, cy, rad(3.5), if hot { theme().text } else { theme().muted }, rad(1.3));
-        }
-    }
-
     /// This pane's caption (when its tab is split: its place, and × to close it) and column header (list view),
     /// on the main window.
     fn paint_head(&self) {
@@ -4827,7 +4903,8 @@ impl Ui {
                 cv.rrect(&c, rad(6.0), Some(if on { theme().card } else { theme().hl }), on.then_some(theme().line));
             }
             let my = (c.top + c.bottom) as f32 / 2.0;
-            cv.circle((c.left + px(12)) as f32, my, rad(3.0), if on { theme().accent } else { theme().line }, 1.0);
+            let tc = self.tab_of(self.id).and_then(|k| self.tab_color(k));
+            cv.circle((c.left + px(12)) as f32, my, rad(3.0), tc.unwrap_or(if on { theme().accent } else { theme().line }), 1.0);
             let x = tab_x(&c, c.bottom - c.top - px(6));
             let ty = c.top + (c.bottom - c.top - lh) / 2;
             if let Some(t) = g.layout(&w(&place_name(&self.args.q)), &g.f.reg, (x.left - c.left - px(26)) as f32, lh as f32) {
@@ -5034,6 +5111,7 @@ impl Ui {
                     self.cl.rrect(&bx, rad(8.0), Some(theme().row), None);
                 }
                 self.glow(&path, &bx, rad(8.0));
+                self.cmp_mark(&path, &bx);
                 let tile = self.tile();
                 let pv = RECT { left: bx.left + self.px(5), top: bx.top + self.px(5), right: bx.left + self.px(5) + tile, bottom: bx.top + self.px(5) + tile };
                 match self.thumbs.get(&self.icon_key(&path, is_dir)).and_then(|t| t.0.clone()) {
@@ -5066,6 +5144,7 @@ impl Ui {
                     self.cl.rrect(&bx, rad(6.0), Some(theme().row), None);
                 }
                 self.glow(&path, &bx, rad(6.0));
+                self.cmp_mark(&path, &bx);
                 let cols = self.cols(cw);
                 let ty = bx.top + (bx.bottom - bx.top - lh) / 2;
                 // icon: the file's own (exe/lnk) or its type's, centered in an 18px box
@@ -5983,7 +6062,7 @@ unsafe fn act(a: Act) {
         return;
     }
     let msg = match a {
-        Act::OpenHere => return with(|u| u.browse_to(&paths[0])).unwrap_or(()),
+        Act::OpenHere => return with(|u| u.go_dir(&paths[0])).unwrap_or(()),
         Act::OpenTab => return with(|u| u.open_tab(&paths[0])).unwrap_or(()),
         Act::Rename => return start_rename(),
         Act::SearchIn => {
@@ -6190,6 +6269,10 @@ unsafe fn menu_bar_popup(main: HWND, mut menu: usize) {
 
 unsafe fn menu_bar_once(main: HWND, menu: usize) {
     let Some(Some((r, gap))) = with(|u| u.hits.iter().find(|x| x.1 == Hit::Menu(menu)).map(|x| (x.0, u.px(4)))) else { return };
+    if menu == 3 {
+        return tabs_bar_menu(main, r, gap);
+    }
+    let menu = if menu > 3 { menu - 1 } else { menu }; // the ones after Tabs, as numbered before it came
     let mut p = POINT { x: r.left, y: r.bottom + gap };
     let mut top = POINT { x: r.left, y: r.top - gap };
     ClientToScreen(main, &mut p);
@@ -6438,6 +6521,9 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                         })
                     });
                 }
+                T_CARD => {
+                    with(|u| u.card_due());
+                }
                 T_PREVIEW => {
                     KillTimer(h, T_PREVIEW);
                     // outside `with`: opening a preview handler is a cross-process call that pumps messages
@@ -6496,6 +6582,48 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
             return 0;
         }
+        WM_COPYDATA => {
+            return copydata(h, l) as LRESULT;
+        }
+        WM_TABS_IN => {
+            let json = *Box::from_raw(l as *mut String);
+            with(|u| {
+                if let Ok(s) = serde_json::from_str::<Session>(&json) {
+                    u.load_session(s, false);
+                }
+                if wp == 1 {
+                    u.secondary = false; // the window that kept the session merged in here: this one keeps it now
+                }
+                u.autosave(true);
+                u.invalidate_all();
+            });
+            SetForegroundWindow(h);
+            return 0;
+        }
+        WM_MERGE => {
+            // all these tabs to the window in wParam, then close
+            let Some(json) = with(|u| u.session_json(true)) else { return 0 };
+            let keeper = with(|u| !u.secondary).unwrap_or(false);
+            if send_tabs(wp as HWND, &json, keeper) {
+                with(|u| u.merged = true);
+                PostMessageW(h, WM_CLOSE, 0, 0);
+            }
+            return 0;
+        }
+        dnd::WM_DROPPED => {
+            dnd::dropped(l);
+            return 0;
+        }
+        WM_CLOSE => {
+            let n = with(|u| if u.merged { 0 } else { u.tabs.len() }).unwrap_or(0);
+            if n > 10 {
+                let text = wz(&t("tabs.close_many").replace("{n}", &n.to_string()));
+                let title = wz("Mosaic");
+                if MessageBoxW(h, text.as_ptr(), title.as_ptr(), MB_OKCANCEL | MB_ICONQUESTION) != IDOK {
+                    return 0;
+                }
+            }
+        }
         WM_PREVIEW => {
             let (p, png) = *Box::from_raw(l as *mut (String, Option<Vec<u8>>));
             preview::got_pic(&p, png);
@@ -6525,6 +6653,11 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 Some(Hit::Preview) => toggle_preview(),
                 Some(Hit::Side) => toggle_side(),
                 Some(Hit::Menu(i)) => menu_bar_popup(h, i),
+                Some(Hit::TabList) => {
+                    if let Some(r) = with(|u| u.hits.iter().find(|x| x.1 == Hit::TabList).map(|x| x.0)).flatten() {
+                        tab_list_menu(h, r);
+                    }
+                }
                 Some(hit) => drop_menu(h, hit),
                 None => {
                     // the margin left of the list (by the places panel, or the window's edge) starts a selection
@@ -6554,14 +6687,39 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             // middle-click on a tab (or a pane's caption) closes it, as in a browser
             let (x, y) = xy(l);
             with(|u| match u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1) {
-                Some(Hit::Tab(k) | Hit::TabClose(k)) => u.close_tab(k),
+                Some(Hit::Tab(k) | Hit::TabClose(k)) if !u.tabs[k].o.pinned => u.close_tab(k),
                 Some(Hit::Pane(id) | Hit::PaneClose(id)) => u.close_pane(id),
                 _ => {}
             });
             return 0;
         }
+        WM_RBUTTONUP => {
+            let (x, y) = xy(l);
+            if main_menu(h, x, y) {
+                return 0;
+            }
+        }
         WM_LBUTTONDBLCLK => {
             let (x, y) = xy(l);
+            // a tab: renamed; a pane's caption: zoomed; a gap: halved; the strip's empty space: a new tab
+            let hit = with(|u| u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1).or_else(|| u.on_strip(x, y).then_some(Hit::NewTab))).flatten();
+            let ta = match hit {
+                Some(Hit::Tab(k)) => Some(TA::Rename(k)),
+                Some(Hit::Pane(p)) => Some(TA::Zoom(p)),
+                Some(Hit::Gutter(sid)) => Some(TA::Half(sid)),
+                Some(Hit::NewTab) => None,
+                _ => None,
+            };
+            if let Some(a) = ta {
+                with(|u| u.drag_end(false));
+                ReleaseCapture();
+                tab_act(a);
+                return 0;
+            }
+            if hit == Some(Hit::NewTab) && with(|u| !u.hits.iter().any(|(r, _)| inside(r, x, y))) == Some(true) {
+                with(|u| u.new_tab("home:", u.tabs.len()));
+                return 0;
+            }
             let tag = with(|u| {
                 if u.hits.iter().any(|(r, t)| matches!(t, Hit::ColEdge(..)) && inside(r, x, y)) {
                     // a column gap: back to the default widths
@@ -6612,6 +6770,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 if hot != u.hot {
                     u.hot = hot;
                     InvalidateRect(h, null(), 0);
+                    u.card_hover();
                 }
                 u.set_toolbar_tip();
                 let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
@@ -6623,6 +6782,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             with(|u| {
                 u.hot = None;
                 u.set_toolbar_tip();
+                u.card_close();
             });
             InvalidateRect(h, null(), 0);
             return 0;
@@ -6679,6 +6839,21 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
         }
         WM_MOUSEWHEEL => {
+            // over the strip: scrolled, when its tabs scroll; else the next or previous tab
+            let mut p = POINT { x: (l & 0xffff) as i16 as i32, y: ((l >> 16) & 0xffff) as i16 as i32 };
+            ScreenToClient(h, &mut p);
+            let delta = ((wp >> 16) & 0xffff) as i16 as i32;
+            if with(|u| u.on_strip(p.x, p.y)) == Some(true) {
+                with(|u| {
+                    if u.scroll.1 > 0 {
+                        u.scroll_strip(-delta * u.px(60) / 120);
+                    } else {
+                        let n = u.tabs.len();
+                        u.switch_tab((u.cur + if delta < 0 { 1 } else { n - 1 }) % n);
+                    }
+                });
+                return 0;
+            }
             if let Some(list) = with(|u| u.list) {
                 return SendMessageW(list, m, wp, l);
             }
@@ -6704,7 +6879,10 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_DESTROY => {
-            with(|u| u.save_kinds());
+            with(|u| {
+                u.save_kinds();
+                u.autosave(true);
+            });
             PostQuitMessage(0);
             return 0;
         }
@@ -6761,8 +6939,17 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 withp(h, |u| u.ldown(x, y)); // a second press on the scrollbar pages again
                 return 0;
             }
-            if let Some(Some(p)) = withp(h, |u| u.item_at(x, y).and_then(|i| u.get(i)).map(|r| r.path.clone())) {
-                open_item(&p);
+            if let Some(Some((p, dir))) = withp(h, |u| u.item_at(x, y).and_then(|i| u.get(i)).map(|r| (r.path.clone(), r.is_dir))) {
+                // a folder with Ctrl: in a new tab; with Shift: in a pane beside this one
+                match (dir, key_down(VK_CONTROL), key_down(VK_SHIFT)) {
+                    (true, true, _) => {
+                        with(|u| u.open_tab(&p));
+                    }
+                    (true, _, true) => {
+                        with(|u| u.open_beside(&p, 1));
+                    }
+                    _ => open_item(&p),
+                }
             }
             return 0;
         }
@@ -6802,7 +6989,9 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 // on a folder: it opens in a new tab, as a browser's middle-click does; elsewhere, autoscroll
                 let dir = u.item_at(x, y).and_then(|i| u.get(i)).filter(|r| r.is_dir).map(|r| r.path.clone());
                 if let (None, Some(d)) = (&u.auto, dir) {
-                    return u.open_tab(&d);
+                    // in the background, as a browser's middle-click does
+                    let q = u.browse_q(&d);
+                    return u.new_tab_bg(&q, u.cur + 1);
                 }
                 if u.auto.take().is_some() {
                     ReleaseCapture();
@@ -6917,7 +7106,7 @@ mod tests {
         root.dock(Node::Leaf(2), Dock::Pane(1, 3), 8);
         root.settle();
         let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
-        root.place(RECT { left: 0, top: 0, right: 1000, bottom: 610 }, 10, &mut leaves, &mut gutters);
+        root.place(RECT { left: 0, top: 0, right: 1000, bottom: 610 }, 10, (&[], 0), &mut leaves, &mut gutters);
         let r = leaves.iter().find(|l| l.0 == 2).unwrap().1;
         assert_eq!((r.left, r.top, r.right, r.bottom), (0, 310, 1000, 610));
     }
@@ -6943,7 +7132,7 @@ mod tests {
         assert_eq!(t.leaves(), [0, 1, 2]);
         while t.animate(1.0 / 60.0) {}
         let (mut leaves, mut gutters) = (vec![], vec![]);
-        t.place(r, 10, &mut leaves, &mut gutters);
+        t.place(r, 10, (&[], 0), &mut leaves, &mut gutters);
         let l0 = leaves[0].1;
         assert_eq!((leaves[0].0, l0.left, l0.top, l0.right, l0.bottom), (0, 0, 0, 500, 500));
         assert_eq!(leaves[1].1.left, 510);

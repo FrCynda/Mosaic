@@ -38,6 +38,7 @@ pub struct Fonts {
     pub big: IDWriteTextFormat,   // a dialog's title: 17 px semibold
     pub lh: i32,                  // line height of the 12 px text (CSS line-height 1.4)
     pub big_lh: i32,
+    pub tabs: [(IDWriteTextFormat, IDWriteTextFormat, i32); 3], // the tabs' text, small / normal / large: regular, semibold, line height
 }
 
 pub struct Gfx {
@@ -115,6 +116,11 @@ unsafe fn fonts(dw: &IDWriteFactory, s: f32, rtl: bool) -> Result<Fonts> {
         big: mk(w!("Segoe UI"), 17.0, 600, false)?,
         lh: (12.0 * 1.4 * s).round() as i32,
         big_lh: (17.0 * 1.4 * s).round() as i32,
+        tabs: [
+            (mk(w!("Segoe UI"), 10.5, 400, false)?, mk(w!("Segoe UI"), 10.5, 600, false)?, (10.5 * 1.4 * s).round() as i32),
+            (mk(w!("Segoe UI"), 12.0, 400, false)?, mk(w!("Segoe UI"), 12.0, 600, false)?, (12.0 * 1.4 * s).round() as i32),
+            (mk(w!("Segoe UI"), 14.0, 400, false)?, mk(w!("Segoe UI"), 14.0, 600, false)?, (14.0 * 1.4 * s).round() as i32),
+        ],
     })
 }
 
@@ -374,6 +380,23 @@ impl Canvas {
                 s.AddLine(v(b.0, b.1));
                 s.EndFigure(D2D1_FIGURE_END_OPEN);
             }
+            if s.Close().is_ok() {
+                self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());
+            }
+        }
+    }
+
+    /// An open line through `pts`, round-capped.
+    pub fn lines(&self, pts: &[(f32, f32)], c: u32, width: f32) {
+        let Some(&(x0, y0)) = pts.first() else { return };
+        unsafe {
+            let Ok(g) = self.d2.CreatePathGeometry() else { return };
+            let Ok(s) = g.Open() else { return };
+            s.BeginFigure(v(x0, y0), D2D1_FIGURE_BEGIN_HOLLOW);
+            for &(x, y) in &pts[1..] {
+                s.AddLine(v(x, y));
+            }
+            s.EndFigure(D2D1_FIGURE_END_OPEN);
             if s.Close().is_ok() {
                 self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());
             }

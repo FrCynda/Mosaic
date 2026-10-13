@@ -3,7 +3,7 @@
 use std::mem::zeroed;
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_MULTIDESTFILES, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_SILENT, FO_DELETE, FO_MOVE, SHFILEOPSTRUCTW};
+use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_MULTIDESTFILES, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_SILENT, FO_COPY, FO_DELETE, FO_MOVE, SHFILEOPSTRUCTW};
 
 /// `pFrom` / `pTo` lists: each path NUL-terminated, the whole list ending with an extra NUL.
 fn list<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<u16> {
@@ -45,6 +45,27 @@ pub fn move_many(pairs: &[(String, String)]) -> Result<(), String> {
     }
     let (from, to) = (list(pairs.iter().map(|p| p.0.as_str())), list(pairs.iter().map(|p| p.1.as_str())));
     shell_op(FO_MOVE, &from, Some(&to), FOF_MULTIDESTFILES | FOF_NOCONFIRMMKDIR | FOF_ALLOWUNDO)
+}
+
+/// Copy or move `paths` into the folder `dir` the way Explorer does a drop: its progress, and its questions when a
+/// name is taken (replace, skip, keep both). Undoable from Explorer too.
+pub fn transfer(paths: &[String], dir: &str, copy: bool, owner: isize) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let (from, to) = (list(paths.iter().map(|p| p.as_str())), list(std::iter::once(dir)));
+    let mut op: SHFILEOPSTRUCTW = unsafe { zeroed() };
+    op.hwnd = owner as _;
+    op.wFunc = if copy { FO_COPY } else { FO_MOVE };
+    op.pFrom = from.as_ptr();
+    op.pTo = to.as_ptr();
+    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR) as u16;
+    // SAFETY: `op` is fully initialized and the lists outlive the call.
+    match unsafe { SHFileOperationW(&mut op) } {
+        0 if op.fAnyOperationsAborted != 0 => Err("cancelled".into()),
+        0 => Ok(()),
+        rc => Err(format!("failed (code {rc})")),
+    }
 }
 
 /// A Recycle Bin `$I…` record: when the item was deleted (FILETIME) and the path it was deleted from.
