@@ -5,7 +5,7 @@
 use crate::application::error::IndexResult;
 
 /// A single file record streamed from a volume, before path reconstruction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawRecord {
     /// This record's MFT number.
     pub record_no: u64,

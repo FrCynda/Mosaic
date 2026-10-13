@@ -17,14 +17,10 @@ use crate::infrastructure::ntfs::{
     catch_up, journal_state, ntfs_fixed_drives, volume_serial, CatchUp, MftReader, UsnWatcher,
 };
 
-/// How often the cache saver looks at what changed.
+/// How often the cache saver appends what changed to the cache's log (KBs: see `cache`). Keeps the saved journal
+/// position minutes old, so a crash costs a short replay, never the rescan a wrapped journal (~8 h of a busy
+/// disk) forces.
 const CACHE_SAVE_INTERVAL: Duration = Duration::from_secs(300);
-/// The (100+ MB) cache is rewritten on a clean stop ([`save_caches`]), and otherwise only once this many changes
-/// piled up (what the next start would have to replay) or once a day. A crash in between costs a longer replay at
-/// the next start (a rescan if the journal wrapped meanwhile), never a wrong index. Every 5 minutes on any change
-/// wrote tens of GB a day on a busy disk.
-const CACHE_SAVE_CHANGES: u64 = 100_000;
-const CACHE_SAVE_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// What [`save_caches`] saves, set once the volumes are online.
 static SAVER: OnceLock<(Arc<RwLock<Catalog>>, Vec<IndexedVolume>)> = OnceLock::new();
@@ -240,6 +236,9 @@ fn bring_volume_online(
             let mut recs = snapshot.recs;
             crate::application::index::drop_orphans(&mut recs);
             let mut index = SearchIndex::from_parts(drive, recs, snapshot.names);
+            for frame in &snapshot.log {
+                index.replay(cache::changes(frame)); // a frame at a time: the whole log decoded is 100+ MB
+            }
             progress.store(index.len(), Ordering::Relaxed);
             if let CatchUp::Caught { next_usn } =
                 catch_up(drive, journal_id, snapshot.next_usn, &mut index, Some(sink))
@@ -268,8 +267,9 @@ fn bring_volume_online(
     })
 }
 
-/// Rewrite each volume's on-disk cache, if anything changed since the last save. Called on service stop, so the
-/// next start loads fast and replays only a small journal tail.
+/// Save what changed in each volume's index since the last save: appended to its cache's log, or the whole cache
+/// when that log is due for folding in. Called every few minutes and on service stop, so the next start loads fast
+/// and replays only a small journal tail.
 pub fn save_caches() {
     let Some((catalog, indexed)) = SAVER.get() else { return };
     let mut saved_at = SAVED_AT.lock();
@@ -287,8 +287,12 @@ pub fn save_caches() {
         // changes in between (a delete) would never be replayed.
         let catalog = catalog.read();
         if let Some((index, usn)) = catalog.volume(vol.drive).and_then(|i| Some((i, i.usn?))) {
-            let _ = cache::save(vol.drive, vol.serial, journal.journal_id, usn, index.parts());
-            let _ = crate::datestore::save();
+            // under the read lock: the changes taken are exactly those up to `usn` (the watcher applies under the write lock)
+            let appended = index.take_unsaved().is_some_and(|c| matches!(cache::append(vol.drive, usn, &c), Ok(true)));
+            if !appended {
+                index.saved_whole(cache::save(vol.drive, vol.serial, journal.journal_id, usn, index.parts()).is_ok());
+                let _ = crate::datestore::save(); // its changes are replayed from the log meanwhile
+            }
         }
     }
 }
@@ -298,15 +302,8 @@ fn spawn_cache_saver(catalog: Arc<RwLock<Catalog>>, indexed: Vec<IndexedVolume>)
     if SAVER.set((catalog, indexed)).is_err() {
         return; // one indexer per process
     }
-    thread::spawn(move || {
-        let mut saved_time = std::time::Instant::now();
-        loop {
-            thread::sleep(CACHE_SAVE_INTERVAL);
-            let changed = super::ntfs::CHANGES.load(Ordering::Relaxed).wrapping_sub(*SAVED_AT.lock());
-            if changed >= CACHE_SAVE_CHANGES || (changed > 0 && saved_time.elapsed() >= CACHE_SAVE_MAX_AGE) {
-                save_caches();
-                saved_time = std::time::Instant::now();
-            }
-        }
+    thread::spawn(|| loop {
+        thread::sleep(CACHE_SAVE_INTERVAL);
+        save_caches();
     });
 }

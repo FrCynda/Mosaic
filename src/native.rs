@@ -8,6 +8,8 @@ mod gfx;
 mod side;
 #[path = "native_preview.rs"]
 mod preview;
+#[path = "native_themes.rs"]
+mod themes;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -41,6 +43,8 @@ const WM_INSTALLED: u32 = WM_APP + 3;
 const WM_THUMB: u32 = WM_APP + 4;
 const WM_PREVIEW: u32 = WM_APP + 5;
 const WM_KIND: u32 = WM_APP + 20;
+const WM_RENAME: u32 = WM_APP + 30; // to the list: rename the focused item in place (Explorer's menu asked, or a new item showed up)
+const WM_RENAME_END: u32 = WM_APP + 31; // … the field (wParam) lost the focus: keep what was typed
 const T_TYPE: usize = 1;
 const T_POLL: usize = 2;
 const T_FLASH: usize = 3;
@@ -58,39 +62,71 @@ const THUMB_BYTES: usize = 24 << 20; // decoded thumbnails kept (GPU memory)
 
 /// A palette of 0xRRGGBB colors. `Canvas`/`Gfx` take raw u32s per draw call, so swapping the
 /// active theme needs no rendering-layer changes — every draw site reads through `theme()`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct Theme {
     bg: u32,
     card: u32,
     text: u32,
     muted: u32,
     accent: u32,
-    green: u32, // temporary: the fps counter
     line: u32,
     hl: u32,
     row: u32,
     sel: u32,
+    dark: bool,
 }
+#[allow(clippy::too_many_arguments)]
+const fn th(bg: u32, card: u32, text: u32, muted: u32, accent: u32, line: u32, hl: u32, row: u32, sel: u32, dark: bool) -> Theme {
+    Theme { bg, card, text, muted, accent, line, hl, row, sel, dark }
+}
+/// The themes the picker offers, dark ones then light ones: (settings key, name, palette). Each dark one is a
+/// near-black tinted toward its accent, chrome (`card`) a step lighter; selection and hover are low tints of the
+/// accent, so the content stands out rather than the chrome. The light ones are white or a faint tint of theirs.
+/// Their accents come from the app icon's presets.
+const THEMES: [(&str, &str, Theme); 16] = [
+    ("dark", "Midnight", th(0x0f1216, 0x181c22, 0xe6e8eb, 0x8b93a0, 0x7aa2ff, 0x262b33, 0x1f2a44, 0x1c2129, 0x243257, true)),
+    ("graphite", "Graphite", th(0x121315, 0x1b1c1f, 0xe7e8ea, 0x8e9299, 0xb4bccb, 0x2b2d31, 0x2a2c31, 0x202124, 0x373a41, true)),
+    ("navy", "Navy", th(0x0a0f20, 0x111831, 0xe4ebfa, 0x8a97bd, 0x5b95ff, 0x1f2a4d, 0x182550, 0x141d3b, 0x1f3575, true)),
+    ("ocean", "Ocean", th(0x071518, 0x0d2127, 0xdcf3f5, 0x7fa6ab, 0x3fd9e0, 0x18353d, 0x10343c, 0x102a30, 0x114a54, true)),
+    ("forest", "Forest", th(0x09130f, 0x0f1f18, 0xdcf3e6, 0x7fa592, 0x3fe08a, 0x1b3328, 0x133325, 0x12291f, 0x164a31, true)),
+    ("sunset", "Sunset", th(0x160b08, 0x21110c, 0xfbe6da, 0xb08f80, 0xff9a4a, 0x3a1f16, 0x3d1e12, 0x2b1610, 0x5c2a14, true)),
+    ("rose", "Rose", th(0x140a11, 0x20101b, 0xfbe0ee, 0xb08aa0, 0xff7ab8, 0x3a1d31, 0x3c1631, 0x2a1323, 0x5c1d47, true)),
+    ("amethyst", "Amethyst", th(0x0e0b1b, 0x17122b, 0xece4fa, 0x9a8fbd, 0xb07bff, 0x2b2148, 0x2b1e52, 0x1f1840, 0x3c2878, true)),
+    ("light", "Daylight", th(0xffffff, 0xffffff, 0x1a1d21, 0x6b7280, 0x317dcf, 0xd6dae1, 0xe9f1fd, 0xf3f5f8, 0xd7e6fb, false)),
+    ("fog", "Fog", th(0xf4f5f7, 0xfbfbfc, 0x1b1d21, 0x6a707a, 0x4f5868, 0xdcdfe4, 0xe7e9ed, 0xeceef1, 0xd8dce3, false)),
+    ("mint", "Mint", th(0xf3faf6, 0xffffff, 0x14231c, 0x5f7a6c, 0x14996a, 0xd3e8dc, 0xdff4ea, 0xe9f5ef, 0xc6ecda, false)),
+    ("lagoon", "Lagoon", th(0xf2f9fa, 0xffffff, 0x0f2226, 0x5b7a80, 0x138a96, 0xcfe5e8, 0xdcf1f3, 0xe8f4f5, 0xc4e8ec, false)),
+    ("paper", "Paper", th(0xf8f5ef, 0xfffdf9, 0x2a251e, 0x7d7366, 0xb8640e, 0xe6dfd3, 0xf4e8d4, 0xf1ece3, 0xefd9b8, false)),
+    ("sunrise", "Sunrise", th(0xfff6f1, 0xffffff, 0x2b1810, 0x8a6a5c, 0xe0541c, 0xf0dbd0, 0xfde7da, 0xfaefe8, 0xfad2bd, false)),
+    ("blossom", "Blossom", th(0xfdf4f8, 0xffffff, 0x2a1020, 0x8a6478, 0xd6337f, 0xf0d9e4, 0xfbe0ee, 0xf8edf2, 0xf6cde0, false)),
+    ("lavender", "Lavender", th(0xf7f5fd, 0xffffff, 0x1d1630, 0x6e6688, 0x7a4ae6, 0xe2ddf2, 0xece4fa, 0xf1eef9, 0xdccff7, false)),
+];
 impl Theme {
-    // Dark: neutral graphite with one muted steel-blue accent (selection and hover are low-contrast tints of
-    // it), so the content stands out rather than the chrome. Light: white, with the icon's blue as accent.
-    const fn dark() -> Theme {
-        Theme { bg: 0x0f1216, card: 0x181c22, text: 0xe6e8eb, muted: 0x8b93a0, accent: 0x7aa2ff, green: 0x3fb950, line: 0x262b33, hl: 0x1f2a44, row: 0x1c2129, sel: 0x243257 }
-    }
-    const fn light() -> Theme {
-        // pure white, kept flat/uniform — separation comes from `line` borders, not grey fills
-        Theme { bg: 0xffffff, card: 0xffffff, text: 0x1a1d21, muted: 0x6b7280, accent: 0x317dcf, green: 0x1a7f37, line: 0xd6dae1, hl: 0xe9f1fd, row: 0xf3f5f8, sel: 0xd7e6fb }
-    }
     fn by_name(name: &str) -> Theme {
-        match name {
-            "light" => Theme::light(),
-            _ => Theme::dark(), // "dark" and "default" both start identical to the original palette
-        }
+        THEMES.iter().find(|t| t.0 == name).map_or(THEMES[0].2, |t| t.2) // "default" and unknown: Midnight
+    }
+    /// `self` blended `k` (0–1) of the way to `o`, colour by colour.
+    fn mix(&self, o: &Theme, k: f64) -> Theme {
+        let m = |a: u32, b: u32| {
+            let ch = |s: u32| {
+                let (x, y) = (((a >> s) & 0xff) as f64, ((b >> s) & 0xff) as f64);
+                ((x + (y - x) * k).round() as u32) << s
+            };
+            ch(16) | ch(8) | ch(0)
+        };
+        th(m(self.bg, o.bg), m(self.card, o.card), m(self.text, o.text), m(self.muted, o.muted), m(self.accent, o.accent), m(self.line, o.line), m(self.hl, o.hl), m(self.row, o.row), m(self.sel, o.sel), if k < 0.5 { self.dark } else { o.dark })
     }
 }
-static THEME: std::sync::RwLock<Theme> = std::sync::RwLock::new(Theme::dark());
+static THEME: std::sync::RwLock<Theme> = std::sync::RwLock::new(THEMES[0].2);
 static THEME_NAME: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+/// A theme change under way: from, to, since. Every draw reads `theme()`, so the whole window cross-fades.
+static FADE: std::sync::RwLock<Option<(Theme, Theme, Instant)>> = std::sync::RwLock::new(None);
+const FADE_S: f64 = 0.22;
 pub(super) fn theme() -> Theme {
+    if let Some((a, b, t0)) = *FADE.read().unwrap() {
+        let k = (t0.elapsed().as_secs_f64() / FADE_S).min(1.0);
+        return a.mix(&b, k * k * (3.0 - 2.0 * k));
+    }
     *THEME.read().unwrap()
 }
 pub(super) fn theme_name() -> String {
@@ -101,13 +137,43 @@ pub(super) fn set_theme(name: &str) {
     *THEME.write().unwrap() = Theme::by_name(name);
     *THEME_NAME.write().unwrap() = name.to_string();
 }
+/// Switch to `name`, cross-fading from the colours on screen now.
+fn fade_to(name: &str) {
+    let from = theme();
+    set_theme(name);
+    *FADE.write().unwrap() = Some((from, theme_now(), Instant::now()));
+}
+fn theme_now() -> Theme {
+    *THEME.read().unwrap()
+}
+/// The theme picker's choice, shown everywhere (not kept yet).
+fn theme_preview(name: &str) {
+    fade_to(name);
+    with(|u| u.repaint_theme());
+}
+/// … and kept.
+fn theme_apply(name: &str) {
+    if theme_name() != name {
+        theme_preview(name);
+    }
+    with(|u| u.save_settings());
+}
+/// A frame of the theme cross-fade: true while it runs (every window is repainted meanwhile).
+fn fading() -> bool {
+    let mut f = FADE.write().unwrap();
+    if f.is_some_and(|(_, _, t0)| t0.elapsed().as_secs_f64() >= FADE_S) {
+        *f = None;
+        return true; // one last frame, at the end colours
+    }
+    f.is_some()
+}
 /// Syncs the OS-drawn title bar (caption background/text, dark-mode caption-button glyphs) to the
 /// active theme — DWM doesn't pick this up on its own when the theme changes after the window exists.
 unsafe fn apply_titlebar(main: HWND) {
-    let dark: BOOL = (theme_name() != "light") as i32;
+    let dark: BOOL = theme().dark as i32;
     DwmSetWindowAttribute(main, 20, &dark as *const _ as *const c_void, 4); // DWMWA_USE_IMMERSIVE_DARK_MODE
-    let caption = gdi(theme().card);
-    DwmSetWindowAttribute(main, 35, &caption as *const _ as *const c_void, 4); // DWMWA_CAPTION_COLOR: title bar = header
+    let caption = gdi(theme().bg);
+    DwmSetWindowAttribute(main, 35, &caption as *const _ as *const c_void, 4); // DWMWA_CAPTION_COLOR: title bar = the tab strip
     let text = gdi(theme().text);
     DwmSetWindowAttribute(main, 36, &text as *const _ as *const c_void, 4); // DWMWA_TEXT_COLOR
 }
@@ -133,69 +199,149 @@ fn filters() -> [(&'static str, &'static str); 9] {
         (t("filter.video"), "video"),
     ]
 }
-fn metas() -> [(&'static str, &'static str); 3] {
-    [(t("meta.names"), ""), (t("meta.names_type"), "both"), (t("meta.type_only"), "only")]
+fn col_defs() -> [(&'static str, &'static str); 5] {
+    [(t("col.name"), "name"), (t("col.path"), "path"), (t("col.size"), "size"), (t("col.type"), "type"), (t("col.modified"), "mtime")]
 }
-fn col_defs() -> [(&'static str, &'static str); 6] {
-    [
-        (t("col.name"), "name"),
-        (t("col.path"), "path"),
-        (t("col.size"), "size"),
-        (t("col.type"), "type"),
-        (t("col.modified"), "mtime"),
-        (t("col.attributes"), "attributes"),
-    ]
+/// Columns' default widths: Name's share of what Name and Path have together, then Size, Type, Modified (CSS px).
+const COLS_DEFAULT: (f64, [i32; 3]) = (0.5, [85, 150, 150]);
+/// The "cols" setting ("share,size,type,modified"); the defaults if it's missing or garbled.
+fn parse_cols(s: &str) -> (f64, [i32; 3]) {
+    let v: Vec<f64> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+    match v[..] {
+        [f, a, b, c] if (0.05..=0.95).contains(&f) && [a, b, c].iter().all(|&x| (20.0..2000.0).contains(&x)) => (f, [a as i32, b as i32, c as i32]),
+        _ => COLS_DEFAULT,
+    }
 }
-// each language's own name for itself, not translated (a UI in Russian shouldn't call French "Французский")
-fn lang_opts() -> [(&'static str, &'static str); 17] {
-    [
-        ("English", "en"),
-        ("Español", "es"),
-        ("العربية", "ar"),
-        ("Português", "pt"),
-        ("Français", "fr"),
-        ("Kiswahili", "sw"),
-        ("Hausa", "ha"),
-        ("Yorùbá", "yo"),
-        ("Igbo", "ig"),
-        ("አማርኛ", "am"),
-        ("isiZulu", "zu"),
-        ("Soomaali", "so"),
-        ("Wolof", "wo"),
-        ("Afaan Oromoo", "om"),
-        ("हिन्दी", "hi"),
-        ("中文", "zh"),
-        ("Русский", "ru"),
-    ]
-}
-fn theme_opts() -> [(&'static str, &'static str); 2] {
-    [(t("theme.dark"), "dark"), (t("theme.light"), "light")]
+/// Column widths `w` with the edge after column `k` moved `d` px: column k grows as k+1 shrinks, neither below `min`.
+fn col_resize(mut w: [i32; 5], k: usize, d: i32, min: i32) -> [i32; 5] {
+    let d = d.clamp((min - w[k]).min(0), (w[k + 1] - min).max(0));
+    w[k] += d;
+    w[k + 1] -= d;
+    w
 }
 /// The classic File/Edit/View/Search/Tools/Help strip above the tab row, like a conventional desktop app's.
 fn menu_bar_labels() -> [&'static str; 6] {
     [t("menubar.file"), t("menubar.edit"), t("menubar.view"), t("menubar.search"), t("menubar.tools"), t("menubar.help")]
 }
-fn menu() -> [(&'static str, &'static str, Option<Act>); 10] {
-    [
-        (t("menu.open"), "Enter", Some(Act::Open)),
-        (t("menu.open_folder"), "", Some(Act::Reveal)),
-        ("", "", None),
-        (t("menu.copy"), "Ctrl+C", Some(Act::Copy)),
-        (t("menu.cut"), "Ctrl+X", Some(Act::Cut)),
-        (t("menu.copy_path"), "", Some(Act::Path)),
-        ("", "", None),
-        (t("menu.delete"), "Del", Some(Act::Del)),
-        ("", "", None),
-        (t("menu.properties"), "", Some(Act::Props)),
+/// The grid sizes Explorer's View submenu names (extra large, large, medium, small icons); 0 is Details, the list.
+const VIEWS: [(&str, i32); 5] = [("menu.icons_xl", MAX_SIZE), ("menu.icons_l", 160), ("menu.icons_m", 96), ("menu.icons_s", 48), ("menu.details", 0)];
+
+/// A popup menu's entry: no label is a separator; `tag` is what picking it returns; `sub`, a submenu. `icon` is
+/// w×h premultiplied BGRA.
+#[derive(Clone, Default)]
+struct MItem {
+    label: String,
+    keys: String,
+    tag: usize,
+    on: bool,
+    off: bool,
+    bold: bool,
+    icon: Option<(i32, i32, Vec<u8>)>,
+    sub: Vec<MItem>,
+}
+
+const EXTRA: usize = 0x8000; // tags of Mosaic's own entries in Explorer's menu: EXTRA + their act's index
+const RENAME: usize = usize::MAX; // Explorer's Rename, which the list does itself
+
+fn entry(label: &str, on: bool, a: Act, acts: &mut Vec<Act>) -> MItem {
+    acts.push(a);
+    MItem { label: label.into(), on, tag: EXTRA + acts.len() - 1, ..Default::default() }
+}
+
+/// What Mosaic adds to Explorer's menu on items (after its Open group): what only Mosaic does with them.
+fn item_extras(dir: bool, acts: &mut Vec<Act>) -> Vec<MItem> {
+    let mut v = Vec::new();
+    if dir {
+        v.push(entry(t("menu.open_here"), false, Act::OpenHere, acts));
+        v.push(entry(t("menu.open_tab"), false, Act::OpenTab, acts));
+    }
+    v.push(entry(t("menu.open_folder"), false, Act::Reveal, acts));
+    v.push(entry(t("menu.search_in"), false, Act::SearchIn, acts));
+    v
+}
+
+/// What Mosaic adds to Explorer's menu on empty space (first, as Explorer has them): View ▸, Sort by ▸, Refresh.
+fn bg_extras(u: &Ui, acts: &mut Vec<Act>) -> Vec<MItem> {
+    // the View size nearest the tiles' own (Ctrl+wheel sizes them in between)
+    let near = VIEWS.iter().filter(|v| v.1 > 0).min_by_key(|v| (v.1 - u.size).abs()).map_or(0, |v| v.1);
+    let view = VIEWS.iter().map(|&(k, s)| entry(t(k), if u.grid { s == near } else { s == 0 }, Act::View(s), acts)).collect();
+    let mut sort: Vec<MItem> = col_defs().into_iter().map(|(l, k)| entry(l, u.args.sort == k, Act::Sort(k), acts)).collect();
+    sort.push(MItem::default());
+    sort.push(entry(t("menu.ascending"), u.args.dir != "desc", Act::Desc(false), acts));
+    sort.push(entry(t("menu.descending"), u.args.dir == "desc", Act::Desc(true), acts));
+    // Paste is Explorer's view's, not the folder's menu's: here too, greyed with no files on the clipboard
+    let mut paste = entry(t("menu.paste"), false, Act::Paste, acts);
+    paste.keys = "Ctrl+V".into();
+    paste.off = unsafe { windows_sys::Win32::System::DataExchange::IsClipboardFormatAvailable(15) } == 0; // CF_HDROP
+    vec![
+        MItem { label: t("menubar.view").into(), sub: view, ..Default::default() },
+        MItem { label: t("menu.sort_by").into(), sub: sort, ..Default::default() },
+        entry(t("menu.refresh"), false, Act::Refresh, acts),
+        MItem::default(),
+        paste,
     ]
+}
+
+/// Explorer's menu as entries: an item's tag is its command id, Rename's is [`RENAME`].
+fn shell_entries(v: Vec<shell::MenuItem>) -> Vec<MItem> {
+    tidy(
+        v.into_iter()
+            .map(|s| MItem {
+                tag: if s.verb.eq_ignore_ascii_case("rename") { RENAME } else { s.id as usize },
+                icon: (s.w > 0 && s.h > 0 && s.px.len() == (s.w * s.h * 4) as usize).then_some((s.w, s.h, s.px)),
+                sub: shell_entries(s.sub),
+                label: s.label,
+                keys: s.keys,
+                on: s.on,
+                off: s.off,
+                bold: s.bold,
+            })
+            .collect(),
+    )
+}
+
+/// Mosaic's entries into Explorer's: first on empty space, after the Open group on items, set apart by lines.
+fn merge(mut shell: Vec<MItem>, extras: Vec<MItem>, bg: bool) -> Vec<MItem> {
+    let at = if bg { 0 } else { shell.iter().position(|i| i.label.is_empty()).map_or(shell.len(), |k| k + 1) };
+    shell.splice(at..at, std::iter::once(MItem::default()).chain(extras).chain([MItem::default()]));
+    tidy(shell)
+}
+
+/// No separator first, last, or twice in a row; no entry twice (PowerToys adds some both ways).
+fn tidy(v: Vec<MItem>) -> Vec<MItem> {
+    let mut out: Vec<MItem> = Vec::new();
+    let mut seen = HashSet::new();
+    for it in v {
+        if !it.label.is_empty() && !seen.insert(it.label.clone()) {
+            continue;
+        }
+        if !(it.label.is_empty() && out.last().is_none_or(|l| l.label.is_empty())) {
+            out.push(it);
+        }
+    }
+    if out.last().is_some_and(|l| l.label.is_empty()) {
+        out.pop();
+    }
+    out
 }
 
 /// view, items per row and the Names/type mode survive restarts (the web UI kept them in localStorage).
 /// JSON now (was a flat key=value text file); `load_settings` migrates the old file on first read.
-/// Folder -> icon kind, kept between runs (`kind<TAB>path` per line) so a folder is only ever looked into once.
-/// Each answer is stamped with the folder's modified time and recomputed when that changes.
+/// Folder -> icon kind, kept between runs so a folder is only ever looked into once. Each answer is stamped with
+/// the folder's modified time and recomputed when that changes. A `kvlog` store: a save appends the new answers
+/// (the whole file, MBs, was rewritten every few minutes while browsing).
 fn kinds_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("foldericons.txt")
+    std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("foldericons.bin")
+}
+
+fn load_kinds() -> HashMap<String, (u8, u64)> {
+    let kinds = crate::kvlog::load(&kinds_path());
+    if !kinds.is_empty() {
+        return kinds;
+    }
+    // the text file of earlier versions (`kind<TAB>mtime<TAB>path` per line), replaced at the first save
+    let old = kinds_path().with_extension("txt");
+    std::fs::read_to_string(old).unwrap_or_default().lines().filter_map(|l| { let mut f = l.splitn(3, '\t'); let (k, m) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?); Some((f.next()?.to_string(), (k, m))) }).collect()
 }
 
 fn mtime_secs(p: &str) -> u64 {
@@ -290,7 +436,6 @@ struct Row {
     size_s: Vec<u16>,
     ty: Vec<u16>,
     date: Vec<u16>,
-    attrs_s: Vec<u16>,
     hidden: bool, // drawn faded, like Explorer
     link: bool,   // .lnk/.url: Windows' shortcut arrow goes over the icon
     size: i64,
@@ -309,7 +454,6 @@ enum Hit {
     Content, // … and inside their text
     Filter, // the filter dropdown right of the search box
     Tag,    // status bar: the active filter's name; double-click turns it off
-    Meta,   // Names / Names + type / Type only dropdown
     Sort,   // grid: sort dropdown
     Dir,    // grid: reverse order
     View(usize), // List | Grid
@@ -323,12 +467,259 @@ enum Hit {
     Diacritics,  // toolbar: accent-insensitive search (Alt+D)
     Timestamps,  // toolbar: index created/accessed times for dc:/da: and their sort columns (Alt+T)
     Split,       // the gap between the list and the preview pane: drag to resize the pane
-    Col(usize),
+    Col(usize, usize), // a pane's column header: (pane, column)
+    ColEdge(usize, usize), // … the gap after a column: drag to resize it, double-click for the default widths
     Search,
     Lang,  // no button of its own now: names the language picker `drop_menu` opens from Tools
     Menu(usize), // the File/Edit/View/Search strip above the tab row
     Back,        // toolbar: previous folder / search (Alt+Left, mouse back button)
     Fwd,         // toolbar: next one (Alt+Right, mouse forward button)
+    Tab(usize),  // the tabs, along the menu strip
+    TabClose(usize), // … the × on one
+    NewTab,      // … the + after them
+    Pane(usize),      // a split pane's caption: click to focus it, drag it elsewhere or onto the tab strip
+    PaneClose(usize), // … the × on it
+    Gutter(usize),    // the gap between two split panes (the split's id): drag to resize
+}
+
+/// How a tab's room is shared: one pane, or two parts side by side (`vert`) or stacked. `shown` is the share `a`
+/// has on screen, springing (at `vel`) toward `ratio`.
+#[derive(Clone)]
+enum Node {
+    Leaf(usize),
+    Split { id: usize, vert: bool, ratio: f64, shown: f64, vel: f64, a: Box<Node>, b: Box<Node> },
+}
+
+impl Node {
+    fn is(&self, leaf: usize) -> bool {
+        matches!(self, Node::Leaf(l) if *l == leaf)
+    }
+    fn leaves(&self) -> Vec<usize> {
+        match self {
+            Node::Leaf(l) => vec![*l],
+            Node::Split { a, b, .. } => [a.leaves(), b.leaves()].concat(),
+        }
+    }
+    /// `me` and `new` side by side (side 0 left, 1 right) or stacked (2 top, 3 bottom), `new` on `side`, opening
+    /// from nothing.
+    fn split_off(me: Node, side: u8, new: Node, id: usize) -> Node {
+        let (a, b, shown) = if side.is_multiple_of(2) { (new, me, 0.0) } else { (me, new, 1.0) };
+        Node::Split { id, vert: side < 2, ratio: 0.5, shown, vel: 0.0, a: Box::new(a), b: Box::new(b) }
+    }
+    /// Put `sub` on `side` of pane `target`.
+    fn insert(&mut self, target: usize, side: u8, sub: &mut Option<Node>, id: usize) -> bool {
+        match self {
+            Node::Leaf(l) if *l == target => {
+                let Some(new) = sub.take() else { return false };
+                *self = Node::split_off(Node::Leaf(target), side, new, id);
+                true
+            }
+            Node::Leaf(_) => false,
+            Node::Split { a, b, .. } => a.insert(target, side, sub, id) || b.insert(target, side, sub, id),
+        }
+    }
+    /// Put `sub` (a pane, or a whole tab's) where it was dropped: beside a pane, or along an edge of the whole room.
+    fn dock(&mut self, sub: Node, to: Dock, id: usize) {
+        match to {
+            Dock::Pane(t, side) => {
+                self.insert(t, side, &mut Some(sub), id);
+            }
+            Dock::Root(side) => {
+                let old = std::mem::replace(self, Node::Leaf(0));
+                *self = Node::split_off(old, side, sub, id);
+            }
+            Dock::Strip(_) => {}
+        }
+    }
+    /// Every split straight to where it's going: the layout once the springs have settled.
+    fn settle(&mut self) {
+        if let Node::Split { ratio, shown, vel, a, b, .. } = self {
+            (*shown, *vel) = (*ratio, 0.0);
+            a.settle();
+            b.settle();
+        }
+    }
+    /// Take pane `leaf` out, its sibling getting the room. False when it isn't here, or is all there is.
+    fn detach(&mut self, leaf: usize) -> bool {
+        let rest = match self {
+            Node::Split { a, b, .. } if a.is(leaf) => std::mem::replace(&mut **b, Node::Leaf(0)),
+            Node::Split { a, b, .. } if b.is(leaf) => std::mem::replace(&mut **a, Node::Leaf(0)),
+            Node::Split { a, b, .. } => return a.detach(leaf) || b.detach(leaf),
+            Node::Leaf(_) => return false,
+        };
+        *self = rest;
+        true
+    }
+    /// Start pane `leaf` shrinking away (its sibling growing over it). False when it is all there is.
+    fn collapse(&mut self, leaf: usize) -> bool {
+        match self {
+            Node::Split { a, ratio, .. } if a.is(leaf) => *ratio = 0.0,
+            Node::Split { b, ratio, .. } if b.is(leaf) => *ratio = 1.0,
+            Node::Split { a, b, .. } => return a.collapse(leaf) || b.collapse(leaf),
+            Node::Leaf(_) => return false,
+        }
+        true
+    }
+    /// Whether pane `leaf`'s split has finished moving (a closing pane: it's gone from the screen); None if it has none.
+    fn settled(&self, leaf: usize) -> Option<bool> {
+        match self {
+            Node::Split { a, b, ratio, shown, vel, .. } if a.is(leaf) || b.is(leaf) => Some(shown == ratio && *vel == 0.0),
+            Node::Split { a, b, .. } => a.settled(leaf).or_else(|| b.settled(leaf)),
+            Node::Leaf(_) => None,
+        }
+    }
+    /// Any split still springing.
+    fn moving(&self) -> bool {
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { ratio, shown, vel, a, b, .. } => shown != ratio || *vel != 0.0 || a.moving() || b.moving(),
+        }
+    }
+    fn set_ratio(&mut self, sid: usize, r: f64) {
+        if let Node::Split { id, ratio, shown, vel, a, b, .. } = self {
+            if *id == sid {
+                (*ratio, *shown, *vel) = (r, r, 0.0);
+            } else {
+                a.set_ratio(sid, r);
+                b.set_ratio(sid, r);
+            }
+        }
+    }
+    /// One frame of every split's spring; true while any still moves.
+    fn animate(&mut self, dt: f64) -> bool {
+        match self {
+            Node::Leaf(_) => false,
+            Node::Split { ratio, shown, vel, a, b, .. } => spring(shown, vel, *ratio, dt, 22.0, 0.0005) | a.animate(dt) | b.animate(dt),
+        }
+    }
+    /// Each pane's box in `r`, and each split's (id, box, the gap between its parts, side by side).
+    fn place(&self, r: RECT, gap: i32, leaves: &mut Vec<(usize, RECT)>, gutters: &mut Vec<(usize, RECT, RECT, bool)>) {
+        match self {
+            Node::Leaf(id) => leaves.push((*id, r)),
+            Node::Split { id, vert, shown, a, b, .. } => {
+                let len = (if *vert { r.right - r.left } else { r.bottom - r.top } - gap).max(0);
+                let k = (len as f64 * shown.clamp(0.0, 1.0)).round() as i32;
+                let (ra, g, rb) = if *vert {
+                    (RECT { right: r.left + k, ..r }, RECT { left: r.left + k, right: r.left + k + gap, ..r }, RECT { left: r.left + k + gap, ..r })
+                } else {
+                    (RECT { bottom: r.top + k, ..r }, RECT { top: r.top + k, bottom: r.top + k + gap, ..r }, RECT { top: r.top + k + gap, ..r })
+                };
+                gutters.push((*id, r, g, *vert));
+                a.place(ra, gap, leaves, gutters);
+                b.place(rb, gap, leaves, gutters);
+            }
+        }
+    }
+}
+
+/// A spring pulling `x` (moving at `v`) to `to`, critically damped: it picks up speed and settles, never past `to`
+/// (no bounce); retargeted mid-way, it bends toward the new spot keeping its speed. `w` is its speed. One frame of
+/// `dt` seconds; false once it has come to rest (within `snap`) on `to`.
+fn spring(x: &mut f64, v: &mut f64, to: f64, dt: f64, w: f64, snap: f64) -> bool {
+    if *x == to && *v == 0.0 {
+        return false;
+    }
+    let n = (dt / 0.002).ceil().max(1.0);
+    let h = dt / n;
+    for _ in 0..n as usize {
+        *v += (w * w * (to - *x) - 2.0 * w * *v) * h;
+        *x += *v * h;
+    }
+    if (to - *x).abs() < snap && v.abs() < snap * w {
+        (*x, *v) = (to, 0.0);
+    }
+    true
+}
+
+/// A tab: its panes, the one focused, where its button is drawn (`x`, springing at `v` toward its slot `to`), and
+/// when it opened, while it's still unfolding into its slot.
+struct Tab {
+    root: Node,
+    focus: usize,
+    x: f64,
+    v: f64,
+    to: f64,
+    born: Option<Instant>,
+}
+impl Tab {
+    fn new(pane: usize) -> Tab {
+        Tab { root: Node::Leaf(pane), focus: pane, x: f64::NAN, v: 0.0, to: 0.0, born: None }
+    }
+}
+/// A closed tab folding away where it was: its left edge, name, whether it was split, and when it closed.
+struct Ghost {
+    x: f64,
+    name: String,
+    split: bool,
+    at: Instant,
+}
+/// How long a tab takes to unfold as it opens, and to fold away as it closes.
+const TAB_IN: f64 = 0.22;
+const TAB_OUT: f64 = 0.18;
+/// Ease-out cubic of `t` in 0..1: quick to start, gentle to land.
+fn ease_out(t: f64) -> f64 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// A tab or a pane caption being dragged: where it was grabbed, whether it has moved enough to count as a drag,
+/// whether the tab on screen was lifted out (the window showing another one meanwhile), and where it would land.
+struct Drag {
+    grab: Grab,
+    x0: i32,
+    y0: i32,
+    on: bool,
+    lifted: bool,
+    to: Option<Dock>,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum Grab {
+    Tab(usize),
+    Pane(usize),
+}
+/// Where a dragged tab or pane lands: on a side of a pane (0 left, 1 right, 2 top, 3 bottom), of the whole tab, or
+/// in the tab strip at an index.
+#[derive(Clone, Copy, PartialEq)]
+enum Dock {
+    Pane(usize, u8),
+    Root(u8),
+    Strip(usize),
+}
+
+/// The landing zone shown while dragging: a translucent accent box springing (`r` at `v`) to `to`, fading in `a`.
+/// Drawn in a window of its own ([`Zone`]) over the main one, so moving it repaints nothing beneath.
+struct Ov {
+    r: [f64; 4],
+    v: [f64; 4],
+    to: [f64; 4],
+    a: f64,
+    on: bool,
+    label: String,
+}
+
+/// The landing zone's window: layered, click-through, above the main window and below the chip. Its picture is
+/// drawn into a premultiplied bitmap (`bmp` in `dc`, `cap` big, grown as needed) and handed to the compositor.
+struct Zone {
+    hwnd: HWND,
+    cv: Canvas,
+    dc: HDC,
+    bmp: HBITMAP,
+    cap: (i32, i32),
+}
+
+/// What a tab is called: the folder it lists (and any words narrowing it), All, Home, or its search.
+fn place_name(q: &str) -> String {
+    let q = q.trim();
+    match q {
+        "" => return t("side.all").into(),
+        "home:" => return t("side.home").into(),
+        _ => {}
+    }
+    let Some(d) = listed_dir(q) else { return q.into() };
+    let name = std::path::Path::new(&d).file_name().map_or(d.clone(), |n| n.to_string_lossy().into_owned());
+    match q.splitn(3, '"').nth(2).map(str::trim).filter(|r| !r.is_empty()) {
+        Some(rest) => format!("{name} › {rest}"),
+        None => name,
+    }
 }
 
 enum Press {
@@ -346,20 +737,39 @@ struct Auto {
 
 #[derive(Clone, Copy)]
 enum Act {
+    // on the selection
     Open,
+    OpenHere, // a folder, listed in Mosaic
+    OpenTab,  // … in a new tab
     Reveal,
     Props,
     Copy,
     Cut,
     Path,
+    Rename,
     Del,
+    DelNow, // skip the Recycle Bin
+    SearchIn,
+    // on the folder on screen (`Ui::here`), or the view: no selection needed
+    Paste,
+    NewFolder,
+    HereProps,
+    Refresh,
+    SelectAll,
+    Undo,
+    View(i32), // grid tile size, 0: the list
+    Sort(&'static str),
+    Desc(bool),
 }
 
 struct Job {
     seq: u64,
+    who: usize, // the pane asking
     args: SearchArgs,
     h: SearchHandle,
 }
+/// Searches are numbered across all panes, so a result finds the pane that asked for it.
+static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 type Done = (u64, SearchArgs, SearchResult);
 
 struct Ui {
@@ -376,7 +786,6 @@ struct Ui {
     split_x: Option<i32>, // … where the pointer moved to, applied on the next frame
     grip: RECT,         // the divider's grip: the part that can be dragged
     grip_a: f64,        // … how lit it is (fades)
-    fps: (u32, Instant, u32), // temporary: animation frames since `.1`, and the last count per second
     fx: Option<Instant>, // a live refresh's animation: when it started
     slide: HashMap<String, (f64, f64)>, // item → where it was on screen before the refresh, from where it is now
     born: HashSet<String>, // items the refresh brought in: outlined for a moment
@@ -394,6 +803,7 @@ struct Ui {
     typing: bool,
     terms: Vec<Vec<u16>>,
     matches: usize,
+    version: Option<u64>, // the listing's version the rows came from (`SearchResult::stamp`)
     objects: usize,
     changes: u64, // the index's change counter when the rows were fetched
     scanning: bool,
@@ -418,7 +828,6 @@ struct Ui {
     hits: Vec<(RECT, Hit)>,
     head_h: i32,
     menu_h: i32, // the File/Edit/View/Search strip above the tab row
-    tab: RECT, // "Files"
     search_box: RECT,
     lh: RECT,
     status_top: i32, // the status bar along the bottom
@@ -430,16 +839,46 @@ struct Ui {
     smooth: bool, // glide on wheel / scrollbar paging, else jump
     folder_color: bool, // folder names in the accent colour (off: plain text, like files)
     hist: std::cell::RefCell<(Vec<String>, usize)>, // folders / searches visited (browse_to) and where we are in them
+    tabs: Vec<Tab>,
+    ghosts: Vec<Ghost>, // tabs just closed, folding away
+    plus: (f64, f64, f64), // the + after the tabs: where it's drawn, its speed, where it's going
+    cur: usize, // … the one shown
+    last: usize, // the pane focused in the tab shown before (a lifted tab gives way to it)
+    // split panes: the focused one's state is in the fields here (see `View`), the others' wait in `panes`
+    id: usize,                  // the pane whose state the fields hold
+    panes: Vec<Option<View>>,   // by pane id: None for the focused pane (and closed ones)
+    guest: bool,                // another pane is swapped in for a moment (`with_pane`)
+    relayout: bool,             // … and asked for a layout, done once it's swapped back
+    cap: RECT,                  // this pane's caption (split tabs only)
+    org: POINT,                 // where its list window is, in the main window
+    areas: Vec<(usize, RECT)>,  // the panes on screen: caption to bottom, in the main window
+    gutters: Vec<(usize, RECT, RECT, bool)>, // the splits on screen: (id, box, gap, side by side)
+    content: RECT,              // the room the panes share
+    splits: usize,              // split ids handed out
+    dying: Vec<usize>,          // panes closing: shrinking away, then dropped
+    drag: Option<Drag>,
+    hole: Option<usize>,        // a pane dragged over the tab strip: the slot opened for it
+    strip: (i32, i32, i32),     // the tab strip: first slot's left, slot width, gap
+    ov: Option<Ov>,
+    zone: Option<Zone>,
+    chip: Option<(HWND, Canvas, String, bool)>, // what's being dragged (a split tab?), following the pointer
+    gut: Option<usize>,         // dragging a split's gap
+    gut_to: Option<(i32, i32)>, // … to where the pointer last was, applied on the next frame
+    gut_lit: (usize, f64),      // the gap whose grip shows, and how lit it is
+    tick: Instant,              // the last frame of the window-wide animations
     browse: u8, // 0: open folders in Explorer; 1: list what's directly inside (child:); 2: list everything below (descendant:)
     timestamps: bool, // index created/accessed times for dc:/da: and their sort columns (Alt+T)
     rtl: bool, // Arabic UI: columns and icon/text order mirror right-to-left (see `col_positions`)
+    colw: (f64, [i32; 3]), // the list's columns, every pane's: Name's share of Name + Path, then Size, Type, Modified (CSS px)
+    col_drag: Option<(usize, usize, i32, [i32; 5])>, // dragging the edge after column k: (pane, k, where it was pressed, the widths then)
+    col_gen: u32, // bumped as `colw` changes: the rows' laid-out text is stale
     grid: bool,
     size: i32,  // grid: tile size (CSS px), the zoom level
     per: usize, // grid: tiles per row, as many as fit
     zoom_acc: i32, // Ctrl+wheel delta not yet a whole notch (precision touchpads)
     step_acc: i32, // likewise, for wheel steps with smooth scrolling off
-    live_at: Instant,      // when the last live refresh finished
-    live_cost: Duration,   // how long it took: the next one waits 8x that (a busy disk changes the index constantly)
+    live_at: Instant,      // when the last live refresh finished (while one runs: when it started)
+    live_cost: Duration,   // how long it took, search included: the next one waits 8x that (a busy disk changes the index constantly)
     poll_y: f64,           // scroll position at the previous poll: moving = scrolling, no refresh
     meta_gen: usize, // the metadata index's generation the results were last run against
     was_building: bool, // last poll()'s content/metadata-progress state, so poll() can repaint once more right as it finishes
@@ -453,7 +892,7 @@ struct Ui {
     // things drawn with the list's render target; all dropped when it is recreated (`pics_gen`)
     pics_gen: u32,
     texts: HashMap<usize, Vec<Text>>, // laid-out text of the items on screen
-    texts_key: (i32, bool, i32),
+    texts_key: (i32, bool, i32, u32),
     sys_pics: HashMap<i32, Option<Pic>>,
     own: HashMap<String, Option<Pic>>,
     pending: HashSet<String>,
@@ -466,14 +905,103 @@ struct Ui {
     kind_pending: HashSet<String>,
     special: HashSet<String>,        // Desktop, Downloads, Documents, Pictures, Music, Videos: they keep their own shell icon
     kind_checked: HashSet<String>,   // folders whose cached kind was compared with their modified time this run
-    kinds_dirty: bool,
+    kinds_changed: Vec<String>,      // folders in `kinds` changed (or dropped) since the last save
     kinds_saved: std::time::Instant,
     kind_dirs: Vec<Option<String>>,  // the Windows folder whose icon each kind wears (Pictures, Videos, Music, Documents)
     jumbo_png: HashMap<String, Vec<u8>>,            // type key → the shell's 256 px icon
     jumbo: HashMap<(String, i32), Option<Pic>>,     // (type key, px) → decoded at tile size
 }
 
+/// What each pane of a split has its own of. The focused pane's live in `Ui`'s fields of the same names, where all
+/// the list code reads them; the others' wait in `Ui::panes`, swapped in for a moment to paint, scroll or take a
+/// search result (`Ui::with_pane`).
+macro_rules! view {
+    ($($f:ident: $t:ty,)*) => {
+        struct View { $($f: $t,)* }
+        impl Ui {
+            fn swap_view(&mut self, v: &mut View) {
+                $(std::mem::swap(&mut self.$f, &mut v.$f);)*
+            }
+        }
+    };
+}
+view! {
+    id: usize,
+    list: HWND,
+    cl: Canvas,
+    args: SearchArgs,
+    shown: SearchArgs,
+    seq: u64,
+    fresh: bool,
+    terms: Vec<Vec<u16>>,
+    matches: usize,
+    version: Option<u64>,
+    objects: usize,
+    changes: u64,
+    pages: HashMap<usize, Vec<Row>>,
+    order: VecDeque<usize>,
+    y: f64,
+    target: f64,
+    frame: Instant,
+    glide: (f64, Instant),
+    sel: Sel,
+    focus: Option<usize>,
+    anchor: Option<usize>,
+    hover: Option<usize>,
+    tracking: bool,
+    press: Option<Press>,
+    auto: Option<Auto>,
+    fx: Option<Instant>,
+    slide: HashMap<String, (f64, f64)>,
+    born: HashSet<String>,
+    lh: RECT,
+    cap: RECT,
+    org: POINT,
+    hist: std::cell::RefCell<(Vec<String>, usize)>,
+    grid: bool,
+    size: i32,
+    per: usize,
+    zoom_acc: i32,
+    step_acc: i32,
+    live_at: Instant,
+    live_cost: Duration,
+    poll_y: f64,
+    meta_gen: usize,
+    tip_item: Option<usize>,
+    sb_hot: bool,
+    sb_drag: Option<i32>,
+    pics_gen: u32,
+    texts: HashMap<usize, Vec<Text>>,
+    texts_key: (i32, bool, i32, u32),
+    sys_pics: HashMap<i32, Option<Pic>>,
+    own: HashMap<String, Option<Pic>>,
+    pending: HashSet<String>,
+    thumbs: HashMap<String, (Option<Pic>, i32)>,
+    thumb_order: VecDeque<String>,
+    thumb_bytes: usize,
+    thumb_pending: HashSet<String>,
+    link_ov: Option<Option<Pic>>,
+    jumbo: HashMap<(String, i32), Option<Pic>>,
+}
+
 thread_local!(static UI: RefCell<Option<Ui>> = const { RefCell::new(None) });
+
+/// `f` on the pane whose list window is `h` (see `Ui::on_list`).
+fn withp<R>(h: HWND, f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    with(|u| u.on_list(h, f)).flatten()
+}
+
+/// The tooltip watches list `list` itself: grid tiles show their path on hover (`Ui::set_tip`).
+unsafe fn add_tip(tip: HWND, list: HWND, add: bool) {
+    let mut ti: windows_sys::Win32::UI::Controls::TTTOOLINFOW = zeroed();
+    ti.cbSize = size_of::<windows_sys::Win32::UI::Controls::TTTOOLINFOW>() as u32;
+    ti.uFlags = 0x10; // TTF_SUBCLASS
+    ti.hwnd = list;
+    ti.uId = 1;
+    let mut empty = [0u16; 1];
+    ti.lpszText = empty.as_mut_ptr();
+    SendMessageW(tip, WM_USER + if add { 50 } else { 51 }, 0, &ti as *const _ as isize); // TTM_ADDTOOLW / TTM_DELTOOLW
+}
 
 /// Run `f` on the UI state. `None` when it is already borrowed further up this thread's stack (a nested window
 /// message): callers then fall back to default handling or re-post. Modal things (menus, message boxes, drags)
@@ -696,6 +1224,7 @@ pub fn run() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         dark_menus();
+        std::thread::spawn(shell::menu_warm); // the right-click menu's process, so the first one is quick too
         let inst = GetModuleHandleW(null());
         let cursor = LoadCursorW(null_mut(), IDC_ARROW);
         let icon = LoadIconW(inst, 32512 as *const u16); // the exe's icon (tauri-build embeds it under 32512)
@@ -720,27 +1249,24 @@ pub fn run() {
         let edit = CreateWindowExW(0, wz("EDIT").as_ptr(), null(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32, 0, 0, 10, 10, main, null_mut(), inst, null());
         SendMessageW(edit, 0x1501, 1, wz("Search file and folder names…").as_ptr() as isize); // EM_SETCUEBANNER
         SetWindowTheme(edit, wz("DarkMode_CFD").as_ptr(), null()); // dark caret/selection/context menu
-        let list = CreateWindowExW(0, cl.as_ptr(), null(), WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, main, null_mut(), inst, null());
+        let list = CreateWindowExW(0, cl.as_ptr(), null(), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 10, 10, main, null_mut(), inst, null()); // the rename field sits on it
 
         // the grid's jumbo type icons come from SHGetImageList, which needs COM on this thread
         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
         let tip = CreateWindowExW(WS_EX_TOPMOST, wz("tooltips_class32").as_ptr(), null(), 0x02 | 0x01, 0, 0, 0, 0, main, null_mut(), inst, null()); // TTS_NOPREFIX | TTS_ALWAYSTIP
         SetWindowTheme(tip, wz("DarkMode_Explorer").as_ptr(), null());
-        let mut ti: windows_sys::Win32::UI::Controls::TTTOOLINFOW = zeroed();
-        ti.cbSize = size_of::<windows_sys::Win32::UI::Controls::TTTOOLINFOW>() as u32;
-        ti.uFlags = 0x10; // TTF_SUBCLASS: the tooltip watches the list's mouse messages itself
-        ti.hwnd = list;
-        ti.uId = 1;
-        let mut empty = [0u16; 1];
-        ti.lpszText = empty.as_mut_ptr();
-        SendMessageW(tip, WM_USER + 50, 0, &ti as *const _ as isize); // TTM_ADDTOOLW
+        add_tip(tip, list, true);
         SendMessageW(tip, WM_USER + 24, 0, 900); // TTM_SETMAXTIPWIDTH: allow the path/details line break
 
         // tool 2: the toolbar/status-bar buttons, in `main`'s own client coordinates (`Ui::set_toolbar_tip`
         // moves this tool's rect to whichever hit is hot, as it changes on WM_MOUSEMOVE)
-        let mut ti2 = ti;
+        let mut ti2: windows_sys::Win32::UI::Controls::TTTOOLINFOW = zeroed();
+        ti2.cbSize = size_of::<windows_sys::Win32::UI::Controls::TTTOOLINFOW>() as u32;
+        ti2.uFlags = 0x10; // TTF_SUBCLASS
         ti2.hwnd = main;
         ti2.uId = 2;
+        let mut empty = [0u16; 1];
+        ti2.lpszText = empty.as_mut_ptr();
         SendMessageW(tip, WM_USER + 50, 0, &ti2 as *const _ as isize); // TTM_ADDTOOLW
 
         let st = load_settings();
@@ -756,7 +1282,7 @@ pub fn run() {
         let side = side::create(main, scale);
         // language is fixed for the process's lifetime (set from settings above, no in-app switcher), so RTL fonts
         // can be built once here rather than needing a rebuild-on-switch path.
-        let rtl = crate::i18n::lang() == "ar";
+        let rtl = crate::i18n::rtl();
         let gfx = match Gfx::new(scale, rtl) {
             Ok(g) => g,
             Err(e) => {
@@ -770,7 +1296,7 @@ pub fn run() {
             cat: String::new(),
             sort: "name".into(),
             dir: "asc".into(),
-            meta: get("meta"),
+            meta: String::new(), // names only (the Names / type dropdown is gone)
             tags: get("tags") == "1",
             content: get("content") == "1",
             match_case: get("match_case") == "1",
@@ -796,7 +1322,6 @@ pub fn run() {
             split_x: None,
             grip: zeroed(),
             grip_a: 0.0,
-            fps: (0, Instant::now(), 0),
             fx: None,
             slide: HashMap::new(),
             born: HashSet::new(),
@@ -814,6 +1339,7 @@ pub fn run() {
             typing: false,
             terms: Vec::new(),
             matches: 0,
+            version: None,
             objects: 0,
             changes: 0,
             scanning: false,
@@ -838,7 +1364,6 @@ pub fn run() {
             hits: Vec::new(),
             head_h: 0,
             menu_h: 0,
-            tab: zeroed(),
             search_box: zeroed(),
             lh: zeroed(),
             status_top: 0,
@@ -850,9 +1375,38 @@ pub fn run() {
             smooth: get("smooth") != "0",
             folder_color: get("folder_color") == "1",
             hist: Default::default(),
+            tabs: vec![Tab::new(0)],
+            ghosts: Vec::new(),
+            plus: (f64::NAN, 0.0, 0.0),
+            cur: 0,
+            last: 0,
+            id: 0,
+            panes: vec![None],
+            guest: false,
+            relayout: false,
+            cap: zeroed(),
+            org: POINT { x: 0, y: 0 },
+            areas: Vec::new(),
+            gutters: Vec::new(),
+            content: zeroed(),
+            splits: 0,
+            dying: Vec::new(),
+            drag: None,
+            hole: None,
+            strip: (0, 1, 0),
+            ov: None,
+            zone: None,
+            chip: None,
+            gut: None,
+            gut_to: None,
+            gut_lit: (usize::MAX, 0.0),
+            tick: Instant::now(),
             browse: get("browse").parse().unwrap_or(0).min(2),
             timestamps: get("timestamps") == "1",
             rtl,
+            colw: parse_cols(&get("cols")),
+            col_drag: None,
+            col_gen: 0,
             grid: get("view") == "grid",
             size: get("size").parse().unwrap_or(128).clamp(MIN_SIZE, MAX_SIZE),
             per: 1, // set by layout
@@ -869,7 +1423,7 @@ pub fn run() {
             sb_drag: None,
             pics_gen: 0,
             texts: HashMap::new(),
-            texts_key: (0, false, 0),
+            texts_key: (0, false, 0, 0),
             sys_pics: HashMap::new(),
             own: HashMap::new(),
             pending: HashSet::new(),
@@ -878,14 +1432,14 @@ pub fn run() {
             thumb_bytes: 0,
             thumb_pending: HashSet::new(),
             link_ov: None,
-            kinds: std::fs::read_to_string(kinds_path()).unwrap_or_default().lines().filter_map(|l| { let mut f = l.splitn(3, '\t'); let (k, m) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?); Some((f.next()?.to_string(), (k, m))) }).collect(),
+            kinds: load_kinds(),
             kind_pending: HashSet::new(),
             special: side::special_dirs(),
             live_at: Instant::now(),
             live_cost: Duration::ZERO,
             poll_y: 0.0,
             kind_checked: HashSet::new(),
-            kinds_dirty: false,
+            kinds_changed: Vec::new(),
             kinds_saved: std::time::Instant::now(),
             kind_dirs: (0..5).map(|k| if k == 0 { None } else { side::kind_dir(k) }).collect(),
             jumbo_png: HashMap::new(),
@@ -924,13 +1478,17 @@ unsafe fn pump() {
                 }
                 dispatch(&msg);
             }
-            if let Some((list, pane, main)) = with(|u| {
+            if let Some((lists, pane, main)) = with(|u| {
                 u.step();
-                (u.list, u.pane, u.main)
+                (u.visible_lists(), [u.pane, u.side], u.main)
             }) {
-                // one frame: all three painted together (a divider drag moves them all)
-                UpdateWindow(list);
-                UpdateWindow(pane);
+                // one frame: all painted together (a divider drag moves them all, a theme change recolours them all)
+                for list in lists {
+                    UpdateWindow(list);
+                }
+                for w in pane.into_iter().chain(themes::hwnd()) {
+                    UpdateWindow(w);
+                }
                 UpdateWindow(main);
             }
             if DwmFlush() < 0 {
@@ -963,6 +1521,12 @@ fn open_item(p: &str) {
 }
 
 unsafe fn dispatch(msg: &MSG) {
+    if themes::hwnd().is_some_and(|h| h == msg.hwnd) {
+        // the theme dialog: the window behind waits, its shortcuts with it
+        TranslateMessage(msg);
+        DispatchMessageW(msg);
+        return;
+    }
     if msg.message == WM_SYSKEYDOWN && msg.wParam == VK_UP as usize && with(|u| u.browse_up()) == Some(true) {
         return; // Alt+Up: one folder up, as in Explorer
     }
@@ -1011,6 +1575,23 @@ unsafe fn dispatch(msg: &MSG) {
             SendMessageW(under, msg.message, msg.wParam, msg.lParam);
             return;
         }
+        // … and the split pane under it, focused or not
+        if under != msg.hwnd && with(|u| u.on_list(under, |_| ()).is_some()) == Some(true) {
+            SendMessageW(under, msg.message, msg.wParam, msg.lParam);
+            return;
+        }
+    }
+    if msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize && with(|u| u.drag.as_ref().is_some_and(|d| d.on)) == Some(true) {
+        with(|u| u.drag_end(false));
+        ReleaseCapture();
+        return;
+    }
+    if msg.message == WM_KEYDOWN && matches!(msg.wParam as u16, VK_RETURN | VK_ESCAPE) && RENAMING.with(|r| r.borrow().as_ref().is_some_and(|r| r.0 == msg.hwnd)) {
+        return end_rename(msg.wParam as u16 == VK_RETURN);
+    }
+    if msg.message == WM_SYSKEYDOWN && msg.wParam == VK_RETURN as usize {
+        // Alt+Enter: Properties, of the selection or else the folder on screen
+        return act(if with(|u| u.sel.count() > 0) == Some(true) { Act::Props } else { Act::HereProps });
     }
     if msg.message == WM_KEYDOWN {
         let r = with(|u| (msg.hwnd == u.edit || msg.hwnd == u.list).then(|| u.key(msg.wParam as u16, msg.hwnd == u.edit)).flatten()).flatten();
@@ -1081,13 +1662,18 @@ fn worker(main: HWND) -> mpsc::Sender<Job> {
     let (tx, rx) = mpsc::channel::<Job>();
     let hw = main as isize;
     std::thread::spawn(move || {
-        while let Ok(mut j) = rx.recv() {
+        while let Ok(j) = rx.recv() {
+            // each pane's newest only
+            let mut todo = vec![j];
             while let Ok(n) = rx.try_recv() {
-                j = n;
+                todo.retain(|t| t.who != n.who);
+                todo.push(n);
             }
-            let r = find(&j.args, 0, PG, &j.h);
-            let done: Box<Done> = Box::new((j.seq, j.args, r));
-            unsafe { PostMessageW(hw as HWND, WM_RESULT, 0, Box::into_raw(done) as isize) };
+            for j in todo {
+                let r = find(&j.args, 0, PG, &j.h);
+                let done: Box<Done> = Box::new((j.seq, j.args, r));
+                unsafe { PostMessageW(hw as HWND, WM_RESULT, 0, Box::into_raw(done) as isize) };
+            }
         }
     });
     tx
@@ -1107,7 +1693,7 @@ unsafe fn edit_font(s: f64) -> HFONT {
 }
 
 /// Undocumented but long-stable uxtheme calls (what Notepad++ and others use) that make the search box's own
-/// right-click menu dark. Our menus are drawn by us (see `popup`).
+/// right-click menu dark. Our menus are drawn by us (see `popup`); Explorer's full one (`shell::menu_main`) uses it.
 unsafe fn dark_menus() {
     let ux = LoadLibraryW(wz("uxtheme.dll").as_ptr());
     if ux.is_null() {
@@ -1209,36 +1795,48 @@ unsafe fn thousands() -> Vec<u16> {
     }
 }
 
-/// Left/right edges for a row of `flex` equal-share flexible columns followed by `fixed`-width ones,
-/// packed left-to-right with `pad` on each side and `gap` between columns. In RTL, the whole row mirrors
-/// (column 0 ends up flush against the right edge) while keeping each column's own width and reading-order
-/// index — callers that already treat `out[k].0` as "column k's near edge" don't need a separate RTL branch.
-fn col_positions(width: i32, pad: i32, gap: i32, flex: usize, fixed: &[i32], rtl: bool) -> Vec<(i32, i32)> {
-    let n = flex + fixed.len();
-    if n == 0 {
-        return Vec::new();
+/// Left/right edges of the Name, Path, Size, Type and Modified columns in a row `width` wide, packed left-to-right
+/// with `pad` on each side and `gap` between columns: Name takes `share` of what the `fixed`-width Size, Type and
+/// Modified leave, Path the rest. Short of room, the name comes first: Path gives way, down to `path_min` and then
+/// out, then Type, Size and Modified drop out in that order, before Name goes under `name_min`. A column out is an
+/// empty box where it would be. In RTL, the whole row mirrors (column 0 ends up flush against the right edge) while
+/// keeping each column's own width and reading-order index — callers that already treat `out[k].0` as "column k's
+/// near edge" don't need a separate RTL branch.
+#[allow(clippy::too_many_arguments)]
+fn fit_cols(width: i32, pad: i32, gap: i32, share: f64, fixed: [i32; 3], name_min: i32, path_min: i32, rtl: bool) -> [(i32, i32); 5] {
+    let mut w = [0, 0, fixed[0], fixed[1], fixed[2]];
+    let mut on = [true; 5];
+    for out in [1, 3, 2, 4, usize::MAX] {
+        let n = on.iter().filter(|&&o| o).count() as i32;
+        let fixed_w: i32 = (2..5).filter(|&k| on[k]).map(|k| w[k]).sum();
+        let room = (width - 2 * pad - (n - 1) * gap - fixed_w).max(0);
+        (w[0], w[1]) = if on[1] {
+            let name = ((room as f64 * share).round() as i32).max(name_min.min(room));
+            (name, room - name)
+        } else {
+            (room, 0)
+        };
+        let short = if out == 1 { w[1] < path_min } else { w[0] < name_min };
+        if !short || out == usize::MAX {
+            break;
+        }
+        on[out] = false;
     }
-    let content = width - 2 * pad - (n as i32 - 1) * gap;
-    let fr = ((content - fixed.iter().sum::<i32>()) / flex.max(1) as i32).max(0);
-    let widths = (0..flex).map(|_| fr).chain(fixed.iter().copied());
     let mut x = pad;
-    let out: Vec<(i32, i32)> = widths
-        .map(|wd| {
-            let r = (x, x + wd);
-            x += wd + gap;
-            r
-        })
-        .collect();
-    if !rtl {
-        return out;
+    let mut cols = [(0, 0); 5];
+    for k in 0..5 {
+        if on[k] {
+            cols[k] = (x, x + w[k]);
+            x += w[k] + gap;
+        } else {
+            cols[k] = (x, x);
+        }
     }
-    let right = (x - gap).max(pad); // the row's far edge (last column's own right edge)
-    out.iter().map(|&(a, b)| (pad + right - b, pad + right - a)).collect()
-}
-
-/// Explorer-style single-letter attribute codes: Read-only, Hidden, System, Archive.
-fn fmt_attrs(attrs: u32) -> String {
-    [(0x1, 'R'), (0x2, 'H'), (0x4, 'S'), (0x20, 'A')].iter().filter(|&&(bit, _)| attrs & bit != 0).map(|&(_, c)| c).collect()
+    if rtl {
+        let right = (x - gap).max(pad); // the row's far edge (last column's own right edge)
+        cols = cols.map(|(a, b)| (pad + right - b, pad + right - a));
+    }
+    cols
 }
 
 fn fmt_size(n: i64) -> String {
@@ -1333,6 +1931,45 @@ fn zoom_step(grid: bool, size: i32, bigger: bool) -> (bool, i32) {
 fn xy(l: LPARAM) -> (i32, i32) {
     ((l & 0xffff) as i16 as i32, ((l >> 16) & 0xffff) as i16 as i32)
 }
+/// The folder a query lists: `child:"C:\dir"` / `descendant:"C:\dir"`, maybe followed by more words.
+fn listed_dir(q: &str) -> Option<String> {
+    let q = q.trim();
+    let (d, _) = ["child:\"", "descendant:\""].iter().find_map(|p| q.strip_prefix(p))?.split_once('"')?;
+    Some(if d.ends_with(':') { format!("{d}\\") } else { d.to_string() })
+}
+/// A tab's × button: a square of side `s` at its right end.
+fn tab_x(r: &RECT, s: i32) -> RECT {
+    let top = r.top + (r.bottom - r.top - s) / 2;
+    RECT { left: r.right - s - (r.bottom - r.top - s) / 2, top, right: r.right - (r.bottom - r.top - s) / 2, bottom: top + s }
+}
+/// A split tab's mark: a small window outline cut in two.
+fn split_glyph(cv: &Canvas, x: i32, y: i32, w: i32, h: i32, c: u32, scale: f64) {
+    let t = (scale.round() as i32).max(1);
+    cv.rrect(&RECT { left: x, top: y, right: x + w, bottom: y + h }, (2.0 * scale) as f32, None, Some(c));
+    cv.fill(&RECT { left: x + w / 2 - t / 2, top: y, right: x + w / 2 - t / 2 + t, bottom: y + h }, c, 1.0);
+}
+/// The chip that follows the pointer while a tab or pane is dragged: never takes a click.
+unsafe extern "system" fn chip_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match m {
+        WM_NCHITTEST => -1, // HTTRANSPARENT
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = zeroed();
+            BeginPaint(h, &mut ps);
+            with(|u| u.paint_chip());
+            EndPaint(h, &ps);
+            0
+        }
+        _ => DefWindowProcW(h, m, wp, lp),
+    }
+}
+/// The landing zone's window ([`Zone`]): never takes a click; its picture comes from `UpdateLayeredWindow`.
+unsafe extern "system" fn zone_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match m {
+        WM_NCHITTEST => -1, // HTTRANSPARENT
+        _ => DefWindowProcW(h, m, wp, lp),
+    }
+}
 fn key_down(vk: u16) -> bool {
     unsafe { GetKeyState(vk as i32) < 0 }
 }
@@ -1393,9 +2030,879 @@ impl Ui {
     // -- searching
     /// Lists what's directly inside `dir` (the search box gets `child:"dir"`, which then runs like any typed query).
     fn browse_to(&self, dir: &str) {
-        let q = format!("{}:\"{}\"", if self.browse == 2 { "descendant" } else { "child" }, dir.trim_end_matches('\\'));
+        let q = self.browse_q(dir);
         self.visit(&q);
         unsafe { SetWindowTextW(self.edit, wz(&q).as_ptr()) };
+    }
+    fn browse_q(&self, dir: &str) -> String {
+        format!("{}:\"{}\"", if self.browse == 2 { "descendant" } else { "child" }, dir.trim_end_matches('\\'))
+    }
+
+    // -- panes
+    /// `f` with pane `id`'s state in the fields (the focused pane's put aside meanwhile).
+    fn with_pane<R>(&mut self, id: usize, f: impl FnOnce(&mut Ui) -> R) -> R {
+        if id == self.id {
+            return f(self);
+        }
+        let mut v = self.panes[id].take().expect("a pane swapped in twice");
+        self.swap_view(&mut v);
+        self.guest = true;
+        let r = f(self);
+        self.guest = false;
+        self.swap_view(&mut v);
+        self.panes[id] = Some(v);
+        if std::mem::take(&mut self.relayout) {
+            self.layout();
+        }
+        r
+    }
+    /// `f` on the pane whose list window is `h`; None if it is none of them.
+    fn on_list<R>(&mut self, h: HWND, f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        if h == self.list {
+            return Some(f(self));
+        }
+        if self.guest {
+            return None;
+        }
+        let id = self.panes.iter().position(|v| v.as_ref().is_some_and(|v| v.list == h))?;
+        Some(self.with_pane(id, f))
+    }
+    fn view(&self, id: usize) -> Option<&View> {
+        self.panes.get(id).and_then(Option::as_ref)
+    }
+    fn list_of(&self, id: usize) -> HWND {
+        if id == self.id { self.list } else { self.view(id).map_or(null_mut(), |v| v.list) }
+    }
+    fn pane_name(&self, id: usize) -> String {
+        place_name(if id == self.id { &self.args.q } else { self.view(id).map_or("", |v| &v.args.q) })
+    }
+    /// The panes on screen: the shown tab's.
+    fn visible(&self) -> Vec<usize> {
+        self.tabs[self.cur].root.leaves()
+    }
+    fn visible_lists(&self) -> Vec<HWND> {
+        self.visible().into_iter().map(|id| self.list_of(id)).collect()
+    }
+    fn each_visible(&mut self, mut f: impl FnMut(&mut Ui)) {
+        for id in self.visible() {
+            self.with_pane(id, &mut f);
+        }
+    }
+    fn invalidate_all(&self) {
+        for l in self.visible_lists() {
+            unsafe { InvalidateRect(l, null(), 0) };
+        }
+        unsafe { InvalidateRect(self.main, null(), 0) };
+    }
+    /// A pane listing `q`, with the focused one's options, its own window (hidden until laid out) and no history.
+    fn new_pane(&mut self, q: &str) -> usize {
+        let list = unsafe { CreateWindowExW(0, wz("MosaicList").as_ptr(), null(), WS_CHILD | WS_CLIPCHILDREN, 0, 0, 10, 10, self.main, null_mut(), GetModuleHandleW(null()), null()) };
+        unsafe { add_tip(self.tip, list, true) };
+        let id = self.panes.len();
+        let args = SearchArgs { q: q.into(), cat: String::new(), ..self.args.clone() };
+        let now = Instant::now();
+        let r: RECT = unsafe { zeroed() };
+        self.panes.push(Some(View {
+            id,
+            list,
+            cl: Canvas::new(list, &self.gfx),
+            shown: args.clone(),
+            args,
+            seq: 0,
+            fresh: true,
+            terms: Vec::new(),
+            matches: 0,
+            version: None,
+            objects: 0,
+            changes: 0,
+            pages: HashMap::new(),
+            order: VecDeque::new(),
+            y: 0.0,
+            target: 0.0,
+            frame: now,
+            glide: (0.0, now),
+            sel: Sel::default(),
+            focus: None,
+            anchor: None,
+            hover: None,
+            tracking: false,
+            press: None,
+            auto: None,
+            fx: None,
+            slide: HashMap::new(),
+            born: HashSet::new(),
+            lh: r,
+            cap: r,
+            org: POINT { x: 0, y: 0 },
+            hist: std::cell::RefCell::new((vec![q.into()], 0)),
+            grid: self.grid,
+            size: self.size,
+            per: 1,
+            zoom_acc: 0,
+            step_acc: 0,
+            live_at: now,
+            live_cost: Duration::ZERO,
+            poll_y: 0.0,
+            meta_gen: 0,
+            tip_item: None,
+            sb_hot: false,
+            sb_drag: None,
+            pics_gen: 0,
+            texts: HashMap::new(),
+            texts_key: (0, false, 0, 0),
+            sys_pics: HashMap::new(),
+            own: HashMap::new(),
+            pending: HashSet::new(),
+            thumbs: HashMap::new(),
+            thumb_order: VecDeque::new(),
+            thumb_bytes: 0,
+            thumb_pending: HashSet::new(),
+            link_ov: None,
+            jumbo: HashMap::new(),
+        }));
+        self.with_pane(id, |u| u.run(false));
+        id
+    }
+    /// Drop a pane that isn't focused.
+    fn drop_pane(&mut self, id: usize) {
+        if let Some(v) = self.panes.get_mut(id).and_then(Option::take) {
+            unsafe {
+                add_tip(self.tip, v.list, false);
+                DestroyWindow(v.list);
+            }
+        }
+    }
+    /// Every pane's list canvas made anew for `g` (a new scale or text direction).
+    fn new_canvases(&mut self, g: &Gfx) {
+        for id in 0..self.panes.len() {
+            if id == self.id || self.panes[id].is_some() {
+                self.with_pane(id, |u| {
+                    u.cl = Canvas::new(u.list, g);
+                    u.pics_gen = u32::MAX;
+                });
+            }
+        }
+    }
+    /// A pane put away (its tab not shown): its pictures let go of, the GPU memory with them.
+    fn hibernate(&mut self) {
+        self.cl = Canvas::new(self.list, &self.gfx);
+        self.pics_gen = u32::MAX; // the new canvas's pictures start from scratch
+        self.forget_pics();
+        self.hover = None;
+    }
+    /// Focus pane `id`: its state into the fields, its search into the box (which doesn't run it again).
+    fn activate(&mut self, id: usize) {
+        if id == self.id || self.guest || self.view(id).is_none() {
+            return;
+        }
+        self.typed();
+        let mut v = self.panes[id].take().unwrap();
+        self.swap_view(&mut v);
+        let old = v.id;
+        self.panes[old] = Some(v);
+        if let Some(t) = self.tabs.get_mut(self.cur).filter(|t| t.root.leaves().contains(&id)) {
+            t.focus = id;
+        }
+        unsafe { SetWindowTextW(self.edit, wz(&self.args.q).as_ptr()) };
+        self.layout();
+        self.invalidate_all();
+        self.want_preview();
+    }
+    /// The pane whose list is `h` focused, as a click on it does. False for a closing one.
+    fn activate_list(&mut self, h: HWND) -> bool {
+        let Some(id) = (0..self.panes.len()).find(|&id| self.list_of(id) == h) else { return false };
+        if self.dying.contains(&id) {
+            return false;
+        }
+        self.activate(id);
+        true
+    }
+    /// The search box's text, typed since the last search, searched for now (a pane switch must not carry it over).
+    fn typed(&mut self) {
+        if !self.typing {
+            return;
+        }
+        unsafe { KillTimer(self.main, T_TYPE) };
+        self.typing = false;
+        let n = unsafe { GetWindowTextLengthW(self.edit) };
+        let mut b = vec![0u16; n as usize + 1];
+        unsafe { GetWindowTextW(self.edit, b.as_mut_ptr(), n + 1) };
+        let q = String::from_utf16_lossy(&b[..n as usize]);
+        if q != self.args.q {
+            self.args.q = q;
+            self.run(false);
+        }
+    }
+    /// Close pane `id` (the tab, when it's the only one): it shrinks away as its neighbour takes the room.
+    fn close_pane(&mut self, id: usize) {
+        if self.dying.contains(&id) {
+            return;
+        }
+        if !self.tabs[self.cur].root.collapse(id) {
+            return self.close_tab(self.cur);
+        }
+        self.dying.push(id);
+        if self.id == id {
+            let had = unsafe { GetFocus() } == self.list;
+            let next = self.visible().into_iter().find(|p| !self.dying.contains(p)).unwrap_or(id);
+            self.activate(next);
+            if had {
+                unsafe { SetFocus(self.list) };
+            }
+        }
+        self.layout(); // its caption and headers go at once
+    }
+    /// Closing panes done with (or no longer on screen): out of their tab, and gone.
+    fn bury(&mut self, all: bool) {
+        for id in std::mem::take(&mut self.dying) {
+            if !all && self.tabs[self.cur].root.settled(id) == Some(false) {
+                self.dying.push(id);
+                continue;
+            }
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.root.leaves().contains(&id)) {
+                t.root.detach(id);
+            }
+            self.drop_pane(id);
+            self.layout();
+        }
+    }
+    /// Split the focused pane: the same place again on `side`, focused (Ctrl+\, Ctrl+Shift+\ below).
+    fn split_here(&mut self, side: u8) {
+        let id = self.new_pane(&self.args.q.clone());
+        let sid = self.next_split();
+        let (me, root) = (self.id, &mut self.tabs[self.cur].root);
+        root.insert(me, side, &mut Some(Node::Leaf(id)), sid);
+        self.activate(id);
+        unsafe { SetFocus(self.list) };
+    }
+    fn next_split(&mut self) -> usize {
+        self.splits += 1;
+        self.splits
+    }
+
+    // -- tabs
+    /// A tab's name: its focused pane's place.
+    fn tab_name(&self, k: usize) -> String {
+        self.pane_name(self.tabs[k].focus)
+    }
+    fn tab_of(&self, pane: usize) -> Option<usize> {
+        self.tabs.iter().position(|t| t.root.leaves().contains(&pane))
+    }
+    /// Show tab `k`: its panes come back as they were, the ones it hides let go of their pictures.
+    fn switch_tab(&mut self, k: usize) {
+        if k == self.cur || k >= self.tabs.len() {
+            return;
+        }
+        self.bury(true);
+        let had = unsafe { GetFocus() } == self.list;
+        let old = self.visible();
+        self.last = self.id;
+        self.cur = k;
+        let f = self.tabs[k].focus;
+        self.activate(f);
+        for p in old {
+            if self.view(p).is_some() {
+                self.with_pane(p, |u| u.hibernate());
+            }
+        }
+        self.layout();
+        if had {
+            unsafe { SetFocus(self.list) };
+        }
+        self.invalidate_all();
+    }
+    /// A new tab at `at` showing `q`, with no history behind it.
+    fn new_tab(&mut self, q: &str, at: usize) {
+        let at = at.min(self.tabs.len());
+        let id = self.new_pane(q);
+        self.tabs.insert(at, Tab { born: Some(Instant::now()), ..Tab::new(id) });
+        if at <= self.cur {
+            self.cur += 1;
+        }
+        self.switch_tab(at);
+    }
+    /// A folder in a new tab, right after this one (as a browser opens links).
+    fn open_tab(&mut self, dir: &str) {
+        let q = self.browse_q(dir);
+        self.new_tab(&q, self.cur + 1);
+    }
+    /// Close tab `k` and its panes; the last one closes the window, as Explorer's does.
+    fn close_tab(&mut self, k: usize) {
+        if self.tabs.len() == 1 {
+            unsafe { PostMessageW(self.main, WM_CLOSE, 0, 0) };
+            return;
+        }
+        if k == self.cur {
+            self.switch_tab(if k + 1 < self.tabs.len() { k + 1 } else { k - 1 }); // the one to its right, else its left
+        }
+        // it folds away where it is while the ones after it slide over its place
+        let (x, name, split) = (self.tabs[k].x, self.tab_name(k), self.tabs[k].root.leaves().len() > 1);
+        if x.is_finite() {
+            self.ghosts.push(Ghost { x, name, split, at: Instant::now() });
+        }
+        let t = self.tabs.remove(k);
+        if k < self.cur {
+            self.cur -= 1;
+        }
+        for p in t.root.leaves() {
+            self.drop_pane(p);
+        }
+        self.layout();
+        self.invalidate();
+    }
+
+    // -- dragging tabs and panes
+    /// A press in the main window that may become a drag: a tab, a pane's caption, a split's gap. False if it's none.
+    fn press_main(&mut self, x: i32, y: i32) -> bool {
+        let Some(&(_, hit)) = self.hits.iter().find(|(r, _)| inside(r, x, y)) else { return false };
+        let grab = match hit {
+            Hit::Tab(k) => Grab::Tab(k),
+            Hit::Pane(id) => {
+                if self.dying.contains(&id) {
+                    return true;
+                }
+                self.activate(id);
+                unsafe { SetFocus(self.list) };
+                Grab::Pane(id)
+            }
+            Hit::Gutter(sid) => {
+                self.gut = Some(sid);
+                self.gut_to = Some((x, y));
+                unsafe { SetCapture(self.main) };
+                return true;
+            }
+            Hit::ColEdge(id, k) => {
+                let mut w = [0; 5];
+                for &(r, h) in &self.hits {
+                    if let Hit::Col(p, j) = h {
+                        if p == id {
+                            w[j] = r.right - r.left;
+                        }
+                    }
+                }
+                self.col_drag = Some((id, k, x, w));
+                unsafe { SetCapture(self.main) };
+                return true;
+            }
+            _ => return false,
+        };
+        self.drag = Some(Drag { grab, x0: x, y0: y, on: false, lifted: false, to: None });
+        unsafe { SetCapture(self.main) };
+        true
+    }
+    /// The split whose gap is being dragged or pointed at: whether its panes sit side by side.
+    fn gutter_vert(&self) -> Option<bool> {
+        let sid = self.gut.or(match self.hot {
+            Some(Hit::Gutter(s)) => Some(s),
+            _ => None,
+        })?;
+        self.gutters.iter().find(|g| g.0 == sid).map(|g| g.3)
+    }
+    fn grab_name(&self, g: Grab) -> String {
+        match g {
+            Grab::Tab(k) => self.tab_name(k),
+            Grab::Pane(id) => self.pane_name(id),
+        }
+    }
+    /// Tab slot `i` in the strip.
+    fn slot(&self, i: usize) -> RECT {
+        let (x0, tw, gap) = self.strip;
+        let left = x0 + i as i32 * (tw + gap);
+        RECT { left, top: self.px(6), right: left + tw, bottom: self.menu_h }
+    }
+    /// Where a drop at (x, y) would land: the tab strip, an edge of the whole tab's room, or a side of a pane. Near
+    /// where two sides of a pane meet, the one it pointed at before (`was`) holds until the other is clearly nearer:
+    /// no flicker along the diagonal.
+    fn dock_at(&self, x: i32, y: i32, g: Grab, was: Option<Dock>) -> Option<Dock> {
+        let (x0, tw, gap) = self.strip;
+        if y < self.menu_h + self.px(6) && x >= x0 - self.px(24) {
+            let n = self.tabs.len() as i32;
+            return Some(Dock::Strip(match g {
+                Grab::Tab(_) => ((x - x0) / (tw + gap)).clamp(0, n - 1) as usize,
+                Grab::Pane(_) => ((x - x0 + (tw + gap) / 2) / (tw + gap)).clamp(0, n) as usize,
+            }));
+        }
+        if matches!(g, Grab::Tab(k) if k == self.cur) {
+            return None; // the tab on screen into itself: nowhere
+        }
+        let c = self.content;
+        if !inside(&c, x, y) {
+            return None;
+        }
+        // a pane in hand has already left: aim at the room as it'd be without it, so its own spot is a target too
+        let areas = match g {
+            Grab::Pane(p) => {
+                let mut root = self.tabs[self.cur].root.clone();
+                if !root.detach(p) {
+                    return None;
+                }
+                root.settle();
+                let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
+                root.place(c, self.px(8), &mut leaves, &mut gutters);
+                leaves
+            }
+            Grab::Tab(_) => self.areas.clone(),
+        };
+        // the room's own edges, once it's split: a part across the whole tab
+        let band = self.px(22);
+        if areas.len() > 1 {
+            let edges = [x - c.left, c.right - x, y - c.top, c.bottom - y];
+            if let Some(side) = (0..4).filter(|&s| edges[s] < band).min_by_key(|&s| edges[s]) {
+                return Some(Dock::Root(side as u8));
+            }
+        }
+        let &(id, r) = areas.iter().find(|(_, r)| inside(r, x, y))?;
+        if self.dying.contains(&id) {
+            return None;
+        }
+        let (fx, fy) = ((x - r.left) as f64 / (r.right - r.left).max(1) as f64, (y - r.top) as f64 / (r.bottom - r.top).max(1) as f64);
+        let d = [fx, 1.0 - fx, fy, 1.0 - fy];
+        let side = (0..4).min_by(|&a, &b| d[a].total_cmp(&d[b])).unwrap_or(1);
+        let side = match was {
+            Some(Dock::Pane(w, s)) if w == id && d[s as usize] < d[side] + 0.06 => s as usize,
+            _ => side,
+        };
+        Some(Dock::Pane(id, side as u8))
+    }
+    /// The box a landing shows in: the half of a pane or of the whole room it would take, or a tab slot.
+    fn dock_rect(&self, d: Dock) -> RECT {
+        let half = |r: RECT, side: u8| {
+            let g = self.px(4);
+            let (mx, my) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+            match side {
+                0 => RECT { right: mx - g, ..r },
+                1 => RECT { left: mx + g, ..r },
+                2 => RECT { bottom: my - g, ..r },
+                _ => RECT { top: my + g, ..r },
+            }
+        };
+        match d {
+            Dock::Strip(i) => self.slot(i),
+            Dock::Root(side) => half(self.content, side),
+            Dock::Pane(id, side) => half(self.areas.iter().find(|a| a.0 == id).map_or(self.content, |a| a.1), side),
+        }
+    }
+    /// Point the landing zone at `r` (springing there, or growing in where there was none), or fade it out.
+    fn aim(&mut self, r: Option<RECT>, label: String) {
+        let Some(r) = r else {
+            if let Some(o) = &mut self.ov {
+                o.on = false;
+            }
+            return;
+        };
+        let to = [r.left as f64, r.top as f64, r.right as f64, r.bottom as f64];
+        match &mut self.ov {
+            Some(o) if o.a > 0.0 => (o.to, o.on, o.label) = (to, true, label),
+            _ => {
+                // grows in from a little inside where it lands
+                let (cx, cy, k) = ((to[0] + to[2]) / 2.0, (to[1] + to[3]) / 2.0, 0.94);
+                let r0 = [cx + (to[0] - cx) * k, cy + (to[1] - cy) * k, cx + (to[2] - cx) * k, cy + (to[3] - cy) * k];
+                self.ov = Some(Ov { r: r0, v: [0.0; 4], to, a: 0.0, on: true, label });
+            }
+        }
+    }
+    fn drag_move(&mut self, x: i32, y: i32) {
+        let Some(mut d) = self.drag.take() else { return };
+        if !d.on {
+            let (dx, dy) = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+            if (x - d.x0).abs() <= dx && (y - d.y0).abs() <= dy {
+                self.drag = Some(d);
+                return;
+            }
+            d.on = true;
+            if let Grab::Tab(k) = d.grab {
+                if k == self.cur && self.tabs.len() > 1 {
+                    // the tab on screen lifted out: the window shows the one before it meanwhile
+                    let to = self.tab_of(self.last).filter(|&j| j != k).unwrap_or(if k > 0 { k - 1 } else { 1 });
+                    self.switch_tab(to);
+                    d.lifted = true;
+                }
+            }
+            self.chip_open(d.grab);
+            unsafe { InvalidateRect(self.main, null(), 0) }; // the tab in hand leaves the strip
+        }
+        self.chip_move();
+        // a pane goes nowhere till it's clearly been pulled away: a slip on its caption leaves it put
+        let near = matches!(d.grab, Grab::Pane(_)) && (x - d.x0).pow(2) + (y - d.y0).pow(2) < self.px(40).pow(2);
+        d.to = if near { None } else { self.dock_at(x, y, d.grab, d.to) };
+        let (mut hole, mut moved) = (None, false);
+        let zone = match (d.grab, d.to) {
+            (Grab::Tab(k), Some(Dock::Strip(j))) => {
+                // reordered as it goes: the others slide aside
+                if j != k {
+                    moved = true;
+                    let t = self.tabs.remove(k);
+                    self.tabs.insert(j, t);
+                    self.cur = match self.cur {
+                        c if c == k => j,
+                        c if k < c && j >= c => c - 1,
+                        c if k > c && j <= c => c + 1,
+                        c => c,
+                    };
+                    d.grab = Grab::Tab(j);
+                }
+                Some(self.slot(j))
+            }
+            (Grab::Tab(k), None) => Some(self.slot(k)), // back home
+            (Grab::Pane(_), Some(Dock::Strip(i))) => {
+                hole = Some(i);
+                Some(self.slot(i))
+            }
+            (g, Some(to)) => self.landing(g, to).or_else(|| Some(self.dock_rect(to))),
+            (_, None) => None,
+        };
+        let label = self.grab_name(d.grab);
+        self.drag = Some(d);
+        if hole != self.hole || moved {
+            self.hole = hole;
+            self.layout(); // the tabs' slots
+        }
+        let zone = match (zone, hole) {
+            (Some(_), Some(i)) => Some(self.slot(i)), // the slot as laid out with the hole
+            (z, _) => z,
+        };
+        self.aim(zone, label); // its own window: nothing else repaints as it moves
+    }
+    /// The drag ends: dropped (`commit`) or let go of (Esc, capture lost).
+    fn drag_end(&mut self, commit: bool) {
+        let Some(d) = self.drag.take() else { return };
+        self.chip_close();
+        self.hole = None;
+        self.aim(None, String::new());
+        let to = if commit { d.to } else { None };
+        match (d.grab, d.on, to) {
+            (Grab::Tab(k), false, _) if commit => self.switch_tab(k),
+            (Grab::Tab(k), true, Some(to @ (Dock::Pane(..) | Dock::Root(_)))) if k != self.cur => {
+                let t = self.tabs.remove(k);
+                if k < self.cur {
+                    self.cur -= 1;
+                }
+                self.dock(t.root, to);
+                self.activate(t.focus);
+            }
+            (Grab::Tab(k), true, _) if d.lifted => self.switch_tab(k),
+            (Grab::Pane(p), true, Some(Dock::Strip(i))) => {
+                // out to a tab of its own, where the strip opened for it
+                if self.tabs[self.cur].root.detach(p) {
+                    if self.id == p {
+                        let next = self.visible()[0];
+                        self.activate(next);
+                    }
+                    self.tabs.insert(i, Tab::new(p));
+                    if i <= self.cur {
+                        self.cur += 1;
+                    }
+                    self.with_pane(p, |u| u.hibernate());
+                }
+            }
+            (Grab::Pane(p), true, Some(to)) => {
+                if self.tabs[self.cur].root.detach(p) {
+                    self.dock(Node::Leaf(p), to);
+                    self.activate(p);
+                }
+            }
+            _ => {}
+        }
+        self.layout();
+        self.invalidate_all();
+    }
+    /// Put `sub` (a pane, or a whole tab's) where it was dropped in the tab shown.
+    fn dock(&mut self, sub: Node, to: Dock) {
+        let sid = self.next_split();
+        self.tabs[self.cur].root.dock(sub, to, sid);
+    }
+    /// Where `g` would end up dropped at `to` in the tab shown, exactly as the drop will lay it out: a pane moved
+    /// within the tab once it's out of its old place (its sibling taking that room), not as a third pane beside the
+    /// two there now; another tab as the box all its panes take.
+    fn landing(&self, g: Grab, to: Dock) -> Option<RECT> {
+        let mut root = self.tabs[self.cur].root.clone();
+        let sub = match g {
+            Grab::Pane(p) => {
+                if !root.detach(p) {
+                    return None;
+                }
+                Node::Leaf(p)
+            }
+            Grab::Tab(k) => self.tabs[k].root.clone(),
+        };
+        let ids = sub.leaves();
+        root.dock(sub, to, usize::MAX);
+        root.settle();
+        let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
+        root.place(self.content, self.px(8), &mut leaves, &mut gutters);
+        leaves.into_iter().filter(|l| ids.contains(&l.0)).map(|l| l.1).reduce(|a, b| RECT {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        })
+    }
+    /// The dragged thing's chip, following the pointer: a little window of its own, over everything.
+    fn chip_open(&mut self, grab: Grab) {
+        let label = self.grab_name(grab);
+        let multi = matches!(grab, Grab::Tab(k) if self.tabs[k].root.leaves().len() > 1);
+        static CLASS: std::sync::Once = std::sync::Once::new();
+        let class = wz("MosaicChip");
+        unsafe {
+            CLASS.call_once(|| {
+                let mut wc: WNDCLASSEXW = zeroed();
+                wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+                wc.style = CS_DROPSHADOW;
+                wc.hInstance = GetModuleHandleW(null());
+                wc.lpfnWndProc = Some(chip_proc);
+                wc.lpszClassName = class.as_ptr();
+                RegisterClassExW(&wc);
+            });
+            let g = &self.gfx;
+            let wd = g.width(&label, &g.f.reg).min(self.px(260)) + self.px(if multi { 46 } else { 28 });
+            let ht = g.f.lh + self.px(14);
+            let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, class.as_ptr(), null(), WS_POPUP, 0, 0, wd, ht, self.main, null_mut(), GetModuleHandleW(null()), null());
+            if h.is_null() {
+                return;
+            }
+            let dark: BOOL = 1;
+            DwmSetWindowAttribute(h, 20, &dark as *const _ as *const c_void, 4);
+            let d = self.px(12);
+            SetWindowRgn(h, CreateRoundRectRgn(0, 0, wd + 1, ht + 1, d, d), 0);
+            self.chip = Some((h, Canvas::new(h, g), label, multi));
+            self.chip_move();
+            ShowWindow(h, SW_SHOWNA);
+        }
+    }
+    fn chip_move(&self) {
+        let Some((h, ..)) = &self.chip else { return };
+        let mut p = POINT { x: 0, y: 0 };
+        unsafe {
+            GetCursorPos(&mut p);
+            SetWindowPos(*h, null_mut(), p.x + self.px(14), p.y + self.px(12), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    fn chip_close(&mut self) {
+        if let Some((h, ..)) = self.chip.take() {
+            unsafe { DestroyWindow(h) };
+        }
+    }
+    /// The landing zone's window, made when a zone first shows.
+    fn zone_open(&self) -> Option<Zone> {
+        static CLASS: std::sync::Once = std::sync::Once::new();
+        let class = wz("MosaicZone");
+        unsafe {
+            CLASS.call_once(|| {
+                let mut wc: WNDCLASSEXW = zeroed();
+                wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+                wc.hInstance = GetModuleHandleW(null());
+                wc.lpfnWndProc = Some(zone_proc);
+                wc.lpszClassName = class.as_ptr();
+                RegisterClassExW(&wc);
+            });
+            let ex = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            let hwnd = CreateWindowExW(ex, class.as_ptr(), null(), WS_POPUP, 0, 0, 1, 1, self.main, null_mut(), GetModuleHandleW(null()), null());
+            let dc = CreateCompatibleDC(null_mut());
+            if hwnd.is_null() || dc.is_null() {
+                DestroyWindow(hwnd);
+                return None;
+            }
+            Some(Zone { hwnd, cv: Canvas::new(hwnd, &self.gfx), dc, bmp: null_mut(), cap: (0, 0) })
+        }
+    }
+    /// Show the landing zone as it is now: its window moved and drawn anew (nothing under it repaints), or closed
+    /// once the zone is gone.
+    fn show_zone(&mut self) {
+        let Some(o) = &self.ov else {
+            if let Some(z) = self.zone.take() {
+                unsafe {
+                    DestroyWindow(z.hwnd);
+                    DeleteDC(z.dc);
+                    DeleteObject(z.bmp);
+                }
+            }
+            return;
+        };
+        let r = RECT { left: o.r[0].round() as i32, top: o.r[1].round() as i32, right: o.r[2].round() as i32, bottom: o.r[3].round() as i32 };
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        let Some(mut z) = self.zone.take().or_else(|| self.zone_open()) else { return };
+        unsafe {
+            if w <= 0 || h <= 0 {
+                ShowWindow(z.hwnd, SW_HIDE);
+                self.zone = Some(z);
+                return;
+            }
+            if w > z.cap.0 || h > z.cap.1 {
+                // a 32-bit top-down DIB: what the Direct2D target draws into and the compositor reads from
+                let cap = (w.max(z.cap.0), h.max(z.cap.1));
+                let mut bi: BITMAPINFO = zeroed();
+                bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                (bi.bmiHeader.biWidth, bi.bmiHeader.biHeight) = (cap.0, -cap.1);
+                (bi.bmiHeader.biPlanes, bi.bmiHeader.biBitCount) = (1, 32);
+                let mut bits = null_mut();
+                let bmp = CreateDIBSection(z.dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                if bmp.is_null() {
+                    self.zone = Some(z);
+                    return;
+                }
+                SelectObject(z.dc, bmp);
+                DeleteObject(z.bmp);
+                (z.bmp, z.cap) = (bmp, cap);
+            }
+            if z.cv.begin_dc(z.dc, w, h) {
+                self.paint_ov(&z.cv, r.left, r.top);
+                z.cv.end_dc();
+            }
+            let mut at = POINT { x: r.left, y: r.top };
+            ClientToScreen(self.main, &mut at);
+            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+            UpdateLayeredWindow(z.hwnd, null_mut(), &at, &SIZE { cx: w, cy: h }, z.dc, &POINT { x: 0, y: 0 }, 0, &blend, ULW_ALPHA);
+            if IsWindowVisible(z.hwnd) == 0 {
+                ShowWindow(z.hwnd, SW_SHOWNA);
+            }
+        }
+        self.zone = Some(z);
+    }
+    fn paint_chip(&mut self) {
+        let (s, rad, lh) = (self.scale, self.pf(6.0), self.gfx.f.lh);
+        let px = |v: i32| (v as f64 * s).round() as i32;
+        let Some((h, cv, label, multi)) = &mut self.chip else { return };
+        if !cv.begin() {
+            return;
+        }
+        let mut c: RECT = unsafe { zeroed() };
+        unsafe { GetClientRect(*h, &mut c) };
+        cv.clear(theme().card);
+        cv.rrect(&c, rad, Some(theme().hl), Some(theme().accent));
+        let mut x = px(14);
+        if *multi {
+            split_glyph(cv, x, (c.bottom - px(10)) / 2, px(14), px(10), theme().accent, s);
+            x += px(20);
+        }
+        if let Some(t) = self.gfx.layout(&w(label), &self.gfx.f.reg, (c.right - x - px(10)) as f32, lh as f32) {
+            cv.text(&t, x, (c.bottom - lh) / 2, theme().text);
+        }
+        cv.end();
+    }
+    /// The landing zone, drawn on `cv` (its own window's, at (ox, oy) in the main window).
+    fn paint_ov(&self, cv: &Canvas, ox: i32, oy: i32) {
+        let Some(o) = &self.ov else { return };
+        let a = o.a as f32;
+        if a <= 0.0 {
+            return;
+        }
+        let r = RECT { left: o.r[0].round() as i32 - ox, top: o.r[1].round() as i32 - oy, right: o.r[2].round() as i32 - ox, bottom: o.r[3].round() as i32 - oy };
+        let rad = ((r.bottom - r.top) as f32 / 4.0).min(self.pf(10.0)).max(1.0);
+        cv.rrect_a(&r, rad, Some(theme().accent), None, 0.16 * a);
+        cv.rrect_a(&r, rad, None, Some(theme().accent), 0.9 * a);
+        cv.rrect_a(&RECT { left: r.left + 1, top: r.top + 1, right: r.right - 1, bottom: r.bottom - 1 }, rad - 1.0, None, Some(theme().accent), 0.5 * a);
+        let (g, lh) = (&self.gfx, self.gfx.f.lh);
+        let room = r.right - r.left - self.px(20);
+        if room > self.px(24) && r.bottom - r.top > lh {
+            let tw = g.width(&o.label, &g.f.reg).min(room);
+            if let Some(t) = g.layout(&w(&o.label), &g.f.reg, room as f32, lh as f32) {
+                cv.text_a(&t, (r.left + r.right - tw) / 2, (r.top + r.bottom - lh) / 2, theme().accent, a);
+            }
+        }
+    }
+    /// The window-wide animations' frame: splits opening and closing, tabs sliding, the landing zone, a gap's
+    /// grip. True while any moves.
+    fn step_ui(&mut self) -> bool {
+        let now = Instant::now();
+        let dt = (now - self.tick).as_secs_f64().min(1.0 / 30.0);
+        self.tick = now;
+        let mut moved = false;
+        // a split's gap dragged: resized to where the pointer was, once a frame
+        if let (Some(sid), Some((x, y))) = (self.gut, self.gut_to.take()) {
+            if let Some(&(_, r, g, vert)) = self.gutters.iter().find(|x| x.0 == sid) {
+                let gw = if vert { g.right - g.left } else { g.bottom - g.top };
+                let (pos, len) = if vert { (x - r.left, r.right - r.left - gw) } else { (y - r.top, r.bottom - r.top - gw) };
+                let min = (self.px(140) as f64 / len.max(1) as f64).min(0.5);
+                let ratio = ((pos - gw / 2) as f64 / len.max(1) as f64).clamp(min, 1.0 - min);
+                self.tabs[self.cur].root.set_ratio(sid, ratio);
+                self.layout();
+            }
+        }
+        if self.tabs[self.cur].root.animate(dt) {
+            self.layout();
+            moved = true;
+        }
+        if !self.dying.is_empty() {
+            self.bury(false);
+            moved = true;
+        }
+        let dragged = match &self.drag {
+            Some(Drag { grab: Grab::Tab(k), on: true, .. }) => Some(*k),
+            _ => None,
+        };
+        let mut slid = false;
+        for (k, t) in self.tabs.iter_mut().enumerate() {
+            if t.x.is_nan() || dragged == Some(k) {
+                (t.x, t.v) = (t.to, 0.0);
+            }
+            slid |= spring(&mut t.x, &mut t.v, t.to, dt, 28.0, 0.3);
+        }
+        if self.plus.0.is_finite() {
+            slid |= spring(&mut self.plus.0, &mut self.plus.1, self.plus.2, dt, 28.0, 0.3);
+        }
+        // tabs opening and closing: unfold and fold away, then settle
+        for t in &mut self.tabs {
+            if t.born.is_some_and(|b| b.elapsed().as_secs_f64() >= TAB_IN) {
+                t.born = None;
+                slid = true;
+            }
+        }
+        self.ghosts.retain(|g| g.at.elapsed().as_secs_f64() < TAB_OUT);
+        if slid || !self.ghosts.is_empty() || self.tabs.iter().any(|t| t.born.is_some()) {
+            unsafe { InvalidateRect(self.main, null(), 0) };
+            moved = true;
+        }
+        if let Some(o) = &mut self.ov {
+            let mut m = false;
+            for i in 0..4 {
+                m |= spring(&mut o.r[i], &mut o.v[i], o.to[i], dt, 36.0, 0.25);
+            }
+            let want = if o.on { 1.0 } else { 0.0 };
+            if o.a != want {
+                o.a = if want > o.a { (o.a + dt / 0.08).min(1.0) } else { (o.a - dt / 0.15).max(0.0) };
+                m = true;
+            }
+            if !o.on && o.a == 0.0 {
+                self.ov = None;
+                m = true;
+            }
+            if m {
+                self.show_zone();
+                moved = true;
+            }
+        }
+        // a gap's grip: lit while the pointer is on the gap or drags it
+        let hot = self.gut.or(match self.hot {
+            Some(Hit::Gutter(s)) => Some(s),
+            _ => None,
+        });
+        let (id, a) = self.gut_lit;
+        let want = if hot.is_some() { 1.0 } else { 0.0 };
+        let (id, a) = match hot {
+            Some(h) if h != id => (h, 0.0),
+            _ => (id, a),
+        };
+        if a != want {
+            let a = if want > a { (a + dt / 0.2).min(1.0) } else { (a - dt / 0.3).max(0.0) };
+            self.gut_lit = (id, a);
+            unsafe { InvalidateRect(self.main, null(), 0) };
+            moved = true;
+        } else {
+            self.gut_lit = (id, a);
+        }
+        moved
+    }
+    /// Whether `step_ui` has anything to do.
+    fn ui_moving(&self) -> bool {
+        let hot = self.gut.is_some() || matches!(self.hot, Some(Hit::Gutter(_)));
+        self.gut_to.is_some()
+            || !self.dying.is_empty()
+            || self.ov.as_ref().is_some_and(|o| o.r != o.to || o.a != if o.on { 1.0 } else { 0.0 } || o.v != [0.0; 4])
+            || self.tabs.iter().any(|t| t.x != t.to || t.v != 0.0 || t.born.is_some())
+            || !self.ghosts.is_empty()
+            || self.plus.0.is_finite() && (self.plus.0 != self.plus.2 || self.plus.1 != 0.0)
+            || self.gut_lit.1 != if hot { 1.0 } else { 0.0 }
+            || self.tabs[self.cur].root.moving()
     }
 
     /// All: an empty search box.
@@ -1475,14 +2982,56 @@ impl Ui {
         if let Some(d) = sel.iter().find(|p| is_dir(p)).filter(|_| sel.len() == 1) {
             return d.clone();
         }
-        let q = self.args.q.trim();
-        if let Some(d) = ["child:\"", "descendant:\""].iter().find_map(|p| q.strip_prefix(p)).and_then(|d| d.strip_suffix('"')) {
-            return if d.ends_with(':') { format!("{d}\\") } else { d.to_string() };
+        if let Some(d) = self.here() {
+            return d;
         }
         if let Some(parent) = sel.first().and_then(|p| std::path::Path::new(p).parent()) {
             return parent.to_string_lossy().into_owned();
         }
         std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into())
+    }
+
+    /// The folder on screen: what a Browse listing (`child:"…"` / `descendant:"…"`, maybe narrowed by more words)
+    /// shows. Drive roots get their `\`.
+    fn here(&self) -> Option<String> {
+        listed_dir(&self.args.q)
+    }
+
+    /// Search inside `dir` (and below it), the box ready for the words to look for. Back returns to before.
+    fn search_in(&self, dir: &str) {
+        let q = format!("descendant:\"{}\" ", dir.trim_end_matches('\\'));
+        self.visit(q.trim_end());
+        unsafe {
+            SetWindowTextW(self.edit, wz(&q).as_ptr());
+            SetFocus(self.edit);
+            SendMessageW(self.edit, 0x00B1, q.encode_utf16().count(), q.encode_utf16().count() as isize); // EM_SETSEL: caret at the end
+        }
+    }
+
+    fn select_all(&mut self) {
+        if self.matches > 0 {
+            let mut s = Sel::default();
+            s.add(0, self.matches - 1);
+            self.set_sel(s, self.focus, Some(Some(0)));
+        }
+    }
+
+    /// The box over item `i`'s name that its rename field takes.
+    fn name_box(&self, i: usize) -> RECT {
+        let (x, top) = self.spot(i);
+        let (x, top) = (x as i32, top as i32);
+        let h = self.gfx.f.lh + self.px(8);
+        if self.grid {
+            let left = x + self.px(G + 5);
+            let top = top + self.px(G + 5) + self.tile() + self.px(4);
+            RECT { left, top, right: left + self.tile(), bottom: top + h }
+        } else {
+            let c = self.cols(self.cw())[0];
+            let top = top + (self.rh() - h) / 2;
+            let icon = self.px(22); // the name starts beside the icon, at the column's near edge
+            let (left, right) = if self.rtl { (c.0, c.1 - icon) } else { (c.0 + icon, c.1) };
+            RECT { left, top, right, bottom: top + h }
+        }
     }
 
     /// Alt+Up while browsing a folder: its parent. False when the search box isn't showing a folder listing.
@@ -1494,10 +3043,20 @@ impl Ui {
     }
 
     fn run(&mut self, keep: bool) {
-        self.seq += 1;
+        self.seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         self.fresh |= !keep;
+        if keep {
+            self.live_at = Instant::now(); // `done` turns it into the refresh's cost, then its finish
+        }
         self.terms = terms(&self.args.q);
-        let _ = self.jobs.send(Job { seq: self.seq, args: self.args.clone(), h: self.backend.handle() });
+        let _ = self.jobs.send(Job { seq: self.seq, who: self.id, args: self.args.clone(), h: self.backend.handle() });
+    }
+    /// The pane a search result is for: the one whose newest search it is.
+    fn pane_by_seq(&self, seq: u64) -> Option<usize> {
+        if seq == self.seq {
+            return Some(self.id);
+        }
+        self.panes.iter().position(|v| v.as_ref().is_some_and(|v| v.seq == seq))
     }
 
     fn done(&mut self, (seq, args, r): Done) {
@@ -1505,6 +3064,14 @@ impl Ui {
             return;
         }
         let fresh = std::mem::take(&mut self.fresh);
+        if !fresh {
+            (self.live_cost, self.live_at) = (self.live_at.elapsed(), Instant::now());
+        }
+        // a live refresh of a folder nothing changed in: the very rows on screen, so they stay as they are
+        if !fresh && r.stamp.is_some() && r.stamp == self.version && r.total == self.matches && r.error.is_none() && args == self.shown {
+            return;
+        }
+        self.version = r.stamp;
         // a live refresh keeps the selection on the same files: note where they were (up to 1000 of them)
         let at = |u: &Self, i: Option<usize>| i.and_then(|i| u.get(i).map(|r| (i, r.path.clone())));
         let kept: Vec<(usize, String)> = if fresh || self.sel.count() > 1000 { Vec::new() } else { self.sel.iter().filter_map(|i| at(self, Some(i))).collect() };
@@ -1588,6 +3155,19 @@ impl Ui {
         }
         self.invalidate();
         self.want_preview();
+        // a renamed or new item: selected once it's listed (the new one then renamed, as in Explorer)
+        if let Some((p, rename, until)) = LISTED.with(|l| l.borrow().clone()) {
+            if Instant::now() > until {
+                LISTED.set(None);
+            } else if let Some(k) = find(&self.shown, 0, self.matches.min(5000), &self.backend.handle()).hits.iter().position(|h| h.path.eq_ignore_ascii_case(&p)) {
+                LISTED.set(None);
+                self.set_sel(Sel::one(k), Some(k), Some(Some(k)));
+                self.show_row(k);
+                if rename {
+                    unsafe { PostMessageW(self.list, WM_RENAME, 0, 0) };
+                }
+            }
+        }
     }
 
     /// Items on screen, by index.
@@ -1634,7 +3214,6 @@ impl Ui {
     /// Twice a second: re-run the search when the index changed (live updates, indexing progress). `true` = offer
     /// the service install.
     fn poll(&mut self) -> bool {
-        self.count_fps();
         let st = self.backend.status();
         // a busy service refuses a connection now and then (every pipe instance taken while it scans); only an
         // unreachable one for ten polls in a row (5 s) is worth offering to install
@@ -1643,20 +3222,8 @@ impl Ui {
             self.offered = true;
             return true;
         }
-        // Metadata: results fill in as the metadata index reads files
-        let meta = self.args.tags && crate::metadata::generation() != self.meta_gen;
-        // Re-ranking millions of entries costs a core for about a second, and a busy disk changes the index all
-        // the time: never while scrolling, and no more often than 8x the cost of the last refresh (2 s at least).
-        let scrolling = self.y != self.poll_y;
-        self.poll_y = self.y;
-        let due = self.live_at.elapsed() >= (self.live_cost * 8).max(Duration::from_secs(2));
-        if (st.count != self.objects || st.changes != self.changes || meta) && !self.typing && self.press.is_none() && !scrolling && due {
-            self.meta_gen = crate::metadata::generation();
-            let t = Instant::now();
-            self.run(true);
-            self.live_cost = t.elapsed();
-            self.live_at = Instant::now();
-        }
+        let (count, changes) = (st.count, st.changes);
+        self.each_visible(|u| u.poll_view(count, changes));
         // Cached off `st` (not re-read in `status()`'s text builder below): when a background
         // service does the actual indexing, this is the only way that progress reaches the GUI at
         // all, over the IPC status response — re-querying it per paint would mean a pipe round trip
@@ -1672,6 +3239,21 @@ impl Ui {
         self.was_building = building;
         false
     }
+    /// A pane's share of `poll`: its search again when the index changed under it.
+    fn poll_view(&mut self, count: usize, changes: u64) {
+        // Metadata: results fill in as the metadata index reads files
+        let meta = self.args.tags && crate::metadata::generation() != self.meta_gen;
+        // Re-ranking millions of entries costs a core for about a second, and a busy disk changes the index all
+        // the time: never while scrolling, and no more often than 8x the cost of the last refresh (2 s at least).
+        let scrolling = self.y != self.poll_y;
+        self.poll_y = self.y;
+        let due = self.live_at.elapsed() >= (self.live_cost * 8).max(Duration::from_secs(2));
+        if (count != self.objects || changes != self.changes || meta) && (self.guest || !self.typing) && self.press.is_none() && !scrolling && due {
+            self.meta_gen = crate::metadata::generation();
+            (self.objects, self.changes) = (count, changes); // `done` skips a result that's the same as before
+            self.run(true);
+        }
+    }
 
     fn row(&mut self, h: crate::application::index::Hit) -> Row {
         let ext = if h.is_dir { None } else { ext_of(&h.name) };
@@ -1681,10 +3263,10 @@ impl Ui {
         Row {
             name: w(name),
             dir: w(dir),
-            size_s: if h.is_dir { Vec::new() } else { w(&fmt_size(h.size.max(0))) },
+            // folders from the index carry their total; other folder rows (drives, Home places) have none
+            size_s: if h.is_dir && h.size < 0 { Vec::new() } else { w(&fmt_size(h.size.max(0))) },
             ty: w(&type_cache(&ext, h.is_dir)),
             date: fmt_date(h.modified),
-            attrs_s: w(&fmt_attrs(h.attributes)),
             hidden: h.attributes & 0x2 != 0,
             link: matches!(ext.as_deref(), Some("lnk" | "url")),
             sys: self.sys_icon(&ext, h.is_dir),
@@ -1745,15 +3327,19 @@ impl Ui {
         let ok = self.cl.ensure();
         if self.cl.gen != self.pics_gen {
             self.pics_gen = self.cl.gen;
-            self.texts.clear();
-            self.sys_pics.clear();
-            self.own.clear();
-            self.thumbs.clear();
-            self.thumb_order.clear();
-            self.thumb_bytes = 0;
-            self.jumbo.clear();
+            self.forget_pics();
         }
         ok
+    }
+    fn forget_pics(&mut self) {
+        self.texts.clear();
+        self.sys_pics.clear();
+        self.own.clear();
+        self.thumbs.clear();
+        self.thumb_order.clear();
+        self.thumb_bytes = 0;
+        self.jumbo.clear();
+        self.link_ov = None;
     }
     fn upload(&mut self, px: &[u8], w: i32, h: i32) -> Option<Pic> {
         if !self.canvas_ready() {
@@ -1788,19 +3374,19 @@ impl Ui {
         if self.own.len() > 3000 {
             self.own.clear();
         }
-        let (p, hw, size) = (path.to_string(), self.main as isize, self.isz);
+        let (p, hw, lw, size) = (path.to_string(), self.main as isize, self.list as usize, self.isz);
         shell::shell_spawn(Box::new(move |dropped| {
             // decoded here, on the helper's thread: the UI thread only uploads the pixels
             let px = if dropped { None } else { shell::thumbnail(&p, size, true).and_then(|b| png_pixels(&b, size)) };
             let b: Box<(String, Option<Px>, bool)> = Box::new((p, px, dropped));
-            unsafe { PostMessageW(hw as HWND, WM_ICON, 0, Box::into_raw(b) as isize) };
+            unsafe { PostMessageW(hw as HWND, WM_ICON, lw, Box::into_raw(b) as isize) };
         }));
     }
 
     fn got_icon(&mut self, (p, px, dropped): (String, Option<Px>, bool)) {
         self.pending.remove(&p);
-        if dropped {
-            return;
+        if dropped || unsafe { IsWindowVisible(self.list) } == 0 {
+            return; // a pane put away meanwhile: asked again when it's back
         }
         let pic = px.and_then(|(px, w, h)| self.upload(&px, w, h));
         self.own.insert(p, pic);
@@ -1853,29 +3439,33 @@ impl Ui {
     }
 
     fn save_kinds(&mut self) {
-        if self.kinds_dirty {
-            self.kinds_dirty = false;
+        if !self.kinds_changed.is_empty() {
             self.kinds_saved = std::time::Instant::now();
-            let text: String = self.kinds.iter().map(|(p, (k, m))| format!("{k}\t{m}\t{p}\n")).collect();
-            let _ = std::fs::write(kinds_path(), text);
+            let changed = std::mem::take(&mut self.kinds_changed);
+            // the first save writes it whole (there's no snapshot yet), so the old text file can go
+            if crate::kvlog::save(&kinds_path(), &self.kinds, &changed).is_ok() {
+                let _ = std::fs::remove_file(kinds_path().with_extension("txt"));
+            }
         }
     }
 
     fn got_kind(&mut self, (p, k, m): (String, u8, u64)) {
         self.kind_pending.remove(&p);
         if self.kinds.len() > 200_000 {
-            self.kinds.clear();
+            self.kinds_changed.extend(self.kinds.drain().map(|(p, _)| p));
         }
-        if self.kinds.insert(p, (k, m)) != Some((k, m)) {
-            self.kinds_dirty = true;
+        if self.kinds.insert(p.clone(), (k, m)) != Some((k, m)) {
+            self.kinds_changed.push(p);
         }
-        // the file is rewritten whole (MBs): while browsing, at most every 5 minutes; the rest lands on exit
+        // saved while browsing at most every 5 minutes; the rest lands on exit
         if self.kind_pending.is_empty() && self.kinds_saved.elapsed() > std::time::Duration::from_secs(300) {
             self.save_kinds();
         }
         if k != 0 {
-            self.want_thumbs();
-            unsafe { InvalidateRect(self.list, null(), 0) };
+            self.each_visible(|u| {
+                u.want_thumbs();
+                unsafe { InvalidateRect(u.list, null(), 0) };
+            });
         }
     }
 
@@ -1887,7 +3477,7 @@ impl Ui {
         let (h, rh) = (self.list_size().1 as f64, self.rh() as f64);
         let r0 = (self.y / rh).floor() as usize;
         let r1 = ((self.y + 2.0 * h) / rh).floor() as usize;
-        let (tile, ts, hw) = (self.tile(), self.tsize(), self.main as isize);
+        let (tile, ts, hw, lw) = (self.tile(), self.tsize(), self.main as isize, self.list as usize);
         // folders only in Home (`own`): their shell icon (Documents, Downloads...), not a preview of their contents
         let mut seen = HashSet::new();
         let want: Vec<(String, bool)> = (r0 * self.per..((r1 + 1) * self.per).min(self.matches))
@@ -1905,14 +3495,14 @@ impl Ui {
                 // decoded and resampled here, on the helper's thread: the UI thread only uploads the pixels
                 let px = if dropped { None } else { shell::thumbnail(&p, ts, icon_only).and_then(|b| png_pixels(&b, tile)) };
                 let b: Box<(String, Option<Px>, bool, i32)> = Box::new((p, px, dropped, tile));
-                unsafe { PostMessageW(hw as HWND, WM_THUMB, 0, Box::into_raw(b) as isize) };
+                unsafe { PostMessageW(hw as HWND, WM_THUMB, lw, Box::into_raw(b) as isize) };
             }));
         }
     }
 
     fn got_thumb(&mut self, (p, px, dropped, tile): (String, Option<Px>, bool, i32)) {
         self.thumb_pending.remove(&p);
-        if dropped {
+        if dropped || unsafe { IsWindowVisible(self.list) } == 0 {
             return;
         }
         let pic = px.and_then(|(px, w, h)| self.upload(&px, w, h));
@@ -1966,7 +3556,6 @@ impl Ui {
         match h {
             Hit::Lang => t("tip.lang").into(),
             Hit::Filter => t("tip.filter").into(),
-            Hit::Meta => t("tip.meta").into(),
             Hit::Sort => t("tip.sort").into(),
             Hit::Preview => t("tip.preview").into(),
             Hit::Smooth => t("tip.smooth").into(),
@@ -1985,10 +3574,17 @@ impl Ui {
             Hit::View(_) => t("tip.list_view").into(),
             Hit::Dir => t("tip.dir").into(),
             Hit::Tag => t("tip.tag").into(),
-            Hit::Col(k) => col_defs().get(k).map_or(String::new(), |m| t("tip.col").replace("{col}", m.0)),
+            Hit::Col(_, k) => col_defs().get(k).map_or(String::new(), |m| t("tip.col").replace("{col}", m.0)),
+            Hit::Pane(id) => self.pane_name(id),
+            Hit::PaneClose(_) => "Ctrl+W".into(),
+            Hit::Gutter(_) | Hit::ColEdge(..) => String::new(),
             Hit::Split => t("tip.split").into(),
             Hit::Search => String::new(),
             Hit::Menu(i) => menu_bar_labels().get(i).copied().unwrap_or_default().into(),
+            // in full: the tab may cut it short; a split one's every pane
+            Hit::Tab(k) => self.tabs[k].root.leaves().into_iter().map(|p| self.pane_name(p)).collect::<Vec<_>>().join("  ·  "),
+            Hit::TabClose(_) => format!("{} (Ctrl+W)", t("tab.close")),
+            Hit::NewTab => format!("{} (Ctrl+T)", t("tab.new")),
         }
     }
 
@@ -2033,8 +3629,16 @@ impl Ui {
         self.band_update();
         unsafe { InvalidateRect(self.list, null(), 0) };
     }
-    fn animating(&self) -> bool {
-        self.auto.is_some() || self.band_edge() != 0.0 || (self.target - self.y).abs() > 0.5 || self.fx.is_some() || self.split_x.is_some() || self.grip_a != self.grip_want()
+    fn animating(&mut self) -> bool {
+        if self.split_x.is_some() || self.grip_a != self.grip_want() || self.ui_moving() || FADE.read().unwrap().is_some() || themes::moving() {
+            return true;
+        }
+        let mut any = false;
+        self.each_visible(|u| any |= u.view_moving());
+        any
+    }
+    fn view_moving(&self) -> bool {
+        self.auto.is_some() || self.band_edge() != 0.0 || (self.target - self.y).abs() > 0.5 || self.fx.is_some()
     }
     /// The divider's grip is lit while the pointer is anywhere along the gap, or it's being dragged.
     fn grip_want(&self) -> f64 {
@@ -2046,7 +3650,7 @@ impl Ui {
         let (Some(off), Some(x)) = (self.split, self.split_x.take()) else { return };
         let mut c: RECT = unsafe { zeroed() };
         unsafe { GetClientRect(self.main, &mut c) };
-        let w = (((c.right - self.px(10) - (x - off) - self.px(8)) as f64 / self.scale).round() as i32).max(240);
+        let w = (((c.right - (x - off) - self.px(preview::GAP)) as f64 / self.scale).round() as i32).max(240);
         if w != self.pv_w {
             self.pv_w = w;
             self.layout();
@@ -2062,23 +3666,27 @@ impl Ui {
         }
         d.signum() as f64 * (d.abs() as f64 / 3.0 + 2.0).min(30.0) * self.scale
     }
-    /// Temporary fps counter: animation frames per second, recounted every half second. Called from each frame
-    /// (a timer waits behind them, so the count froze while scrolling) and from the poll (for idle: 0).
-    fn count_fps(&mut self) {
-        let t = self.fps.1.elapsed().as_secs_f64();
-        if t < 0.5 {
-            return;
-        }
-        let fps = (self.fps.0 as f64 / t).round() as u32;
-        self.fps.0 = 0;
-        self.fps.1 = Instant::now();
-        if fps != self.fps.2 {
-            self.fps.2 = fps;
-            unsafe { InvalidateRect(self.main, &RECT { left: 0, top: self.status_top, right: 1 << 15, bottom: 1 << 15 }, 0) };
-        }
-    }
     fn step(&mut self) {
-        self.count_fps();
+        let dt = (Instant::now() - self.tick).as_secs_f64().min(1.0 / 30.0);
+        self.drag_split();
+        let want = self.grip_want();
+        if self.grip_a != want {
+            // the divider's grip fades in (0.25 s) and out (0.35 s)
+            let step = dt / if want > self.grip_a { 0.25 } else { 0.35 };
+            self.grip_a = if want > self.grip_a { (self.grip_a + step).min(want) } else { (self.grip_a - step).max(want) };
+        }
+        // drawn by the pane: fully lit for the whole drag, else eased (smoothstep)
+        let a = self.grip_a;
+        preview::grip(if self.split.is_some() { 1.0 } else { (a * a * (3.0 - 2.0 * a)) as f32 });
+        if fading() {
+            self.repaint_theme();
+        }
+        themes::step();
+        self.step_ui();
+        self.each_visible(|u| u.step_view());
+    }
+    /// A pane's frame: its scrolling, and a live refresh's slides and outlines.
+    fn step_view(&mut self) {
         if let Some(t) = self.fx {
             if t.elapsed().as_secs_f64() > if self.born.is_empty() { SLIDE } else { GLOW } {
                 (self.fx, self.slide, self.born) = (None, HashMap::new(), HashSet::new());
@@ -2088,17 +3696,6 @@ impl Ui {
         let now = Instant::now();
         let dt = (now - self.frame).as_secs_f64().min(0.05);
         self.frame = now;
-        self.fps.0 += 1;
-        self.drag_split();
-        let want = self.grip_want();
-        if self.grip_a != want {
-            // the divider's grip fades in (0.25 s) and out (0.35 s)
-            let step = dt.min(1.0 / 30.0) / if want > self.grip_a { 0.25 } else { 0.35 };
-            self.grip_a = if want > self.grip_a { (self.grip_a + step).min(want) } else { (self.grip_a - step).max(want) };
-        }
-        // drawn by the pane: fully lit for the whole drag, else eased (smoothstep)
-        let a = self.grip_a;
-        preview::grip(if self.split.is_some() { 1.0 } else { (a * a * (3.0 - 2.0 * a)) as f32 });
         let before = self.y;
         if let Some(a) = &self.auto {
             let d = (a.cy - a.y) as f64 / self.scale;
@@ -2124,13 +3721,14 @@ impl Ui {
     fn wheel(&mut self, delta: i32) {
         self.auto = None;
         if !self.smooth {
-            // steps: one row (a tile row in the grid) per notch, landing on row edges
+            // steps: the system's lines per notch in the list (one tile row in the grid), landing on row edges
             self.step_acc += delta;
             let n = self.step_acc / 120;
             self.step_acc -= n * 120;
             if n != 0 {
                 let rh = self.rh() as f64;
-                self.glide_to(((self.y / rh).round() - n as f64) * rh);
+                let rows = if self.grid { 1.0 } else { self.wheel_lines };
+                self.glide_to(((self.y / rh).round() - n as f64 * rows) * rh);
             }
             return;
         }
@@ -2204,7 +3802,7 @@ impl Ui {
     // -- selection
     /// The item whose clickable box is at (x, y); the gaps around boxes start a selection band instead.
     fn item_at(&self, x: i32, y: i32) -> Option<usize> {
-        if x >= self.cw() {
+        if x < 0 || x >= self.cw() {
             return None;
         }
         let rh = self.rh() as f64;
@@ -2257,8 +3855,8 @@ impl Ui {
 
     /// The selection changed: show it in the pane once it settles (arrowing through a list opens nothing on the way).
     fn want_preview(&mut self) {
-        if !self.show_pv {
-            return;
+        if !self.show_pv || self.guest {
+            return; // the focused pane's selection only
         }
         let key = match self.pv_target() {
             preview::Target::Note(m) => m.to_string(),
@@ -2378,8 +3976,25 @@ impl Ui {
                 if self.sel.count() == 0 && self.matches > 0 {
                     self.set_sel(Sel::one(i as usize), Some(i as usize), Some(Some(i as usize)));
                 }
-                return Some(Some(Act::Open));
+                return Some(Some(if ctrl { Act::Reveal } else { Act::Open })); // Ctrl+Enter: where it is, as in Everything
             }
+            VK_F2 if !in_search && self.sel.count() > 0 => return Some(Some(Act::Rename)),
+            VK_F5 => return Some(Some(Act::Refresh)),
+            VK_BACK if !in_search => {
+                self.browse_up(); // as in Explorer
+            }
+            // Ctrl+F / Ctrl+L / F3: to the search box, its text selected
+            0x46 | 0x4C if ctrl => unsafe {
+                SetFocus(self.edit);
+                SendMessageW(self.edit, 0x00B1, 0, -1); // EM_SETSEL: all
+            },
+            VK_F3 => unsafe {
+                SetFocus(self.edit);
+                SendMessageW(self.edit, 0x00B1, 0, -1);
+            },
+            0x56 if ctrl && !in_search => return Some(Some(Act::Paste)),
+            0x4E if ctrl && shift => return Some(Some(Act::NewFolder)),
+            0x43 if ctrl && shift && self.sel.count() > 0 && !in_search => return Some(Some(Act::Path)),
             VK_ESCAPE => {
                 if self.auto.take().is_some() {
                     unsafe { ReleaseCapture() };
@@ -2387,7 +4002,7 @@ impl Ui {
                     self.set_sel(Sel::default(), None, Some(None));
                 }
             }
-            VK_DELETE if !in_search => return Some(Some(Act::Del)),
+            VK_DELETE if !in_search => return Some(Some(if shift { Act::DelNow } else { Act::Del })),
             VK_BACK if in_search && ctrl => unsafe {
                 // stock EDIT control has no word-delete of its own: Ctrl+Backspace otherwise just inserts a raw DEL char
                 let (mut a, mut b) = (0u32, 0u32);
@@ -2414,11 +4029,22 @@ impl Ui {
             },
             0xBB | 0x6B if ctrl => self.zoom(true),  // Ctrl + (= key or numpad)
             0xBD | 0x6D if ctrl => self.zoom(false), // Ctrl −
-            0x41 if ctrl && !in_search && self.matches > 0 => {
-                let mut s = Sel::default();
-                s.add(0, self.matches - 1);
-                self.set_sel(s, self.focus, Some(Some(0)));
+            0x41 if ctrl && !in_search => self.select_all(),
+            // as in Explorer: Ctrl+D deletes, Ctrl+Z undoes (in the search box, its own text's undo), Ctrl+Shift+1…6
+            // pick a view (1–4 icon sizes, 5 List and 6 Details: the list)
+            0x44 if ctrl && !in_search => return Some(Some(Act::Del)),
+            0x5A if ctrl && !in_search => return Some(Some(Act::Undo)),
+            0x31..=0x36 if ctrl && shift => return Some(Some(Act::View(VIEWS[(vk as usize - 0x31).min(4)].1))),
+            // tabs: Ctrl+T new, Ctrl+W close (the focused pane of a split one), Ctrl+(Shift+)Tab next / previous,
+            // Ctrl+1…8 that one, Ctrl+9 the last; Ctrl+\ splits the pane (Ctrl+Shift+\ below), as in VS Code
+            0x54 if ctrl => self.new_tab("home:", self.tabs.len()),
+            0x57 if ctrl => self.close_pane(self.id),
+            0xDC if ctrl => self.split_here(if shift { 3 } else { 1 }),
+            VK_TAB if ctrl => {
+                let n = self.tabs.len();
+                self.switch_tab((if shift { self.cur + n - 1 } else { self.cur + 1 }) % n);
             }
+            0x31..=0x39 if ctrl => self.switch_tab(if vk == 0x39 { self.tabs.len() - 1 } else { vk as usize - 0x31 }),
             0x43 | 0x58 if ctrl && self.sel.count() > 0 && !text_sel => return Some(Some(if vk == 0x43 { Act::Copy } else { Act::Cut })),
             _ => return None,
         }
@@ -2508,7 +4134,7 @@ impl Ui {
         let n = self.sel.count();
         if n == 1 {
             if let Some(r) = self.sel.iter().next().and_then(|i| self.get(i)) {
-                if !r.is_dir {
+                if !r.size_s.is_empty() {
                     t += &crate::i18n::t("status.size").replace("{size}", &String::from_utf16_lossy(&r.size_s));
                 }
                 t += &crate::i18n::t("status.date_path")
@@ -2521,9 +4147,7 @@ impl Ui {
                 for (k, r) in rows.iter().enumerate() {
                     if self.sel.has(p * PG + k) {
                         seen += 1;
-                        if !r.is_dir {
-                            bytes += r.size;
-                        }
+                        bytes += r.size;
                     }
                 }
             }
@@ -2536,13 +4160,29 @@ impl Ui {
     }
 
     // -- layout (app.css in pixels: every number below is a CSS length times the DPI scale)
-    /// Name, Path, Size, Type, Modified, Attributes column boxes, left-to-right reading order even in
-    /// RTL (see `col_positions`) — callers index by column, not by screen side.
-    fn cols(&self, width: i32) -> [(i32, i32); 6] {
-        let (pad, gap) = (self.px(10), self.px(10));
-        let fixed = [self.px(85), self.px(150), self.px(150), self.px(60)]; // Size, Type, Modified, Attributes
-        let v = col_positions(width, pad, gap, 2, &fixed, self.rtl);
-        [v[0], v[1], v[2], v[3], v[4], v[5]]
+    /// Name, Path, Size, Type, Modified column boxes, left-to-right reading order even in
+    /// RTL (see `fit_cols`) — callers index by column, not by screen side. A column with no width is out.
+    fn cols(&self, width: i32) -> [(i32, i32); 5] {
+        let (f, [s, t, m]) = self.colw;
+        fit_cols(width, self.px(16), self.px(10), f, [self.px(s), self.px(t), self.px(m)], self.px(180), self.px(60), self.rtl)
+    }
+    /// The edge after column `k` dragged to `x`: every pane's columns take the new widths.
+    fn drag_col(&mut self, x: i32) {
+        let Some((_, k, x0, w0)) = self.col_drag else { return };
+        let d = if self.rtl { x0 - x } else { x - x0 };
+        let w = col_resize(w0, k, d, self.px(40));
+        let css = |v: i32| (v as f64 / self.scale).round() as i32;
+        let f = if w[0] > 0 && w[1] > 0 { w[0] as f64 / (w[0] + w[1]) as f64 } else { self.colw.0 };
+        // a column that's out keeps the width it comes back with
+        let keep = |k: usize, old: i32| if w0[k] > 0 { css(w[k]) } else { old };
+        let [s, t, m] = self.colw.1;
+        let colw = (f.clamp(0.05, 0.95), [keep(2, s), keep(3, t), keep(4, m)]);
+        if colw != self.colw {
+            self.colw = colw;
+            self.col_gen += 1;
+            self.layout();
+            self.invalidate_all();
+        }
     }
 
     fn layout(&mut self) {
@@ -2555,6 +4195,10 @@ impl Ui {
     }
 
     fn layout_at(&mut self, first: usize) {
+        if self.guest {
+            self.relayout = true; // once the focused pane is back in the fields
+            return;
+        }
         unsafe {
             let mut c: RECT = zeroed();
             GetClientRect(self.main, &mut c);
@@ -2562,24 +4206,48 @@ impl Ui {
             let (g, lh) = (&self.gfx, self.gfx.f.lh);
             let px = |v: i32| (v as f64 * self.scale).round() as i32;
             let mut hits = Vec::new();
-            // header, as Everything's toolbar: logo, tabs, then the search box across the window and the filter
+            // header, as Everything's toolbar: back / forward, then the search box across the window and the filter
             // dropdown at its right, both compact (4px padding + 1px border, twice)
             let box_h = lh + px(10);
             let tab_h = lh + px(12);
-            self.menu_h = lh + px(8);
+            self.menu_h = lh + px(20);
             self.head_h = self.menu_h + tab_h + px(12) + 1;
             // the classic File/Edit/View/Search strip, flush against the top of the header
-            let mut mx = px(10);
+            let mut mx = px(8);
             for (i, label) in menu_bar_labels().iter().enumerate() {
                 let w = g.width(label, &g.f.reg) + px(20);
-                hits.push((RECT { left: mx, top: 0, right: mx + w, bottom: self.menu_h }, Hit::Menu(i)));
+                hits.push((RECT { left: mx, top: px(6), right: mx + w, bottom: self.menu_h - px(4) }, Hit::Menu(i)));
                 mx += w;
             }
+            // the tabs, along the rest of that strip, standing on the toolbar: 220px each, narrower when they don't all
+            // fit, then +. A pane dragged over the strip opens a slot for itself (`hole`).
+            let (tt, tb) = (px(6), self.menu_h);
+            let x0 = mx + px(20);
+            let n = self.tabs.len() as i32 + self.hole.is_some() as i32;
+            let room = wd - px(16) - px(36) - x0 - px(2) * n;
+            let tw = (room / n.max(1)).clamp(px(64), px(220));
+            let snap = self.strip.1 != tw || self.strip.0 != x0; // resized: no sliding, they'd trail the edge
+            self.strip = (x0, tw, px(2));
+            for k in 0..self.tabs.len() {
+                let s = k as i32 + self.hole.is_some_and(|h| k >= h) as i32;
+                let r = RECT { left: x0 + s * (tw + px(2)), top: tt, right: x0 + s * (tw + px(2)) + tw, bottom: tb };
+                let t = &mut self.tabs[k];
+                t.to = r.left as f64;
+                if snap || t.x.is_nan() {
+                    (t.x, t.v) = (t.to, 0.0);
+                }
+                hits.push((tab_x(&RECT { bottom: tb - px(4), ..r }, px(20)), Hit::TabClose(k))); // first: found before the tab under it
+                hits.push((r, Hit::Tab(k)));
+            }
+            let (nx, ns) = (x0 + n * (tw + px(2)) + px(6), px(28));
+            let ny = tt + (tb - tt - ns) / 2;
+            self.plus.2 = nx as f64;
+            if snap || self.plus.0.is_nan() {
+                (self.plus.0, self.plus.1) = (self.plus.2, 0.0);
+            }
+            hits.push((RECT { left: nx, top: ny, right: nx + ns, bottom: ny + ns }, Hit::NewTab));
             let side = px(10);
-            let mut x = side + g.width("Mosaic", &g.f.logo) + px(20);
-            let ty = self.menu_h + (self.head_h - 1 - self.menu_h - tab_h) / 2;
-            self.tab = RECT { left: x, top: ty, right: x + g.width(t("toolbar.files"), &g.f.semi) + px(24), bottom: ty + tab_h };
-            x = self.tab.right + px(4);
+            let mut x = side;
             let select = |opts: &[(&str, &str)]| opts.iter().map(|o| g.width(o.0, &g.f.reg)).max().unwrap_or(0) + px(8) + px(26) + 2; // widest option + padding + arrow
             let top = self.menu_h + (self.head_h - 1 - self.menu_h - box_h) / 2;
             for h in [Hit::Back, Hit::Fwd] {
@@ -2647,7 +4315,6 @@ impl Ui {
                 push(g.width("▲", &g.f.reg) + px(20), Hit::Dir, px(6));
                 push(select(&col_defs()), Hit::Sort, px(6));
             }
-            push(select(&metas()), Hit::Meta, px(10));
             if let Some(f) = filters().iter().find(|f| !f.1.is_empty() && f.1 == self.args.cat) {
                 push(g.width(f.0, &g.f.reg) + px(16), Hit::Tag, 0);
             }
@@ -2656,47 +4323,94 @@ impl Ui {
             // the pane: as dragged (the list keeps 300 px), else 40% of the window. The list never gives up its
             // own minimum width for the pane's sake — on a narrow window the pane shrinks, then hides, first.
             let min_list = px(220);
+            // the side panels: flush against the window's edges, from the toolbar down to the status bar, a hairline
+            // between them and the lists, which run right up to it (no strip of background between)
+            let (top, bottom) = (self.head_h, self.status_top);
             // the places panel, left of the list: it gives way first on a narrow window
             let side_w = if self.show_side && wd >= px(760) { px(side::WIDTH) } else { 0 };
-            let left = px(10) + if side_w > 0 { side_w + px(8) } else { 0 };
-            MoveWindow(self.side, px(10), lh_y, side_w.max(1), (self.status_top - px(4) - lh_y).max(1), 1);
+            let left = side_w;
+            MoveWindow(self.side, 0, top, side_w.max(1), (bottom - top).max(1), 1);
             ShowWindow(self.side, if side_w > 0 { SW_SHOWNA } else { SW_HIDE });
-            let max_pane = (wd - px(28) - min_list - (left - px(10))).max(0);
+            let max_pane = (wd - min_list - left - px(preview::GAP)).max(0);
             let auto = ((wd as f64 * 0.4) as i32).clamp(px(240), px(960)).min(wd / 2).min(max_pane);
             let show_pane = self.show_pv && max_pane >= px(160);
             let pane_w = if !show_pane { 0 } else if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
-            let right = wd - px(10) - if show_pane { pane_w + px(8) } else { 0 };
-            // the pane's window takes in the gap: it draws the divider's grip, which so moves with it
-            MoveWindow(self.pane, right, lh_y, pane_w.max(1) + px(preview::GAP), (self.status_top - px(4) - lh_y).max(1), 1);
+            let right = if show_pane { wd - pane_w - px(preview::GAP) } else { wd };
+            // the pane's window takes in the divider: it draws its grip, which so moves with it
+            MoveWindow(self.pane, right, top, pane_w.max(1) + px(preview::GAP), (bottom - top).max(1), 1);
             ShowWindow(self.pane, if show_pane { SW_SHOWNA } else { SW_HIDE });
             if show_pane {
-                let gap = RECT { left: right, top: lh_y, right: right + px(8), bottom: self.status_top - px(4) };
+                let gap = RECT { left: right, top, right: right + px(preview::GAP), bottom };
                 let (mid, half) = ((gap.top + gap.bottom) / 2, (gap.bottom - gap.top) / 8);
                 self.grip = RECT { top: mid - half, bottom: mid + half, ..gap };
                 hits.push((gap, Hit::Split));
             }
-            self.lh = RECT { left, top: lh_y, right: right - px(SB), bottom: lh_y + if self.grid { 0 } else { px(30) } };
-            if !self.grid {
-                let cols = self.cols(self.lh.right - self.lh.left);
-                for (k, (a, b)) in cols.iter().enumerate() {
-                    hits.push((RECT { left: self.lh.left + a, top: self.lh.top, right: self.lh.left + b, bottom: self.lh.bottom }, Hit::Col(k)));
+            // the panes share the room: each its caption (once split), column header and list
+            self.content = RECT { left, top: lh_y, right, bottom };
+            let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
+            self.tabs[self.cur].root.place(self.content, px(8), &mut leaves, &mut gutters);
+            for &(sid, _, g, _) in &gutters {
+                hits.push((g, Hit::Gutter(sid)));
+            }
+            let multi = leaves.len() > 1;
+            for &(id, r) in &leaves {
+                let first = (id == self.id).then_some(first);
+                self.with_pane(id, |u| u.place_pane(r, multi, first, &mut hits));
+            }
+            for id in 0..self.panes.len() {
+                let on = leaves.iter().any(|l| l.0 == id);
+                let l = self.list_of(id);
+                if !l.is_null() && (IsWindowVisible(l) != 0) != on {
+                    ShowWindow(l, if on { SW_SHOWNA } else { SW_HIDE });
                 }
             }
-            self.hits = hits;
-            let top = self.lh.bottom;
-            MoveWindow(self.list, left, top, (right - left).max(1), (self.status_top - px(4) - top).max(1), 1);
-            // tiles keep their size: the window's width decides how many fit in a row. Keep the first item in view.
-            let per = self.fit_per();
-            if per != self.per {
-                self.per = per;
-                self.texts.clear();
-                self.y = (first / self.ncols()) as f64 * self.rh() as f64;
-                self.target = self.y;
-            }
-            self.clamp();
+            (self.areas, self.gutters, self.hits) = (leaves, gutters, hits);
             InvalidateRect(self.main, null(), 0);
-            InvalidateRect(self.list, null(), 0);
         }
+    }
+
+    /// Lay this pane out in `r` (main window coordinates): its caption when the tab is split, column header, list.
+    fn place_pane(&mut self, r: RECT, multi: bool, first: Option<usize>, hits: &mut Vec<(RECT, Hit)>) {
+        let px = |v: i32| (v as f64 * self.scale).round() as i32;
+        let first = first.unwrap_or_else(|| self.first_visible());
+        let closing = self.dying.contains(&self.id); // shrinking away: nothing on it answers any more
+        let mut top = r.top;
+        self.cap = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if multi {
+            self.cap = RECT { left: r.left + px(6), top, right: r.right - px(4), bottom: top + self.gfx.f.lh + px(10) };
+            top = self.cap.bottom + px(4);
+            if !closing {
+                let c = self.cap;
+                hits.push((tab_x(&c, c.bottom - c.top - px(6)), Hit::PaneClose(self.id)));
+                hits.push((c, Hit::Pane(self.id)));
+            }
+        }
+        self.lh = RECT { left: r.left, top, right: r.right - px(SB), bottom: top + if self.grid { 0 } else { px(30) } };
+        if !self.grid && !closing {
+            let cols = self.cols(self.lh.right - self.lh.left);
+            // the gaps between columns: drag to resize (first, so they win over the headers they overlap)
+            let on = |k: usize| cols[k].1 > cols[k].0;
+            for k in (0..cols.len() - 1).filter(|&k| on(k) && on(k + 1)) {
+                let x = self.lh.left + if self.rtl { (cols[k].0 + cols[k + 1].1) / 2 } else { (cols[k].1 + cols[k + 1].0) / 2 };
+                hits.push((RECT { left: x - px(4), top: self.lh.top + px(4), right: x + px(4), bottom: self.lh.bottom - px(4) }, Hit::ColEdge(self.id, k)));
+            }
+            for (k, (a, b)) in cols.iter().enumerate().filter(|&(k, _)| on(k)) {
+                hits.push((RECT { left: self.lh.left + a, top: self.lh.top, right: self.lh.left + b, bottom: self.lh.bottom }, Hit::Col(self.id, k)));
+            }
+        }
+        let top = self.lh.bottom;
+        self.org = POINT { x: r.left, y: top };
+        unsafe { MoveWindow(self.list, r.left, top, (r.right - r.left).max(1), (r.bottom - top).max(1), 1) };
+        // tiles keep their size: the window's width decides how many fit in a row. Keep the first item in view.
+        let per = self.fit_per();
+        if per != self.per {
+            self.per = per;
+            self.texts.clear();
+            self.y = (first / self.ncols()) as f64 * self.rh() as f64;
+            self.target = self.y;
+        }
+        self.clamp();
+        unsafe { InvalidateRect(self.list, null(), 0) };
     }
 
     fn save_settings(&self) {
@@ -2705,9 +4419,9 @@ impl Ui {
         let m: HashMap<&str, String> = HashMap::from([
             ("view", (if self.grid { "grid" } else { "list" }).to_string()),
             ("size", self.size.to_string()),
-            ("meta", self.args.meta.clone()),
             ("preview", (self.show_pv as u8).to_string()),
             ("pvw", self.pv_w.to_string()),
+            ("cols", { let (f, [s, t, m]) = self.colw; format!("{f:.4},{s},{t},{m}") }),
             ("smooth", (self.smooth as u8).to_string()),
             ("folder_color", (self.folder_color as u8).to_string()),
             ("browse", self.browse.to_string()),
@@ -2731,10 +4445,10 @@ impl Ui {
     /// Arabic's right-to-left layout needs the DirectWrite formats rebuilt, same as a DPI change.
     fn set_lang(&mut self, code: &str) {
         crate::i18n::set_lang(code);
-        self.rtl = code == "ar";
+        self.rtl = crate::i18n::is_rtl(code);
         if let Ok(g) = Gfx::new(self.scale, self.rtl) {
             self.cm = Canvas::new(self.main, &g);
-            self.cl = Canvas::new(self.list, &g);
+            self.new_canvases(&g);
             self.gfx = g;
         }
         self.save_settings();
@@ -2743,19 +4457,17 @@ impl Ui {
         self.invalidate();
     }
 
-    /// Color theme, live: `theme()` is a global read every draw call touches, so no rebuild is needed. The
-    /// preview pane and the search edit box are their own windows though, so `invalidate` (main + list only)
-    /// leaves them stale until something else repaints them — force them right away too.
-    fn set_theme_choice(&mut self, name: &str) {
-        set_theme(name);
+    /// Every window repainted in the colours of the moment: `theme()` is a global read every draw call touches, so
+    /// no rebuild is needed, but the panels, the search box and the title bar are windows of their own.
+    fn repaint_theme(&self) {
         unsafe {
             apply_titlebar(self.main);
             InvalidateRect(self.edit, null(), 0);
         }
         preview::invalidate();
         side::invalidate();
-        self.save_settings();
-        self.invalidate();
+        themes::invalidate();
+        self.invalidate_all();
     }
 
     /// Index of the first item on screen.
@@ -2793,8 +4505,14 @@ impl Ui {
     fn click_main(&mut self, x: i32, y: i32) -> Option<Hit> {
         let &(_, hit) = self.hits.iter().find(|(r, _)| inside(r, x, y))?;
         match hit {
-            Hit::Filter | Hit::Meta | Hit::Sort | Hit::Preview | Hit::Side | Hit::Lang | Hit::Menu(_) => return Some(hit),
+            Hit::Filter | Hit::Sort | Hit::Preview | Hit::Side | Hit::Lang | Hit::Menu(_) => return Some(hit),
             Hit::Back | Hit::Fwd => self.go_hist(hit == Hit::Back),
+            Hit::Tab(k) => self.switch_tab(k),
+            Hit::TabClose(k) => self.close_tab(k),
+            Hit::Pane(id) => self.activate(id),
+            Hit::PaneClose(id) => self.close_pane(id),
+            Hit::Gutter(_) | Hit::ColEdge(..) => {}
+            Hit::NewTab => self.new_tab("home:", self.tabs.len()),
             Hit::Tags | Hit::Content => {
                 if hit == Hit::Tags {
                     self.args.tags = !self.args.tags;
@@ -2845,7 +4563,8 @@ impl Ui {
             }
             Hit::View(k) => self.reshape(k == 1, self.size),
             Hit::Browse(k) => self.set_browse(if self.browse == k { 0 } else { k }),
-            Hit::Col(k) => {
+            Hit::Col(id, k) => {
+                self.activate(id);
                 let s = col_defs()[k].1;
                 let desc = if self.args.sort == s { self.args.dir != "desc" } else { s == "size" || s == "mtime" };
                 self.args.sort = s.into();
@@ -2868,16 +4587,13 @@ impl Ui {
         let mut c: RECT = unsafe { zeroed() };
         unsafe { GetClientRect(self.main, &mut c) };
         cv.clear(theme().bg);
-        // header
-        cv.fill(&RECT { bottom: self.head_h - 1, ..c }, theme().card, 1.0);
+        // header: the tab strip on the window's own colour (as the title bar), the toolbar under it a card
+        cv.fill(&RECT { top: self.menu_h, bottom: self.head_h - 1, ..c }, theme().card, 1.0);
         cv.fill(&RECT { top: self.head_h - 1, bottom: self.head_h, ..c }, theme().line, 1.0);
         // status bar
         cv.fill(&RECT { top: self.status_top, ..c }, theme().card, 1.0);
         cv.fill(&RECT { top: self.status_top, bottom: self.status_top + 1, ..c }, theme().line, 1.0);
         cv.fill(&RECT { top: self.menu_h, bottom: self.menu_h + 1, ..c }, theme().line, 1.0);
-        let side = px(10);
-        let logo_lh = (20.0 * 1.4 * self.scale).round() as i32;
-        put(g, cv, "Mosaic", &g.f.logo, side, self.menu_h + (self.head_h - 1 - self.menu_h - logo_lh) / 2, theme().accent);
         let hot = |h: Hit| self.hot == Some(h);
         for &(r, h) in &self.hits {
             if let Hit::Menu(i) = h {
@@ -2887,9 +4603,6 @@ impl Ui {
                 put_mid(g, cv, menu_bar_labels()[i], &g.f.reg, &r, r.top + (r.bottom - r.top - lh) / 2, theme().text);
             }
         }
-        let files = self.tab;
-        cv.rrect(&files, rad(8.0), Some(theme().hl), None);
-        put(g, cv, t("toolbar.files"), &g.f.semi, files.left + px(12), files.top + px(6), theme().accent);
         // search box: a plain edit box, 1px border, accent when focused (a Windows edit, as in Everything)
         let sb = self.search_box;
         let focused = unsafe { GetFocus() } == self.edit;
@@ -2899,15 +4612,27 @@ impl Ui {
             let ty = r.top + (r.bottom - r.top - lh) / 2;
             let tc = if hot(h) { theme().text } else { theme().muted };
             match h {
-                Hit::Filter | Hit::Meta | Hit::Sort => {
+                Hit::Filter | Hit::Sort => {
                     let label = match h {
                         Hit::Filter => filters().iter().find(|m| m.1 == self.args.cat).map_or(t("filter.everything"), |m| m.0),
-                        Hit::Meta => metas().iter().find(|m| m.1 == self.args.meta).map_or(t("meta.names"), |m| m.0),
                         _ => col_defs().iter().find(|m| m.1 == self.args.sort).map_or(t("col.name"), |m| m.0),
                     };
                     cv.rrect(&r, rad(4.0), Some(theme().bg), Some(if hot(h) { theme().muted } else { theme().line }));
                     put(g, cv, label, &g.f.reg, r.left + px(9), ty, theme().text);
                     cv.chevron((r.right - px(13)) as f32, (r.top + r.bottom) as f32 / 2.0, rad(3.5), true, theme().text, rad(1.25));
+                }
+                Hit::Tab(k) if k != self.cur => self.paint_tab(k, r), // the open one last: it overlaps its neighbours
+                Hit::NewTab => {
+                    let dx = self.plus.0.round() as i32 - r.left; // sliding along as tabs open and close
+                    let r = RECT { left: r.left + dx, right: r.right + dx, ..r };
+                    if hot(h) {
+                        cv.rrect(&r, rad(6.0), Some(theme().hl), None);
+                    }
+                    // a plus of two bars, crisper than the glyph
+                    let (cx, cy, half, th) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2, px(6), ((1.5 * self.scale).round() as i32).max(1));
+                    let c = if hot(h) { theme().text } else { theme().muted };
+                    cv.fill(&RECT { left: cx - half, top: cy - th / 2, right: cx + half, bottom: cy - th / 2 + th }, c, 1.0);
+                    cv.fill(&RECT { left: cx - th / 2, top: cy - half, right: cx - th / 2 + th, bottom: cy + half }, c, 1.0);
                 }
                 Hit::Tag => {
                     if hot(h) {
@@ -2947,6 +4672,16 @@ impl Ui {
                 _ => {}
             }
         }
+        // tabs just closed, folding away under the ones sliding over their place
+        let (tw, top) = (self.strip.1, self.px(6));
+        for gh in &self.ghosts {
+            let a = 1.0 - ease_out(gh.at.elapsed().as_secs_f64() / TAB_OUT);
+            let x = gh.x.round() as i32;
+            self.draw_tab(RECT { left: x, top, right: x + tw, bottom: self.menu_h }, a, &gh.name, gh.split, false, false, false, None);
+        }
+        if let Some(&(r, _)) = self.hits.iter().find(|x| x.1 == Hit::Tab(self.cur)) {
+            self.paint_tab(self.cur, r);
+        }
         // Browse | Subfolders: neither, one, never both
         for pass in [false, true] {
             for &(r, h) in &self.hits {
@@ -2977,40 +4712,177 @@ impl Ui {
         }
         // status text: left of the status bar's controls, cut with "…" where they begin
         let stop = self.hits.iter().filter(|x| x.0.top >= self.status_top).map(|x| x.0.left).min().unwrap_or(c.right);
-        // temporary fps counter, left of the controls
-        let fps = format!("{} fps", self.fps.2);
-        let stop = stop - px(10) - g.width("000 fps", &g.f.reg);
-        put(g, cv, &fps, &g.f.reg, stop, self.status_top + 1 + (c.bottom - self.status_top - 1 - lh) / 2, theme().green);
         if let Some(t) = g.layout(&w(&self.status()), &g.f.reg, (stop - px(20)) as f32, lh as f32) {
             cv.text(&t, px(10), self.status_top + 1 + (c.bottom - self.status_top - 1 - lh) / 2, theme().muted);
         }
-        // column header
-        if !self.grid {
-            cv.rrect(&self.lh, rad(8.0), Some(theme().card), Some(theme().line));
-            let base = |p: f64| {
-                let (size, lh) = (p * self.scale, (p * 1.4 * self.scale).round());
-                (lh - size * 2724.0 / 2048.0) / 2.0 + size * 2210.0 / 2048.0
+        // each pane's caption and column header
+        for (id, _) in self.areas.clone() {
+            self.with_pane(id, |u| u.paint_head());
+        }
+        // between split panes: a hairline down (or across) the middle of the gap
+        for &(_, _, g, vert) in &self.gutters {
+            let line = if vert {
+                let x = (g.left + g.right) / 2;
+                RECT { left: x, right: x + 1, ..g }
+            } else {
+                let y = (g.top + g.bottom) / 2;
+                RECT { top: y, bottom: y + 1, ..g }
             };
-            for &(r, h) in &self.hits {
-                let Hit::Col(k) = h else { continue };
-                let ty = r.top + (r.bottom - r.top - lh) / 2;
-                let cd = col_defs();
-                let label = cd[k].0;
-                let sorted = self.args.sort == cd[k].1;
-                let arrow = if self.args.dir == "desc" { " ▼" } else { " ▲" };
-                let aw = if sorted { g.width(arrow, &g.f.small) } else { 0 };
-                // Size is the one right-aligned column; a trailing-edge alignment, so it flips sides with RTL
-                // (trailing = right in LTR, left in RTL) exactly like the row body's `DWRITE_TEXT_ALIGNMENT_TRAILING`.
-                let right_align = k == 2;
-                let at_leading_edge = right_align == self.rtl;
-                let x = if at_leading_edge { r.left } else { r.right - g.width(label, &g.f.reg) - aw };
-                let x = x + put(g, cv, label, &g.f.reg, x, ty, if hot(h) { theme().text } else { theme().muted });
-                if sorted {
-                    put(g, cv, arrow, &g.f.small, x, ty + (base(12.0) - base(9.0)).round() as i32, theme().accent);
-                }
+            self.cm.fill(&line, theme().line, 1.0);
+        }
+        // a split's gap: its grip, lit while the pointer is on it
+        let (gid, a) = self.gut_lit;
+        if a > 0.0 {
+            if let Some(&(_, _, g, vert)) = self.gutters.iter().find(|x| x.0 == gid) {
+                let a = (a * a * (3.0 - 2.0 * a)) as f32;
+                let (mx, my) = ((g.left + g.right) / 2, (g.top + g.bottom) / 2);
+                let (len, th) = ((if vert { g.bottom - g.top } else { g.right - g.left }) / 8, self.px(4));
+                let len = len.clamp(self.px(24), self.px(90));
+                let r = if vert { RECT { left: mx - th / 2, right: mx + th / 2, top: my - len / 2, bottom: my + len / 2 } } else { RECT { left: mx - len / 2, right: mx + len / 2, top: my - th / 2, bottom: my + th / 2 } };
+                let c = if self.gut.is_some() { theme().accent } else { theme().muted };
+                self.cm.rrect_a(&r, th as f32 / 2.0, Some(c), None, a);
             }
         }
         self.cm.end();
+    }
+
+    /// Tab `k`, its slot `r`. The open one stands on the toolbar, one piece with it (a card with rounded top corners
+    /// and flared feet); the others are just their names, lit on hover, with a hairline between two quiet ones.
+    fn paint_tab(&self, k: usize, r: RECT) {
+        if matches!(&self.drag, Some(Drag { grab: Grab::Tab(j), on: true, .. }) if *j == k) {
+            return; // in hand: the chip and the landing zone show it
+        }
+        // where it slides to its slot from
+        let dx = self.tabs[k].x.round() as i32 - r.left;
+        let r = RECT { left: r.left + dx, right: r.right + dx, ..r };
+        let a = self.tabs[k].born.map_or(1.0, |b| ease_out(b.elapsed().as_secs_f64() / TAB_IN));
+        let on = k == self.cur;
+        let lit = |j: usize| matches!(self.hot, Some(Hit::Tab(i) | Hit::TabClose(i)) if i == j);
+        let near = on || lit(k);
+        let sep = !near && k + 1 < self.tabs.len() && k + 1 != self.cur && !lit(k + 1);
+        let close = near.then_some(self.hot == Some(Hit::TabClose(k)));
+        self.draw_tab(r, a, &self.tab_name(k), self.tabs[k].root.leaves().len() > 1, on, near, sep, close);
+    }
+    /// A tab button in slot `r`, `a` of the way unfolded (0: a sliver, faded out; 1: all there): opening tabs grow
+    /// out of their left edge, closing ones fold back into it. `close`: its × shows (and whether it's pointed at).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tab(&self, r: RECT, a: f64, name: &str, split: bool, on: bool, near: bool, sep: bool, close: Option<bool>) {
+        let (g, cv, lh) = (&self.gfx, &self.cm, self.gfx.f.lh);
+        let px = |v: i32| (v as f64 * self.scale).round() as i32;
+        let full = r;
+        let r = RECT { right: r.left + ((r.right - r.left) as f64 * a).round() as i32, ..r };
+        let wd = r.right - r.left;
+        if wd < px(2) {
+            return;
+        }
+        let rad = |v: f64| ((v * self.scale) as f32).min(wd as f32 / 2.0);
+        let fade = |c: u32| mix(theme().bg, c, a as f32);
+        if on {
+            // over the strip's bottom line: the tab opens onto the toolbar
+            cv.tab(&RECT { bottom: r.bottom + 1, ..r }, rad(8.0), rad(8.0), fade(theme().card), Some(fade(theme().line)));
+        } else if near {
+            cv.rrect(&RECT { left: r.left + px(2), top: r.top + px(1), right: r.right - px(2), bottom: r.bottom - px(5) }, rad(7.0), Some(fade(theme().hl)), None);
+        } else if sep && a >= 1.0 {
+            let (x, my, half) = (r.right + px(1), (r.top + r.bottom - px(4)) / 2, (r.bottom - r.top) / 4);
+            cv.fill(&RECT { left: x, top: my - half, right: x + 1, bottom: my + half }, theme().line, 1.0);
+        }
+        // laid out for the whole slot, cut at the edge as it unfolds: the name doesn't reflow every frame
+        let ty = r.top + (r.bottom - r.top - px(4) - lh) / 2 + px(if on { 1 } else { 0 });
+        let x = tab_x(&RECT { bottom: full.bottom - px(4), ..full }, px(20));
+        let mut tx = r.left + px(14);
+        cv.clip(&RECT { left: r.left, top: r.top, right: r.right - px(6).min(wd / 4), bottom: r.bottom });
+        if split {
+            split_glyph(cv, tx, (r.top + r.bottom - px(4)) / 2 - px(4), px(12), px(9), fade(if on { theme().accent } else { theme().muted }), self.scale);
+            tx += px(19);
+        }
+        let name: Vec<u16> = name.encode_utf16().collect();
+        let end = if near { x.left - px(2) } else { full.right - px(10) };
+        if let Some(tl) = g.layout(&name, if on { &g.f.semi } else { &g.f.reg }, (end - tx).max(1) as f32, lh as f32) {
+            cv.text_a(&tl, tx, ty, if near { theme().text } else { theme().muted }, a as f32);
+        }
+        cv.unclip();
+        if let Some(hot) = close.filter(|_| a >= 1.0) {
+            let (cx, cy) = ((x.left + x.right) as f32 / 2.0, (x.top + x.bottom) as f32 / 2.0);
+            if hot {
+                cv.circle(cx, cy, rad(9.0), if on { theme().hl } else { theme().line }, 1.0);
+            }
+            cv.cross(cx, cy, rad(3.5), if hot { theme().text } else { theme().muted }, rad(1.3));
+        }
+    }
+
+    /// This pane's caption (when its tab is split: its place, and × to close it) and column header (list view),
+    /// on the main window.
+    fn paint_head(&self) {
+        let (g, cv, lh) = (&self.gfx, &self.cm, self.gfx.f.lh);
+        let px = |v: i32| (v as f64 * self.scale).round() as i32;
+        let rad = |v: f64| (v * self.scale) as f32;
+        let hot = |h: Hit| self.hot == Some(h);
+        let c = self.cap;
+        if c.right > c.left {
+            // the focused pane's caption stands out (a card, its name in full colour, an accent dot); the others are
+            // quiet until pointed at
+            let on = !self.guest;
+            let near = matches!(self.hot, Some(Hit::Pane(p) | Hit::PaneClose(p)) if p == self.id);
+            if on || near {
+                cv.rrect(&c, rad(6.0), Some(if on { theme().card } else { theme().hl }), on.then_some(theme().line));
+            }
+            let my = (c.top + c.bottom) as f32 / 2.0;
+            cv.circle((c.left + px(12)) as f32, my, rad(3.0), if on { theme().accent } else { theme().line }, 1.0);
+            let x = tab_x(&c, c.bottom - c.top - px(6));
+            let ty = c.top + (c.bottom - c.top - lh) / 2;
+            if let Some(t) = g.layout(&w(&place_name(&self.args.q)), &g.f.reg, (x.left - c.left - px(26)) as f32, lh as f32) {
+                cv.text(&t, c.left + px(22), ty, if on { theme().text } else { theme().muted });
+            }
+            if on || near {
+                if hot(Hit::PaneClose(self.id)) {
+                    cv.rrect(&x, rad(3.0), Some(theme().line), None);
+                }
+                put_mid(g, cv, "×", &g.f.reg, &x, ty, if near { theme().text } else { theme().muted });
+            }
+        }
+        if self.grid {
+            return;
+        }
+        cv.rrect(&RECT { left: self.lh.left + px(6), ..self.lh }, rad(8.0), Some(theme().card), Some(theme().line));
+        let base = |p: f64| {
+            let (size, lh) = (p * self.scale, (p * 1.4 * self.scale).round());
+            (lh - size * 2724.0 / 2048.0) / 2.0 + size * 2210.0 / 2048.0
+        };
+        for &(r, h) in &self.hits {
+            let Hit::Col(id, k) = h else { continue };
+            if id != self.id {
+                continue;
+            }
+            let ty = r.top + (r.bottom - r.top - lh) / 2;
+            let cd = col_defs();
+            let label = cd[k].0;
+            let sorted = self.args.sort == cd[k].1;
+            let arrow = if self.args.dir == "desc" { " ▼" } else { " ▲" };
+            let aw = if sorted { g.width(arrow, &g.f.small) } else { 0 };
+            // Size is the one right-aligned column; a trailing-edge alignment, so it flips sides with RTL
+            // (trailing = right in LTR, left in RTL) exactly like the row body's `DWRITE_TEXT_ALIGNMENT_TRAILING`.
+            let right_align = k == 2;
+            let at_leading_edge = right_align == self.rtl;
+            let x = if at_leading_edge { r.left } else { r.right - g.width(label, &g.f.reg) - aw };
+            let x = x + put(g, cv, label, &g.f.reg, x, ty, if hot(h) { theme().text } else { theme().muted });
+            if sorted {
+                put(g, cv, arrow, &g.f.small, x, ty + (base(12.0) - base(9.0)).round() as i32, theme().accent);
+            }
+        }
+        // a column gap pointed at or dragged: a thin bar shows where it grabs; at rest, a faint tick
+        for &(r, h) in &self.hits {
+            let Hit::ColEdge(id, k) = h else { continue };
+            if id != self.id {
+                continue;
+            }
+            let on = match self.col_drag {
+                Some((p, j, ..)) => p == id && j == k,
+                None => hot(h),
+            };
+            let x = (r.left + r.right) / 2;
+            let bar = if on { RECT { left: x - px(1), right: x + px(1), ..r } } else { RECT { left: x, right: x + 1, top: r.top + px(4), bottom: r.bottom - px(4) } };
+            cv.rrect(&bar, rad(1.0), Some(if on { theme().accent } else { theme().line }), None);
+        }
     }
 
     /// Look into the folders on screen for what they hold (see `folder_kind`). Run once painting has stopped for a
@@ -3118,7 +4990,6 @@ impl Ui {
                 size,
                 g.layout(&row.ty, &g.f.reg, width(3), lh)?,
                 g.layout(&row.date, &g.f.reg, width(4), lh)?,
-                g.layout(&row.attrs_s, &g.f.reg, width(5), lh)?,
             ]
         };
         self.texts.insert(i, out.clone());
@@ -3132,7 +5003,7 @@ impl Ui {
         }
         let (wd, ht) = self.list_size();
         let cw = self.cw();
-        let key = (cw, self.grid, self.tile());
+        let key = (cw, self.grid, self.tile(), self.col_gen);
         if key != self.texts_key {
             self.texts_key = key;
             self.texts.clear();
@@ -3188,7 +5059,7 @@ impl Ui {
                 }
             } else {
                 let top = (i as f64 * rh as f64 - self.y).round() as i32 + dy;
-                let bx = RECT { left: 0, top: top + self.px(2), right: cw, bottom: top + rh - self.px(2) };
+                let bx = RECT { left: self.px(6), top: top + self.px(2), right: cw, bottom: top + rh - self.px(2) };
                 if self.sel.has(i) {
                     self.cl.rrect(&bx, rad(6.0), Some(theme().sel), None);
                 } else if self.hover == Some(i) {
@@ -3213,8 +5084,8 @@ impl Ui {
                 }
                 if let Some(t) = &texts {
                     let name_x = if self.rtl { cols[0].0 } else { cols[0].0 + self.px(26) };
-                    let x = [name_x, cols[1].0, cols[2].0, cols[3].0, cols[4].0, cols[5].0];
-                    for (k, t) in t.iter().enumerate() {
+                    let x = [name_x, cols[1].0, cols[2].0, cols[3].0, cols[4].0];
+                    for (k, t) in t.iter().enumerate().filter(|&(k, _)| k == 0 || cols[k].1 > cols[k].0) {
                         self.cl.text_a(t, x[k], ty, if k == 0 { color } else { theme().muted }, fade);
                     }
                 }
@@ -3365,15 +5236,28 @@ impl Ui {
 }
 
 // ---- popup menus: drawn like the web page's (.menu), rounded and shadowed by the compositor --------------------
-struct Menu {
-    items: Vec<(String, String, bool)>, // label ("" = separator), shortcut, checked
+/// One open menu: the first, or a submenu opened from the entry `from` of the one before it.
+struct Level {
+    hwnd: HWND,
+    rect: RECT, // on screen
+    items: Vec<MItem>,
     rows: Vec<RECT>,
     hover: Option<usize>,
-    done: Option<Option<usize>>,
+    from: usize,
     canvas: Canvas,
+    icons: Option<Vec<Option<Bitmap>>>, // made on the first paint, on its canvas
+    gutter: i32,                        // room at the left for checkmarks and icons
+    list: Option<(RECT, i32)>,          // a searchable menu's: the area its rows scroll in (under the search box), and their height
+    first: usize,                       // … and the first row shown there
+}
+struct Menu {
+    levels: Vec<Level>,
+    done: Option<Option<usize>>,
+    aim: Option<(usize, usize)>, // the entry the mouse came to: after a pause its submenu opens, or others close
     gfx: Gfx,
     scale: f64,
-    gutter: i32, // room at the left for the checkmarks
+    owner: HWND,
+    find: Option<(String, Vec<MItem>)>, // a searchable menu's search text, and all its entries
 }
 thread_local!(static POPUP: RefCell<Option<Menu>> = const { RefCell::new(None) });
 // While a menu-bar menu is open, the other menu-bar buttons (screen rects): hovering one switches to its menu
@@ -3388,34 +5272,136 @@ fn finish(v: Option<usize>) {
     });
 }
 
-/// Show a menu at screen point (x, y), at least `min_w` wide, and run it until it is closed. Returns the index of
-/// the chosen item. Where it doesn't fit below, it ends at `above` instead (the top of the button that opened it).
-/// Keys and clicks elsewhere are the menu's while it is open, like a Win32 menu.
-unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, checks: bool, items: Vec<(String, String, bool)>) -> Option<usize> {
+/// [`cascade`] of plain entries (label, shortcut, checked); returns the chosen one's index.
+#[allow(clippy::too_many_arguments)]
+unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, checks: bool, items: Vec<(String, String, bool)>, find: bool) -> Option<usize> {
+    let items = items.into_iter().enumerate().map(|(k, (label, keys, on))| MItem { label, keys, on, tag: k, ..Default::default() }).collect();
+    cascade(owner, x, y, above, min_w, checks, items, find)
+}
+
+/// Show a menu at screen point (x, y), at least `min_w` wide, and run it until it is closed. Returns the tag of
+/// the chosen entry. Where it doesn't fit below, it ends at `above` instead (the top of the button that opened it).
+/// Keys and clicks elsewhere are the menu's while it is open, like a Win32 menu; a submenu opens after a pause
+/// over its entry, on a click, or with →. With `find`, typing narrows it to the entries whose label or shortcut
+/// text has what was typed, in a search box above a scrolling list (no submenus then).
+#[allow(clippy::too_many_arguments)]
+unsafe fn cascade(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, checks: bool, items: Vec<MItem>, find: bool) -> Option<usize> {
     let scale = GetDpiForWindow(owner) as f64 / 96.0;
-    let gfx = Gfx::new(scale, crate::i18n::lang() == "ar").ok()?;
-    let px = |v: i32| (v as f64 * scale).round() as i32;
-    let lh = gfx.f.lh;
-    let label_w = items.iter().map(|i| gfx.width(&i.0, &gfx.f.reg)).max().unwrap_or(0);
-    let key_w = items.iter().map(|i| gfx.width(&i.1, &gfx.f.reg)).max().unwrap_or(0);
-    let pad = px(4) + 1; // padding inside the 1px border
-    let gutter = if checks { px(22) } else { 0 };
-    let wd = min_w.max(px(210)).max(2 * pad + px(20) + gutter + label_w + if key_w > 0 { px(28) + key_w } else { 0 });
+    let gfx = Gfx::new(scale, crate::i18n::rtl()).ok()?;
+    let hover = items.iter().position(|i| i.on);
+    let find = find.then(|| (String::new(), items.clone()));
+    let mut m = Menu { levels: Vec::new(), done: None, aim: None, gfx, scale, owner, find };
+    let h0 = open_level(&mut m, items, (x, y, above), min_w, checks, None);
+    if h0.is_null() {
+        return None;
+    }
+    m.levels[0].hover = hover;
+    follow(&mut m.levels[0]);
+    POPUP.with(|p| *p.borrow_mut() = Some(m));
+    ShowWindow(h0, SW_SHOWNOACTIVATE);
+    UpdateWindow(h0);
+    SetCapture(h0); // every mouse message comes here, at a screen point: handled below, for whichever level is there
+    let root = GetAncestor(owner, GA_ROOT);
+    let mut msg: MSG = zeroed();
+    while POPUP.with(|m| m.borrow().as_ref().is_some_and(|m| m.done.is_none())) {
+        if GetMessageW(&mut msg, null_mut(), 0, 0) <= 0 {
+            PostQuitMessage(0);
+            break;
+        }
+        match msg.message {
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                TranslateMessage(&msg); // the typed character, for the search box
+                menu_key(msg.wParam as u16);
+                continue;
+            }
+            WM_CHAR => {
+                menu_char(msg.wParam as u32);
+                continue;
+            }
+            WM_SYSCHAR | WM_KEYUP | WM_SYSKEYUP => continue,
+            WM_MOUSEMOVE => {
+                menu_move(msg.pt);
+                continue;
+            }
+            WM_LBUTTONUP | WM_RBUTTONUP => {
+                menu_up(msg.pt);
+                continue;
+            }
+            WM_MOUSEWHEEL if menu_at(msg.pt).is_some() => {
+                // a notch is 3 rows; a touchpad's smaller steps a row each
+                let d = (msg.wParam >> 16) as u16 as i16 as isize;
+                menu_scroll(if d.abs() >= 120 { -d / 40 } else { -d.signum() });
+                continue;
+            }
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN | WM_MOUSEWHEEL => {
+                if menu_at(msg.pt).is_none() {
+                    finish(None); // a click outside closes the menu and goes nowhere else
+                }
+                continue;
+            }
+            WM_TIMER if msg.hwnd == h0 && msg.wParam == 1 => {
+                KillTimer(h0, 1);
+                settle();
+                continue;
+            }
+            _ => {}
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+        if GetCapture() != h0 || GetForegroundWindow() != root {
+            finish(None);
+        }
+    }
+    ReleaseCapture();
+    let m = POPUP.with(|m| m.borrow_mut().take())?;
+    for l in &m.levels {
+        DestroyWindow(l.hwnd);
+    }
+    m.done.flatten()
+}
+
+/// Lay out `items` and make their (hidden) window: at (x, y, above) as [`cascade`] says, or for a submenu beside
+/// its entry (`beside`: that row on screen, and its index), on the left where the right has no room.
+unsafe fn open_level(m: &mut Menu, items: Vec<MItem>, (x, y, above): (i32, i32, i32), min_w: i32, checks: bool, beside: Option<(RECT, usize)>) -> HWND {
+    let (g, s) = (&m.gfx, m.scale);
+    let px = |v: i32| (v as f64 * s).round() as i32;
+    let lh = g.f.lh;
+    let label_w = items.iter().map(|i| g.width(&i.label, if i.bold { &g.f.semi } else { &g.f.reg })).max().unwrap_or(0);
+    let key_w = items.iter().map(|i| g.width(&i.keys, &g.f.reg)).max().unwrap_or(0);
+    let arrow = if items.iter().any(|i| !i.sub.is_empty()) { px(18) } else { 0 };
+    // padding inside the 1px border; rows as tall as Windows' own menus' (22 px at 100%, 9 for a line)
+    let (pad, top) = (px(4) + 1, px(2) + 1);
+    let gutter = if checks || items.iter().any(|i| i.on || i.icon.is_some()) { px(24) } else { 0 };
+    let wd = min_w.max(px(210)).max(2 * pad + px(20) + gutter + label_w + arrow + if key_w > 0 { px(28) + key_w } else { 0 });
+    let rh = px(22).max(lh + px(2));
+    // a searchable menu: its search box, then 14 rows at a time (`place` lays them out)
+    let head = if beside.is_none() && m.find.is_some() { px(34) } else { 0 };
     let mut rows = Vec::new();
-    let mut yy = pad;
+    let mut yy = top + head;
     for it in &items {
-        let h = if it.0.is_empty() { px(9) } else { lh + px(12) };
+        let h = if it.label.is_empty() { px(9) } else { rh };
         rows.push(RECT { left: pad, top: yy, right: wd - pad, bottom: yy + h });
         yy += h;
     }
-    let ht = yy + pad;
+    // ponytail: only a searchable menu scrolls; any other taller than the screen is cut off (none of Explorer's are)
+    let list = (head > 0).then(|| (RECT { left: pad, top: top + head, right: wd - pad, bottom: top + head + 14 * rh }, rh));
+    let ht = list.map_or(yy, |l| l.0.bottom) + top;
+    let at = beside.map_or(POINT { x, y }, |(r, _)| POINT { x: r.right, y: r.top });
     let mut mi: MONITORINFO = zeroed();
     mi.cbSize = size_of::<MONITORINFO>() as u32;
-    GetMonitorInfoW(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST), &mut mi);
+    GetMonitorInfoW(MonitorFromPoint(at, MONITOR_DEFAULTTONEAREST), &mut mi);
     let work = mi.rcWork;
-    let x = x.min(work.right - wd - px(4)).max(work.left + px(4));
-    let y = if y + ht > work.bottom - px(4) { above - ht } else { y };
-    let y = y.min(work.bottom - ht - px(4)).max(work.top + px(4));
+    let (x, y) = match beside {
+        None => {
+            let x = x.min(work.right - wd - px(4)).max(work.left + px(4));
+            let y = if y + ht > work.bottom - px(4) { above - ht } else { y };
+            (x, y.min(work.bottom - ht - px(4)).max(work.top + px(4)))
+        }
+        Some((r, _)) => {
+            let x = if r.right + pad + wd <= work.right { r.right + pad } else { r.left - pad - wd };
+            (x.max(work.left), (r.top - top).min(work.bottom - ht).max(work.top))
+        }
+    };
 
     static CLASS: std::sync::Once = std::sync::Once::new();
     let class = wz("MosaicMenu");
@@ -3429,75 +5415,251 @@ unsafe fn popup(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, checks: boo
         wc.lpszClassName = class.as_ptr();
         RegisterClassExW(&wc);
     });
-    let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, class.as_ptr(), null(), WS_POPUP, x, y, wd, ht, owner, null_mut(), GetModuleHandleW(null()), null());
+    let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, class.as_ptr(), null(), WS_POPUP, x, y, wd, ht, m.owner, null_mut(), GetModuleHandleW(null()), null());
     if hwnd.is_null() {
-        return None;
+        return hwnd;
     }
-    let (dark, round, border): (BOOL, u32, u32) = (1, 2, gdi(theme().line));
+    let dark: BOOL = 1;
     DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const c_void, 4); // dark
-    DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const c_void, 4); // DWMWA_WINDOW_CORNER_PREFERENCE: round
-    DwmSetWindowAttribute(hwnd, 34, &border as *const _ as *const c_void, 4); // DWMWA_BORDER_COLOR: --line
-    let hover = items.iter().position(|i| i.2);
-    let canvas = Canvas::new(hwnd, &gfx);
-    POPUP.with(|m| *m.borrow_mut() = Some(Menu { items, rows, hover, done: None, canvas, gfx, scale, gutter }));
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    UpdateWindow(hwnd);
-    SetCapture(hwnd);
-    let root = GetAncestor(owner, GA_ROOT);
-    let mut msg: MSG = zeroed();
-    while POPUP.with(|m| m.borrow().as_ref().is_some_and(|m| m.done.is_none())) {
-        if GetMessageW(&mut msg, null_mut(), 0, 0) <= 0 {
-            PostQuitMessage(0);
-            break;
-        }
-        match msg.message {
-            WM_KEYDOWN | WM_SYSKEYDOWN => {
-                menu_key(hwnd, msg.wParam as u16);
-                continue;
-            }
-            WM_CHAR | WM_SYSCHAR | WM_KEYUP | WM_SYSKEYUP => continue,
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN | WM_MOUSEWHEEL => {
-                let mut r: RECT = zeroed();
-                GetWindowRect(hwnd, &mut r);
-                if msg.hwnd != hwnd || !inside(&r, msg.pt.x, msg.pt.y) {
-                    finish(None); // a click outside closes the menu and goes nowhere else
-                    continue;
-                }
-            }
-            _ => {}
-        }
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-        if GetCapture() != hwnd || GetForegroundWindow() != root {
-            finish(None);
-        }
-    }
-    ReleaseCapture();
-    DestroyWindow(hwnd);
-    POPUP.with(|m| m.borrow_mut().take()).and_then(|m| m.done.flatten())
+    // rounded by its own shape, not the compositor's corner preference: that one isn't always applied to popups
+    // (the outline is painted along the edge, see `paint_menu`)
+    let d = 2 * menu_radius(s);
+    SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, wd + 1, ht + 1, d, d), 0);
+    let canvas = Canvas::new(hwnd, &m.gfx);
+    let rect = RECT { left: x, top: y, right: x + wd, bottom: y + ht };
+    m.levels.push(Level { hwnd, rect, items, rows, hover: None, from: beside.map_or(0, |b| b.1), canvas, icons: None, gutter, list, first: 0 });
+    hwnd
 }
 
-unsafe fn menu_key(hwnd: HWND, vk: u16) {
-    POPUP.with(|m| {
-        let mut g = m.borrow_mut();
-        let Some(m) = g.as_mut() else { return };
-        let n = m.items.len() as isize;
-        let step = |from: isize, d: isize| -> Option<usize> {
-            (1..=n).map(|k| (from + d * k).rem_euclid(n) as usize).find(|&i| !m.items[i].0.is_empty())
-        };
-        match vk {
-            VK_DOWN => m.hover = step(m.hover.map_or(-1, |h| h as isize), 1),
-            VK_UP => m.hover = step(m.hover.map_or(n, |h| h as isize), -1),
-            VK_HOME => m.hover = step(-1, 1),
-            VK_END => m.hover = step(n, -1),
-            VK_RETURN | VK_SPACE => {
-                m.done = Some(m.hover);
+/// A searchable level's rows: those from `first` that fit its list area; the others get no room (so they are
+/// neither drawn nor hit).
+fn place(l: &mut Level) {
+    let Some((a, rh)) = l.list else { return };
+    let cap = ((a.bottom - a.top) / rh) as usize;
+    l.first = l.first.min(l.items.len().saturating_sub(cap));
+    let first = l.first;
+    l.rows = (0..l.items.len())
+        .map(|i| match i.checked_sub(first).filter(|&k| k < cap) {
+            Some(k) => RECT { top: a.top + k as i32 * rh, bottom: a.top + (k as i32 + 1) * rh, ..a },
+            None => RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        })
+        .collect();
+}
+
+/// Scroll a searchable level so its lit entry is in view.
+fn follow(l: &mut Level) {
+    let Some((a, rh)) = l.list else { return };
+    let cap = ((a.bottom - a.top) / rh) as usize;
+    if let Some(h) = l.hover {
+        l.first = l.first.min(h).max((h + 1).saturating_sub(cap));
+    }
+    place(l);
+}
+
+/// The wheel over a searchable menu: `d` rows on.
+unsafe fn menu_scroll(d: isize) {
+    let h = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let l = g.as_mut()?.levels.first_mut().filter(|l| l.list.is_some())?;
+        l.first = l.first.saturating_add_signed(d);
+        place(l);
+        Some(l.hwnd)
+    });
+    if let Some(h) = h {
+        InvalidateRect(h, null(), 0);
+        let mut pt: POINT = zeroed();
+        GetCursorPos(&mut pt);
+        POPUP.with(|p| {
+            if let Some(m) = p.borrow_mut().as_mut() {
+                m.aim = None;
             }
+        });
+        menu_move(pt); // light what is under the mouse now
+    }
+}
+
+/// A typed character: into a searchable menu's search box.
+unsafe fn menu_char(c: u32) {
+    let Some(c) = char::from_u32(c).filter(|c| !c.is_control()) else { return };
+    search(|q| q.push(c));
+}
+
+/// Change a searchable menu's search text, and show only the entries that match it, the first one lit.
+unsafe fn search(edit: impl FnOnce(&mut String)) {
+    let h = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let m = g.as_mut()?;
+        let (q, all) = m.find.as_mut()?;
+        edit(q);
+        let q = q.to_lowercase();
+        let l = &mut m.levels[0];
+        l.items = all.iter().filter(|i| i.label.to_lowercase().contains(&q) || i.keys.to_lowercase().contains(&q)).cloned().collect();
+        l.icons = None;
+        l.first = 0;
+        l.hover = (!l.items.is_empty()).then_some(0);
+        m.aim = None;
+        place(l);
+        Some(l.hwnd)
+    });
+    if let Some(h) = h {
+        InvalidateRect(h, null(), 0);
+    }
+}
+
+/// The deepest open level at screen point `pt`, and the entry there (not a separator).
+fn menu_at(pt: POINT) -> Option<(usize, Option<usize>)> {
+    POPUP.with(|p| {
+        let g = p.borrow();
+        let m = g.as_ref()?;
+        let k = m.levels.iter().rposition(|l| inside(&l.rect, pt.x, pt.y))?;
+        let l = &m.levels[k];
+        let (x, y) = (pt.x - l.rect.left, pt.y - l.rect.top);
+        Some((k, l.rows.iter().position(|r| inside(r, x, y)).filter(|&i| !l.items[i].label.is_empty())))
+    })
+}
+
+unsafe fn menu_move(pt: POINT) {
+    // over another menu-bar button: close this menu, the bar opens that one (see `menu_bar_popup`)
+    if let Some(i) = BAR.with(|b| b.borrow().iter().find(|(r, _)| inside(r, pt.x, pt.y)).map(|b| b.1)) {
+        SWITCH.with(|s| s.set(Some(i)));
+        finish(None);
+        return;
+    }
+    let Some((k, Some(i))) = menu_at(pt) else { return };
+    let moved = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let m = g.as_mut().filter(|m| m.aim != Some((k, i)))?;
+        m.aim = Some((k, i));
+        m.levels[k].hover = Some(i);
+        Some((m.levels[k].hwnd, m.levels[0].hwnd))
+    });
+    if let Some((h, h0)) = moved {
+        InvalidateRect(h, null(), 0);
+        SetTimer(h0, 1, 250, None); // then `settle`
+    }
+}
+
+unsafe fn menu_up(pt: POINT) {
+    let Some((k, Some(i))) = menu_at(pt) else { return };
+    let open = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let m = g.as_mut()?;
+        let it = &m.levels[k].items[i];
+        let (sub, off, tag) = (!it.sub.is_empty(), it.off, it.tag);
+        if sub {
+            m.aim = Some((k, i));
+        } else if !off {
+            m.done = Some(Some(tag));
+        }
+        Some(sub)
+    });
+    if open == Some(true) {
+        settle(); // a click opens a submenu straight away
+    }
+}
+
+/// Where the mouse came to rest: close the submenus that aren't that entry's, and open its own.
+unsafe fn settle() {
+    let mut open = None;
+    let gone: Vec<HWND> = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let Some(m) = g.as_mut() else { return Vec::new() };
+        let Some((k, i)) = m.aim.filter(|a| a.0 < m.levels.len()) else { return Vec::new() };
+        let keep = if m.levels.get(k + 1).is_some_and(|l| l.from == i) { k + 2 } else { k + 1 };
+        let gone = m.levels.drain(keep..).map(|l| l.hwnd).collect();
+        let it = &m.levels[k].items[i];
+        if keep == k + 1 && !it.sub.is_empty() && !it.off {
+            open = Some((k, i));
+        }
+        gone
+    });
+    for h in gone {
+        DestroyWindow(h);
+    }
+    if let Some((k, i)) = open {
+        open_sub(k, i, false);
+    }
+}
+
+/// The submenu of entry `i` of level `k` (the deepest one), its first entry lit when opened from the keyboard.
+unsafe fn open_sub(k: usize, i: usize, keys: bool) {
+    let h = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let m = g.as_mut()?;
+        let l = &m.levels[k];
+        let r = l.rows[i];
+        let row = RECT { left: l.rect.left + r.left, top: l.rect.top + r.top, right: l.rect.left + r.right, bottom: l.rect.top + r.bottom };
+        let items = l.items[i].sub.clone();
+        let h = open_level(m, items, (0, 0, 0), 0, false, Some((row, i)));
+        if keys && !h.is_null() {
+            let l = m.levels.last_mut()?;
+            l.hover = l.items.iter().position(|it| !it.label.is_empty());
+        }
+        Some(h).filter(|h| !h.is_null())
+    });
+    if let Some(h) = h {
+        ShowWindow(h, SW_SHOWNOACTIVATE);
+    }
+}
+
+unsafe fn menu_key(vk: u16) {
+    enum Then {
+        Stay,
+        Open(usize, usize),
+        Close,
+    }
+    // a searchable menu: Space types, Backspace erases, Esc clears what was typed before it closes the menu
+    match (POPUP.with(|p| p.borrow().as_ref().and_then(|m| m.find.as_ref().map(|f| f.0.is_empty()))), vk) {
+        (Some(_), VK_SPACE) => return,
+        (Some(_), VK_BACK) => return search(|q| {
+            q.pop();
+        }),
+        (Some(false), VK_ESCAPE) => return search(String::clear),
+        _ => {}
+    }
+    let then = POPUP.with(|p| {
+        let mut g = p.borrow_mut();
+        let Some(m) = g.as_mut() else { return Then::Stay };
+        m.aim = None; // the keys lead now, not where the mouse last was
+        let depth = m.levels.len();
+        let l = &mut m.levels[depth - 1];
+        let n = l.items.len() as isize;
+        let items = &l.items;
+        let step = |from: isize, d: isize| -> Option<usize> { (1..=n).map(|k| (from + d * k).rem_euclid(n) as usize).find(|&i| !items[i].label.is_empty()) };
+        match vk {
+            VK_DOWN => l.hover = step(l.hover.map_or(-1, |h| h as isize), 1),
+            VK_UP => l.hover = step(l.hover.map_or(n, |h| h as isize), -1),
+            VK_HOME => l.hover = step(-1, 1),
+            VK_END => l.hover = step(n, -1),
+            VK_RIGHT | VK_RETURN | VK_SPACE => {
+                if let Some(it) = l.hover.map(|i| &l.items[i]) {
+                    if !it.sub.is_empty() && !it.off {
+                        return Then::Open(depth - 1, l.hover.unwrap_or(0));
+                    }
+                    if vk != VK_RIGHT && it.sub.is_empty() && !it.off {
+                        m.done = Some(Some(it.tag));
+                    }
+                }
+            }
+            VK_LEFT | VK_ESCAPE if depth > 1 => return Then::Close,
             VK_ESCAPE | VK_MENU | VK_F10 | VK_TAB => m.done = Some(None),
             _ => {}
         }
+        follow(&mut m.levels[depth - 1]);
+        Then::Stay
     });
-    InvalidateRect(hwnd, null(), 0);
+    match then {
+        Then::Open(k, i) => open_sub(k, i, true),
+        Then::Close => {
+            if let Some(h) = POPUP.with(|p| p.borrow_mut().as_mut().and_then(|m| m.levels.pop()).map(|l| l.hwnd)) {
+                DestroyWindow(h);
+            }
+        }
+        Then::Stay => {}
+    }
+    for h in POPUP.with(|p| p.borrow().as_ref().map_or(Vec::new(), |m| m.levels.iter().map(|l| l.hwnd).collect::<Vec<_>>())) {
+        InvalidateRect(h, null(), 0);
+    }
 }
 
 unsafe extern "system" fn menu_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
@@ -3507,44 +5669,16 @@ unsafe extern "system" fn menu_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             BeginPaint(h, &mut ps);
-            POPUP.with(|p| {
-                if let Some(m) = p.borrow_mut().as_mut() {
-                    paint_menu(m);
+            let painted = POPUP.with(|p| {
+                let Ok(mut g) = p.try_borrow_mut() else { return false };
+                if let Some(m) = g.as_mut() {
+                    paint_menu(m, h);
                 }
+                true
             });
             EndPaint(h, &ps);
-            return 0;
-        }
-        WM_MOUSEMOVE => {
-            // over another menu-bar button: close this menu, the bar opens that one (see `menu_bar_popup`)
-            let mut pt = POINT { x: 0, y: 0 };
-            GetCursorPos(&mut pt);
-            if let Some(i) = BAR.with(|b| b.borrow().iter().find(|(r, _)| inside(r, pt.x, pt.y)).map(|b| b.1)) {
-                SWITCH.with(|s| s.set(Some(i)));
-                finish(None);
-                return 0;
-            }
-            let (x, y) = xy(l);
-            let changed = POPUP.with(|p| {
-                let mut g = p.borrow_mut();
-                let m = g.as_mut()?;
-                let hov = m.rows.iter().position(|r| inside(r, x, y)).filter(|&i| !m.items[i].0.is_empty());
-                let changed = hov.is_some() && hov != m.hover;
-                if hov.is_some() {
-                    m.hover = hov;
-                }
-                Some(changed)
-            });
-            if changed == Some(true) {
-                InvalidateRect(h, null(), 0);
-            }
-            return 0;
-        }
-        WM_LBUTTONUP | WM_RBUTTONUP => {
-            let (x, y) = xy(l);
-            let pick = POPUP.with(|p| p.borrow().as_ref().and_then(|m| m.rows.iter().position(|r| inside(r, x, y)).filter(|&i| !m.items[i].0.is_empty())));
-            if let Some(i) = pick {
-                finish(Some(i));
+            if !painted {
+                InvalidateRect(h, null(), 0); // asked mid-change: again once that's done
             }
             return 0;
         }
@@ -3553,31 +5687,79 @@ unsafe extern "system" fn menu_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
     DefWindowProcW(h, m, wp, l)
 }
 
-fn paint_menu(m: &mut Menu) {
-    if !m.canvas.begin() {
+/// The corner radius of a menu, at `scale`.
+fn menu_radius(scale: f64) -> i32 {
+    (6.0 * scale).round() as i32
+}
+
+/// `a` moved a fraction `t` of the way to `b` (0xRRGGBB).
+fn mix(a: u32, b: u32, t: f32) -> u32 {
+    (0..3).map(|k| k * 8).fold(0, |c, sh| {
+        let (x, y) = ((a >> sh & 0xff) as f32, (b >> sh & 0xff) as f32);
+        c | ((x + (y - x) * t).round() as u32) << sh
+    })
+}
+
+fn paint_menu(m: &mut Menu, h: HWND) {
+    let (g, s) = (&m.gfx, m.scale);
+    let Some(l) = m.levels.iter_mut().find(|l| l.hwnd == h) else { return };
+    let px = |v: i32| (v as f64 * s).round() as i32;
+    if l.icons.is_none() {
+        let (items, canvas) = (&l.items, &mut l.canvas);
+        l.icons = Some(items.iter().map(|it| it.icon.as_ref().and_then(|(w, h, p)| canvas.make_bitmap(p, *w, *h))).collect());
+    }
+    if !l.canvas.begin() {
         return;
     }
-    let (g, cv, s) = (&m.gfx, &m.canvas, m.scale);
-    let px = |v: i32| (v as f64 * s).round() as i32;
+    let cv = &l.canvas;
     cv.clear(theme().card);
-    for (k, ((label, keys, checked), r)) in m.items.iter().zip(&m.rows).enumerate() {
-        if label.is_empty() {
-            cv.fill(&RECT { left: r.left + px(2), top: r.top + px(4), right: r.right - px(2), bottom: r.top + px(4) + 1 }, theme().line, 1.0);
+    let edge = RECT { left: 0, top: 0, right: l.rect.right - l.rect.left, bottom: l.rect.bottom - l.rect.top };
+    cv.rrect(&edge, menu_radius(s) as f32, None, Some(mix(theme().line, theme().muted, 0.35)));
+    // a searchable menu's search box (only the language list's: hence its placeholder), with a caret after the text
+    if let (Some((a, _)), Some((q, _))) = (l.list, m.find.as_ref()) {
+        let b = RECT { left: a.left, top: a.top - px(32), right: a.right, bottom: a.top - px(6) };
+        cv.rrect(&b, (4.0 * s) as f32, Some(theme().bg), Some(mix(theme().line, theme().accent, 0.5)));
+        let (x, ty) = (b.left + px(8), b.top + (b.bottom - b.top - g.f.lh) / 2);
+        let w = if q.is_empty() {
+            put(g, cv, t("lang.search"), &g.f.reg, x + px(2), ty, theme().muted);
+            0
+        } else {
+            put(g, cv, q, &g.f.reg, x, ty, theme().text)
+        };
+        cv.fill(&RECT { left: x + w, top: ty, right: x + w + 1.max(px(1)), bottom: ty + g.f.lh }, theme().accent, 1.0);
+    }
+    let sz = px(16);
+    for (k, (it, r)) in l.items.iter().zip(&l.rows).enumerate() {
+        if r.right == r.left {
+            continue; // scrolled out of a searchable menu's list
+        }
+        if it.label.is_empty() {
+            cv.fill(&RECT { left: r.left + px(6), top: r.top + px(4), right: r.right - px(6), bottom: r.top + px(4) + 1 }, theme().line, 1.0);
             continue;
         }
-        let on = m.hover == Some(k);
+        let on = l.hover == Some(k);
         if on {
-            cv.rrect(r, (6.0 * s) as f32, Some(theme().hl), None);
+            cv.rrect(r, (3.0 * s) as f32, Some(theme().hl), Some(mix(theme().hl, theme().accent, 0.35)));
         }
-        put(g, cv, label, &g.f.reg, r.left + px(10) + m.gutter, r.top + px(6), if on || *checked { theme().accent } else { theme().text });
-        if !keys.is_empty() {
-            put(g, cv, keys, &g.f.reg, r.right - px(10) - g.width(keys, &g.f.reg), r.top + px(6), theme().muted);
+        let ty = r.top + (r.bottom - r.top - g.f.lh) / 2;
+        if let Some(Some(b)) = l.icons.as_ref().and_then(|v| v.get(k)) {
+            let top = r.top + (r.bottom - r.top - sz) / 2;
+            cv.bitmap(b, &RECT { left: r.left + px(6), top, right: r.left + px(6) + sz, bottom: top + sz }, if it.off { 0.4 } else { 1.0 });
+        } else if it.on {
+            put(g, cv, "✓", &g.f.reg, r.left + px(8), ty, theme().accent); // in its own column: never over a shortcut
         }
-        if *checked {
-            put(g, cv, "✓", &g.f.reg, r.left + px(8), r.top + px(6), theme().accent); // in its own column: never over a shortcut
+        let color = if it.off { theme().muted } else { theme().text };
+        put(g, cv, &it.label, if it.bold { &g.f.semi } else { &g.f.reg }, r.left + px(10) + l.gutter, ty, color);
+        let mut right = r.right - px(10);
+        if !it.sub.is_empty() {
+            put(g, cv, "›", &g.f.reg, right - g.width("›", &g.f.reg), ty, if it.off { theme().muted } else { theme().text });
+            right -= px(18);
+        }
+        if !it.keys.is_empty() {
+            put(g, cv, &it.keys, &g.f.reg, right - g.width(&it.keys, &g.f.reg), ty, theme().muted);
         }
     }
-    m.canvas.end();
+    l.canvas.end();
 }
 
 // ---- actions (outside `with`: they show dialogs, menus, or run a drag loop) ------------------------------------
@@ -3589,12 +5771,226 @@ unsafe fn confirm(owner: HWND, text: &str) -> bool {
     MessageBoxW(owner, wz(text).as_ptr(), wz("Mosaic").as_ptr(), MB_OKCANCEL | MB_ICONQUESTION) == IDOK
 }
 
+thread_local! {
+    /// The rename field over an item, and the path it renames.
+    static RENAMING: RefCell<Option<(HWND, String)>> = const { RefCell::new(None) };
+    /// An item to select once the list shows it (a rename's new name, a new folder), whether to rename it then, and
+    /// until when to keep looking.
+    static LISTED: RefCell<Option<(String, bool, Instant)>> = const { RefCell::new(None) };
+    /// What Ctrl+Z takes back, newest last.
+    static UNDO: RefCell<Vec<Undo>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A file operation done here, as Ctrl+Z reverses it. ponytail: no redo (Ctrl+Y); drag-and-drop moves aren't recorded.
+enum Undo {
+    Renamed(String, String),      // (now, was)
+    Recycled(Vec<String>),        // where they were
+    Made(Vec<String>),            // a new folder, a paste's copies: back to the Recycle Bin
+    Moved(Vec<(String, String)>), // a paste's moves: (now, was)
+}
+
+fn did(u: Undo) {
+    UNDO.with(|s| {
+        let mut s = s.borrow_mut();
+        s.push(u);
+        if s.len() > 100 {
+            s.remove(0);
+        }
+    });
+}
+
+/// Ctrl+Z: the newest operation reversed, as far as the files still allow (nothing put back over a newer file).
+unsafe fn undo() {
+    use crate::infrastructure::fileops;
+    let gone = |p: &String| !std::path::Path::new(p).exists();
+    let ok = match UNDO.with(|s| s.borrow_mut().pop()) {
+        None => return with(|u| u.flash(t("status.nothing_undo").into())).unwrap_or(()),
+        Some(Undo::Renamed(now, was)) => !gone(&now) && (gone(&was) || now.to_lowercase() == was.to_lowercase()) && std::fs::rename(&now, &was).is_ok(),
+        Some(Undo::Recycled(paths)) => fileops::restore(&paths) > 0,
+        Some(Undo::Made(paths)) => {
+            let there: Vec<String> = paths.into_iter().filter(|p| !gone(p)).collect();
+            !there.is_empty() && fileops::delete_many(&there, true).is_ok()
+        }
+        Some(Undo::Moved(pairs)) => {
+            let back: Vec<(String, String)> = pairs.into_iter().filter(|(now, was)| !gone(now) && gone(was)).collect();
+            !back.is_empty() && fileops::move_many(&back).is_ok()
+        }
+    };
+    std::thread::sleep(Duration::from_millis(400)); // the USN journal needs a moment to report it
+    with(|u| {
+        u.flash(t(if ok { "status.undone" } else { "status.nothing_undo" }).into());
+        u.run(true);
+    });
+}
+
+/// Ctrl+V into `dir`: what the paste will make, noted for Ctrl+Z (checked again then, as the paste runs on its own
+/// and may be cancelled). Names already there are left out: the shell asks about those, or makes "- Copy"s.
+fn note_paste(dir: &str) {
+    let Some((files, cut)) = shell::clipboard_get() else { return };
+    let dest = std::path::Path::new(dir);
+    let pairs: Vec<(String, String)> = files.into_iter().filter_map(|f| {
+        let to = dest.join(std::path::Path::new(&f).file_name()?);
+        (!to.exists()).then(|| (to.to_string_lossy().into_owned(), f))
+    }).collect();
+    if pairs.is_empty() {
+        return;
+    }
+    did(if cut { Undo::Moved(pairs) } else { Undo::Made(pairs.into_iter().map(|p| p.0).collect()) });
+}
+
+/// Explorer's menu at (x, y) for `paths` (with `bg`, the folder `paths[0]`'s empty space; none: only `extras`),
+/// drawn as Mosaic's menus are, then what was picked: by Explorer, or by Mosaic for its own entries (`acts`).
+unsafe fn explorer_menu(paths: Vec<String>, bg: bool, extras: Vec<MItem>, acts: Vec<Act>, x: i32, y: i32) {
+    let Some(main) = with(|u| u.main) else { return };
+    let shell = if paths.is_empty() { None } else { shell::menu_items(&paths, bg) };
+    let had = shell.is_some();
+    let pick = cascade(main, x, y, y, 0, false, merge(shell_entries(shell.unwrap_or_default()), extras, bg), false);
+    if had {
+        shell::menu_pick(pick.filter(|&k| k < EXTRA).map(|k| k as u32), x, y); // runs it, or lets the menu go
+    }
+    match pick {
+        Some(RENAME) => start_rename(),
+        Some(k) if k >= EXTRA => {
+            if let Some(&a) = acts.get(k - EXTRA) {
+                act(a);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// New folder in `dir`: the first free "New folder", "New folder (2)", …, renamed in place once the list shows it,
+/// as in Explorer.
+unsafe fn new_folder(dir: &str) {
+    let stem = t("new.folder");
+    let made = (1..1000).find_map(|k| {
+        let p = std::path::Path::new(dir).join(if k == 1 { stem.to_string() } else { format!("{stem} ({k})") });
+        match std::fs::create_dir(&p) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+            r => Some(r.map(|_| p)),
+        }
+    });
+    match made {
+        Some(Ok(p)) => {
+            did(Undo::Made(vec![p.to_string_lossy().into_owned()]));
+            LISTED.set(Some((p.to_string_lossy().into_owned(), true, Instant::now() + Duration::from_secs(10))));
+            with(|u| u.run(true));
+        }
+        Some(Err(e)) => {
+            with(|u| u.flash(t("status.failed").replace("{e}", &e.to_string())));
+        }
+        None => {}
+    }
+}
+
+/// F2: a text field over the focused item's name, the name without its extension selected, as in Explorer.
+/// Enter or a click elsewhere keeps it, Esc doesn't.
+unsafe fn start_rename() {
+    end_rename(true);
+    let Some(Some((list, path, is_dir, r, font))) = with(|u| {
+        let i = u.focus.filter(|&i| u.sel.has(i)).or_else(|| u.sel.iter().next())?;
+        u.show_row(i);
+        u.ensure(i / PG);
+        let row = u.get(i)?;
+        Some((u.list, row.path.clone(), row.is_dir, u.name_box(i), u.edit_font))
+    }) else {
+        return;
+    };
+    UpdateWindow(list);
+    let name = std::path::Path::new(&path).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let edit = CreateWindowExW(0, wz("EDIT").as_ptr(), wz(&name).as_ptr(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL as u32, r.left, r.top, r.right - r.left, r.bottom - r.top, list, null_mut(), GetModuleHandleW(null()), null());
+    if edit.is_null() {
+        return;
+    }
+    SendMessageW(edit, WM_SETFONT, font as usize, 1);
+    SetWindowTheme(edit, wz("DarkMode_CFD").as_ptr(), null());
+    let stem = if is_dir { name.len() } else { name.rfind('.').filter(|&k| k > 0).unwrap_or(name.len()) };
+    SendMessageW(edit, 0x00B1, 0, name[..stem].encode_utf16().count() as isize); // EM_SETSEL
+    RENAMING.set(Some((edit, path)));
+    SetFocus(edit);
+}
+
+unsafe fn end_rename(keep: bool) {
+    let Some((edit, path)) = RENAMING.take() else { return };
+    let n = GetWindowTextLengthW(edit);
+    let mut b = vec![0u16; n as usize + 1];
+    GetWindowTextW(edit, b.as_mut_ptr(), n + 1);
+    let name = String::from_utf16_lossy(&b[..n as usize]).trim().to_string();
+    if GetFocus() == edit {
+        if let Some(list) = with(|u| u.list) {
+            SetFocus(list);
+        }
+    }
+    DestroyWindow(edit);
+    let from = std::path::Path::new(&path);
+    if !keep || name.is_empty() || from.file_name().is_some_and(|n| n.to_string_lossy() == name) {
+        return;
+    }
+    let to = from.with_file_name(&name);
+    let msg = match std::fs::rename(from, &to) {
+        Ok(()) => {
+            did(Undo::Renamed(to.to_string_lossy().into_owned(), path.clone()));
+            LISTED.set(Some((to.to_string_lossy().into_owned(), false, Instant::now() + Duration::from_secs(10))));
+            t("status.renamed").replace("{name}", &name)
+        }
+        Err(e) => t("status.failed").replace("{e}", &e.to_string()),
+    };
+    with(|u| {
+        u.flash(msg);
+        u.run(true);
+    });
+}
+
 unsafe fn act(a: Act) {
+    // the folder on screen, or the view: no selection needed
+    match a {
+        Act::Refresh => return with(|u| u.run(true)).unwrap_or(()),
+        Act::SelectAll => return with(|u| u.select_all()).unwrap_or(()),
+        Act::Undo => return undo(),
+        Act::View(size) => return with(|u| u.reshape(size > 0, if size > 0 { size } else { u.size })).unwrap_or(()),
+        Act::Sort(_) | Act::Desc(_) => {
+            with(|u| {
+                match a {
+                    Act::Sort(k) => u.args.sort = k.into(),
+                    _ => u.args.dir = if matches!(a, Act::Desc(true)) { "desc" } else { "asc" }.into(),
+                }
+                u.run(false);
+                u.invalidate();
+            });
+            return;
+        }
+        Act::Paste | Act::NewFolder | Act::HereProps => {
+            let Some(Some(dir)) = with(|u| u.here()) else {
+                with(|u| u.flash(t("status.no_folder").into()));
+                return;
+            };
+            let mut p = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut p); // where a paste's questions show
+            match a {
+                Act::Paste => {
+                    note_paste(&dir);
+                    shell::menu_verb(&dir, "paste", p.x, p.y)
+                }
+                Act::HereProps => shell::properties(dir),
+                _ => new_folder(&dir),
+            }
+            return;
+        }
+        _ => {}
+    }
     let Some(Some((paths, n, main))) = with(|u| (u.sel.count() > 0).then(|| (u.sel_paths(), u.sel.count(), u.main))) else { return };
     if paths.is_empty() {
         return;
     }
     let msg = match a {
+        Act::OpenHere => return with(|u| u.browse_to(&paths[0])).unwrap_or(()),
+        Act::OpenTab => return with(|u| u.open_tab(&paths[0])).unwrap_or(()),
+        Act::Rename => return start_rename(),
+        Act::SearchIn => {
+            let dir = if std::fs::metadata(&paths[0]).is_ok_and(|m| m.is_dir()) { paths[0].clone() } else { std::path::Path::new(&paths[0]).parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()) };
+            with(|u| u.search_in(&dir));
+            return;
+        }
         Act::Open => {
             if n > 5 && !confirm(main, &t("confirm.open_items").replace("{n}", &n.to_string())) {
                 return;
@@ -3619,23 +6015,31 @@ unsafe fn act(a: Act) {
                 t("status.clipboard_busy").into()
             }
         }
-        Act::Del => {
-            if !confirm(main, &t("confirm.recycle").replace("{n}", &plural(n))) {
+        Act::Del | Act::DelNow => {
+            let recycle = matches!(a, Act::Del);
+            if !confirm(main, &t(if recycle { "confirm.recycle" } else { "confirm.delete_now" }).replace("{n}", &plural(n))) {
                 return;
             }
-            let _ = crate::infrastructure::fileops::recycle_many(&paths);
-            let gone = paths.iter().filter(|p| !std::path::Path::new(p).exists()).count();
+            let _ = crate::infrastructure::fileops::delete_many(&paths, recycle);
+            let gone: Vec<String> = paths.iter().filter(|p| !std::path::Path::new(p).exists()).cloned().collect();
+            if recycle && !gone.is_empty() {
+                did(Undo::Recycled(gone.clone()));
+            }
+            let gone = gone.len();
             std::thread::sleep(Duration::from_millis(400)); // the USN journal needs a moment to report it
             with(|u| {
                 u.run(true);
                 u.set_sel(Sel::default(), None, Some(None));
             });
-            if gone > 0 {
+            if gone == 0 {
+                t("status.nothing_deleted").into()
+            } else if recycle {
                 t("status.moved_recycle").replace("{n}", &plural(gone))
             } else {
-                t("status.nothing_deleted").into()
+                t("status.deleted").replace("{n}", &plural(gone))
             }
         }
+        _ => return, // the ones above, with no selection needed
     };
     with(|u| u.flash(msg));
 }
@@ -3656,62 +6060,65 @@ unsafe fn clip_text(owner: HWND, s: &str) -> bool {
     ok
 }
 
+/// Right-click: Explorer's own menu, with submenus and every shell extension's entries. On items, theirs plus what
+/// only Mosaic does; on empty space, the folder on screen's (Paste, New ▸, Open in Terminal…) after View ▸,
+/// Sort by ▸ and Refresh, as in Explorer.
 unsafe fn context_menu(list: HWND, l: LPARAM) {
     let (mut x, mut y) = xy(l);
-    let show = with(|u| {
+    let mut acts = Vec::new();
+    let Some((paths, bg, extras)) = with(|u| {
         if x == -1 && y == -1 {
-            // keyboard (menu key / Shift+F10): at the focused item
-            let i = u.focus.unwrap_or(0);
+            // keyboard (menu key / Shift+F10): at the focused item, or the list's corner
+            let i = u.focus.filter(|_| u.sel.count() > 0).unwrap_or(0);
             let x0 = if u.grid { u.cell_x(i % u.per).0 } else { 0 };
-            let mut p = POINT { x: x0 + u.px(40), y: ((i / u.ncols()) as f64 * u.rh() as f64 - u.y) as i32 + u.rh() };
+            let y0 = if u.sel.count() > 0 { ((i / u.ncols()) as f64 * u.rh() as f64 - u.y) as i32 + u.rh() } else { u.px(20) };
+            let mut p = POINT { x: x0 + u.px(40), y: y0 };
             ClientToScreen(list, &mut p);
             (x, y) = (p.x, p.y);
         } else {
             let mut p = POINT { x, y };
             ScreenToClient(list, &mut p);
-            if let Some(i) = u.item_at(p.x, p.y) {
-                if !u.sel.has(i) {
-                    u.set_sel(Sel::one(i), Some(i), Some(Some(i)));
-                }
+            match u.item_at(p.x, p.y) {
+                Some(i) if !u.sel.has(i) => u.set_sel(Sel::one(i), Some(i), Some(Some(i))),
+                Some(_) => {}
+                None => u.set_sel(Sel::default(), None, Some(None)), // empty space: the folder's menu, not the items'
             }
         }
-        u.sel.count() > 0
-    });
-    if show != Some(true) {
+        if u.sel.count() == 0 {
+            return (u.here().into_iter().collect(), true, bg_extras(u, &mut acts));
+        }
+        let one_dir = u.sel.count() == 1 && u.sel.iter().next().and_then(|i| u.get(i)).is_some_and(|r| r.is_dir);
+        (u.sel_paths(), false, item_extras(one_dir, &mut acts))
+    }) else {
         return;
-    }
+    };
     UpdateWindow(list);
-    let m = menu();
-    let items = m.iter().map(|(l, k, _)| (l.to_string(), k.to_string(), false)).collect();
-    if let Some(Some(a)) = popup(GetAncestor(list, GA_ROOT), x, y, y, 0, false, items).map(|k| m[k].2) {
-        act(a);
-    }
+    explorer_menu(paths, bg, extras, acts, x, y);
 }
 
-/// The filter, Names/type and grid sort dropdowns: the options under the button (over it, in the status bar), the
+/// The filter and grid sort dropdowns: the options under the button (over it, in the status bar), the
 /// current one checked.
 unsafe fn drop_menu(main: HWND, hit: Hit) {
-    let opts: Vec<(&str, &str)> = match hit {
-        Hit::Filter => filters().to_vec(),
-        Hit::Meta => metas().to_vec(),
-        Hit::Lang => lang_opts().to_vec(),
-        _ => col_defs().to_vec(),
+    // (label, value, a second name shown muted at the right: a language's English one, to find it by either)
+    let opts: Vec<(&str, &str, &str)> = match hit {
+        Hit::Filter => filters().iter().map(|o| (o.0, o.1, "")).collect(),
+        Hit::Lang => crate::i18n::LANGS.iter().map(|l| (l.name, l.code, if l.english == l.name { "" } else { l.english })).collect(),
+        _ => col_defs().iter().map(|o| (o.0, o.1, "")).collect(),
     };
     let cur = |u: &Ui| match hit {
         Hit::Filter => u.args.cat.clone(),
-        Hit::Meta => u.args.meta.clone(),
         Hit::Lang => crate::i18n::lang(),
         _ => u.args.sort.clone(),
     };
     let Some((r, cur, gap, dialog_w)) = with(|u| (u.hits.iter().find(|x| x.1 == hit).map_or(RECT { left: 0, top: 0, right: 0, bottom: 0 }, |x| x.0), cur(u), u.px(4), u.px(260))) else { return };
-    // Language has too many options (17) to read as a flyout under a small button — open it centered
-    // over the main window instead, like a little dialog, rather than anchored to the button.
+    // Language has too many options to read as a flyout under a small button — open it centered over the main
+    // window instead, like a little dialog with a search box, rather than anchored to the button.
     let (p, top, min_w) = if hit == Hit::Lang {
         let mut wr: RECT = zeroed();
         GetWindowRect(main, &mut wr);
         let (cx, cy) = ((wr.left + wr.right) / 2, (wr.top + wr.bottom) / 2);
-        let pt = POINT { x: cx - dialog_w / 2, y: cy - dialog_w * 3 / 4 };
-        (pt, pt, dialog_w)
+        let pt = POINT { x: cx - dialog_w * 3 / 4, y: cy - dialog_w };
+        (pt, pt, dialog_w * 3 / 2)
     } else {
         let mut p = POINT { x: r.left, y: r.bottom + gap };
         let mut top = POINT { x: r.left, y: r.top - gap };
@@ -3719,18 +6126,14 @@ unsafe fn drop_menu(main: HWND, hit: Hit) {
         ClientToScreen(main, &mut top);
         (p, top, r.right - r.left)
     };
-    let items = opts.iter().map(|(l, v)| (l.to_string(), String::new(), *v == cur)).collect();
-    if let Some(k) = popup(main, p.x, p.y, top.y, min_w, true, items) {
+    let items = opts.iter().map(|(l, v, e)| (l.to_string(), e.to_string(), *v == cur)).collect();
+    if let Some(k) = popup(main, p.x, p.y, top.y, min_w, true, items, hit == Hit::Lang) {
         let v = opts[k].1;
         with(|u| {
             match hit {
                 Hit::Filter => {
                     u.args.cat = v.into();
                     u.layout(); // the status bar shows the filter
-                }
-                Hit::Meta => {
-                    u.args.meta = v.into();
-                    u.save_settings();
                 }
                 Hit::Lang => return u.set_lang(v),
                 _ => u.args.sort = v.into(),
@@ -3822,8 +6225,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
                 (t("menu.zoom_in").into(), "Ctrl++".into(), false),
                 (t("menu.zoom_out").into(), "Ctrl+-".into(), false),
                 sep(),
-                (format!("{}: {}", t("menu.theme"), theme_opts()[0].0), String::new(), theme_name() == theme_opts()[0].1),
-                (format!("{}: {}", t("menu.theme"), theme_opts()[1].0), String::new(), theme_name() == theme_opts()[1].1),
+                (format!("{}…", t("menu.theme")), String::new(), false),
                 sep(),
                 (t("menu.show_hidden").into(), String::new(), u.args.hidden),
                 (t("menu.folder_color").into(), String::new(), u.folder_color),
@@ -3848,7 +6250,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
         4 => vec![(t("menu.language").into(), String::new(), false)],
         _ => vec![(t("menu.about").into(), String::new(), false)],
     };
-    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2 | 3), items) else { return };
+    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2 | 3), items, false) else { return };
     match (menu, k) {
         (0, 0) => act(Act::Open),
         (0, 1) => act(Act::Reveal),
@@ -3860,15 +6262,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
         }
         (1, 0) => act(Act::Copy),
         (1, 1) => act(Act::Cut),
-        (1, 3) => {
-            with(|u| {
-                if u.matches > 0 {
-                    let mut s = Sel::default();
-                    s.add(0, u.matches - 1);
-                    u.set_sel(s, u.focus, Some(Some(0)));
-                }
-            });
-        }
+        (1, 3) => act(Act::SelectAll),
         (2, 0 | 1) => {
             with(|u| u.reshape(k == 1, u.size));
         }
@@ -3883,30 +6277,28 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
         (2, 7 | 8) => {
             with(|u| u.zoom(k == 7));
         }
-        (2, 13) => {
+        (2, 12) => {
             with(|u| {
                 u.args.hidden = !u.args.hidden;
                 u.save_settings();
                 u.run(false);
             });
         }
-        (2, 15) => {
+        (2, 14) => {
             with(|u| {
                 u.args.system = !u.args.system;
                 u.save_settings();
                 u.run(false);
             });
         }
-        (2, 14) => {
+        (2, 13) => {
             with(|u| {
                 u.folder_color = !u.folder_color;
                 u.save_settings();
-                u.invalidate();
+                u.invalidate_all();
             });
         }
-        (2, 10 | 11) => {
-            with(|u| u.set_theme_choice(theme_opts()[k - 10].1));
-        }
+        (2, 10) => themes::open(main),
         (3, 0..=3) => {
             with(|u| {
                 match k {
@@ -4024,12 +6416,8 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 T_TYPE => {
                     KillTimer(h, T_TYPE);
                     with(|u| {
-                        let n = GetWindowTextLengthW(u.edit);
-                        let mut b = vec![0u16; n as usize + 1];
-                        GetWindowTextW(u.edit, b.as_mut_ptr(), n + 1);
-                        u.args.q = String::from_utf16_lossy(&b[..n as usize]);
-                        u.typing = false;
-                        u.run(false);
+                        u.typing = true;
+                        u.typed();
                     });
                 }
                 T_POLL => {
@@ -4043,8 +6431,12 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 }
                 T_THUMB => {
                     KillTimer(h, T_THUMB);
-                    with(|u| u.want_thumbs());
-                    with(|u| u.want_kinds());
+                    with(|u| {
+                        u.each_visible(|u| {
+                            u.want_thumbs();
+                            u.want_kinds();
+                        })
+                    });
                 }
                 T_PREVIEW => {
                     KillTimer(h, T_PREVIEW);
@@ -4064,16 +6456,25 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_RESULT => {
+            // for the pane whose search it is; a pane closed meanwhile: dropped
             let p = l as *mut Done;
-            if with(|u| u.done(*Box::from_raw(p))).is_none() {
-                PostMessageW(h, m, wp, l); // state busy: try again in a moment
+            match with(|u| u.pane_by_seq((*p).0).map(|id| u.with_pane(id, |u| u.done(*Box::from_raw(p))))) {
+                None => {
+                    PostMessageW(h, m, wp, l); // state busy: try again in a moment
+                }
+                Some(None) => drop(Box::from_raw(p)),
+                Some(Some(())) => {}
             }
             return 0;
         }
         WM_ICON => {
             let p = l as *mut (String, Option<Px>, bool);
-            if with(|u| u.got_icon(*Box::from_raw(p))).is_none() {
-                PostMessageW(h, m, wp, l);
+            match with(|u| u.on_list(wp as HWND, |u| u.got_icon(*Box::from_raw(p)))) {
+                None => {
+                    PostMessageW(h, m, wp, l);
+                }
+                Some(None) => drop(Box::from_raw(p)),
+                Some(Some(())) => {}
             }
             return 0;
         }
@@ -4086,8 +6487,12 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_THUMB => {
             let p = l as *mut (String, Option<Px>, bool, i32);
-            if with(|u| u.got_thumb(*Box::from_raw(p))).is_none() {
-                PostMessageW(h, m, wp, l);
+            match with(|u| u.on_list(wp as HWND, |u| u.got_thumb(*Box::from_raw(p)))) {
+                None => {
+                    PostMessageW(h, m, wp, l);
+                }
+                Some(None) => drop(Box::from_raw(p)),
+                Some(Some(())) => {}
             }
             return 0;
         }
@@ -4112,18 +6517,61 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_LBUTTONDOWN => {
             let (x, y) = xy(l);
+            // a tab, a pane's caption or a gap between panes: held, it may be dragged
+            if with(|u| u.press_main(x, y)) == Some(true) {
+                return 0;
+            }
             match with(|u| u.click_main(x, y)).flatten() {
                 Some(Hit::Preview) => toggle_preview(),
                 Some(Hit::Side) => toggle_side(),
                 Some(Hit::Menu(i)) => menu_bar_popup(h, i),
                 Some(hit) => drop_menu(h, hit),
-                None => {}
+                None => {
+                    // the margin left of the list (by the places panel, or the window's edge) starts a selection
+                    // band as the list's own empty space does: no dead strip to aim past
+                    let list = with(|u| u.areas.iter().filter(|(_, r)| y >= r.top && y < r.bottom).min_by_key(|(_, r)| r.left).map(|&(id, _)| u.list_of(id))).flatten();
+                    if let Some(list) = list {
+                        let mut r: RECT = zeroed();
+                        GetWindowRect(list, &mut r);
+                        let mut p = POINT { x, y };
+                        ClientToScreen(h, &mut p);
+                        let side = with(|u| u.side).filter(|&s| IsWindowVisible(s) != 0);
+                        let from = side.map_or(i32::MIN, |s| {
+                            let mut sr: RECT = zeroed();
+                            GetWindowRect(s, &mut sr);
+                            sr.right
+                        });
+                        if p.y >= r.top && p.y < r.bottom && p.x < r.left && p.x >= from {
+                            let (lx, ly) = (p.x - r.left, p.y - r.top);
+                            SendMessageW(list, WM_LBUTTONDOWN, wp, ((ly as u16 as u32) << 16 | lx as u16 as u32) as isize);
+                        }
+                    }
+                }
             }
+            return 0;
+        }
+        WM_MBUTTONUP => {
+            // middle-click on a tab (or a pane's caption) closes it, as in a browser
+            let (x, y) = xy(l);
+            with(|u| match u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1) {
+                Some(Hit::Tab(k) | Hit::TabClose(k)) => u.close_tab(k),
+                Some(Hit::Pane(id) | Hit::PaneClose(id)) => u.close_pane(id),
+                _ => {}
+            });
             return 0;
         }
         WM_LBUTTONDBLCLK => {
             let (x, y) = xy(l);
             let tag = with(|u| {
+                if u.hits.iter().any(|(r, t)| matches!(t, Hit::ColEdge(..)) && inside(r, x, y)) {
+                    // a column gap: back to the default widths
+                    u.colw = COLS_DEFAULT;
+                    u.col_gen += 1;
+                    u.layout();
+                    u.invalidate_all();
+                    u.save_settings();
+                    return true;
+                }
                 let on = u.hits.iter().any(|(r, t)| *t == Hit::Tag && inside(r, x, y));
                 if on {
                     u.args.cat.clear();
@@ -4143,6 +6591,21 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             let (x, y) = xy(l);
             if with(|u| u.split.map(|_| u.split_x = Some(x)).is_some()) == Some(true) {
                 return 0; // resized on the next frame (`drag_split`)
+            }
+            let held = with(|u| {
+                if u.drag.is_some() {
+                    u.drag_move(x, y);
+                } else if u.gut.is_some() {
+                    u.gut_to = Some((x, y)); // resized on the next frame (`step_ui`)
+                } else if u.col_drag.is_some() {
+                    u.drag_col(x);
+                } else {
+                    return false;
+                }
+                true
+            });
+            if held == Some(true) {
+                return 0;
             }
             with(|u| {
                 let hot = u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1).filter(|h| *h != Hit::Search);
@@ -4177,17 +6640,40 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             preview::resizing(false);
             return 0;
         }
+        WM_LBUTTONUP | WM_CAPTURECHANGED if with(|u| u.drag.is_some() || u.gut.is_some() || u.col_drag.is_some()) == Some(true) => {
+            with(|u| {
+                if u.drag.is_some() {
+                    u.drag_end(m == WM_LBUTTONUP);
+                } else if u.col_drag.take().is_some() {
+                    u.save_settings();
+                } else {
+                    u.gut = None;
+                    u.gut_to = None;
+                }
+                u.invalidate_all();
+            });
+            if m == WM_LBUTTONUP {
+                ReleaseCapture();
+            }
+            return 0;
+        }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|u| {
             let mut p = POINT { x: 0, y: 0 };
             GetCursorPos(&mut p);
             ScreenToClient(h, &mut p);
-            u.split.is_some() || inside(&u.grip, p.x, p.y) && u.hot == Some(Hit::Split)
+            u.split.is_some() || inside(&u.grip, p.x, p.y) && u.hot == Some(Hit::Split) || u.col_drag.is_some() || matches!(u.hot, Some(Hit::ColEdge(..)))
         }) == Some(true) => {
             SetCursor(LoadCursorW(null_mut(), IDC_SIZEWE));
             return 1;
         }
+        // a gap between panes: the cursor says which way it moves
+        WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|u| u.gutter_vert().is_some()) == Some(true) => {
+            let vert = with(|u| u.gutter_vert()).flatten() == Some(true);
+            SetCursor(LoadCursorW(null_mut(), if vert { IDC_SIZEWE } else { IDC_SIZENS }));
+            return 1;
+        }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT => {
-            if with(|u| u.hot.is_some_and(|h| !matches!(h, Hit::Filter | Hit::Meta | Hit::Sort | Hit::Tag | Hit::Menu(_)))) == Some(true) {
+            if with(|u| u.hot.is_some_and(|h| !matches!(h, Hit::Filter | Hit::Sort | Hit::Tag | Hit::Menu(_) | Hit::Tab(_) | Hit::Pane(_) | Hit::Gutter(_)))) == Some(true) {
                 SetCursor(LoadCursorW(null_mut(), IDC_HAND));
                 return 1;
             }
@@ -4203,7 +6689,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 u.scale = (wp & 0xffff) as f64 / 96.0;
                 if let Ok(g) = Gfx::new(u.scale, u.rtl) {
                     u.cm = Canvas::new(u.main, &g);
-                    u.cl = Canvas::new(u.list, &g);
+                    u.new_canvases(&g);
                     u.gfx = g;
                 }
                 DeleteObject(u.edit_font);
@@ -4228,23 +6714,29 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
 }
 
 unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
+    // a press (or a Ctrl+wheel zoom) in a pane makes it the focused one; one closing takes none
+    let press = matches!(m, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_MBUTTONDOWN | WM_RBUTTONDOWN) || m == WM_MOUSEWHEEL && wp & 0x8 != 0;
+    if press && with(|u| u.activate_list(h)) == Some(false) {
+        return 0;
+    }
     match m {
         WM_ERASEBKGND => return 1,
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             BeginPaint(h, &mut ps);
-            with(|u| u.paint_list());
+            withp(h, |u| u.paint_list());
             EndPaint(h, &ps);
             return 0;
         }
         WM_SIZE => {
-            with(|u| u.clamp());
+            withp(h, |u| u.clamp());
             InvalidateRect(h, null(), 0);
             return 0;
         }
         WM_MOUSEWHEEL => {
+            end_rename(true); // the field would stay put while its item scrolls away
             let delta = ((wp >> 16) & 0xffff) as i16 as i32;
-            with(|u| {
+            withp(h, |u| {
                 if wp & 0x8 == 0 {
                     // MK_CONTROL not held
                     u.zoom_acc = 0;
@@ -4260,23 +6752,23 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_LBUTTONDOWN => {
             let (x, y) = xy(l);
-            with(|u| u.ldown(x, y));
+            withp(h, |u| u.ldown(x, y));
             return 0;
         }
         WM_LBUTTONDBLCLK => {
             let (x, y) = xy(l);
-            if with(|u| u.on_sb(x)) == Some(true) {
-                with(|u| u.ldown(x, y)); // a second press on the scrollbar pages again
+            if withp(h, |u| u.on_sb(x)) == Some(true) {
+                withp(h, |u| u.ldown(x, y)); // a second press on the scrollbar pages again
                 return 0;
             }
-            if let Some(Some(p)) = with(|u| u.item_at(x, y).and_then(|i| u.get(i)).map(|r| r.path.clone())) {
+            if let Some(Some(p)) = withp(h, |u| u.item_at(x, y).and_then(|i| u.get(i)).map(|r| r.path.clone())) {
                 open_item(&p);
             }
             return 0;
         }
         WM_MOUSEMOVE => {
             let (x, y) = xy(l);
-            let r = with(|u| u.mmove(x, y));
+            let r = withp(h, |u| u.mmove(x, y));
             // paint now: queued, the list's paint waits behind the main window's (the status bar), which a drag
             // invalidates again on every move, so the band trailed the pointer
             UpdateWindow(h);
@@ -4290,11 +6782,11 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_LBUTTONUP => {
-            with(|u| u.lup());
+            withp(h, |u| u.lup());
             return 0;
         }
         WM_MOUSELEAVE => {
-            with(|u| {
+            withp(h, |u| {
                 u.tracking = false;
                 let sb = std::mem::take(&mut u.sb_hot);
                 if u.hover.take().is_some() || sb {
@@ -4306,7 +6798,12 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_MBUTTONDOWN => {
             let (x, y) = xy(l);
-            with(|u| {
+            withp(h, |u| {
+                // on a folder: it opens in a new tab, as a browser's middle-click does; elsewhere, autoscroll
+                let dir = u.item_at(x, y).and_then(|i| u.get(i)).filter(|r| r.is_dir).map(|r| r.path.clone());
+                if let (None, Some(d)) = (&u.auto, dir) {
+                    return u.open_tab(&d);
+                }
                 if u.auto.take().is_some() {
                     ReleaseCapture();
                 } else {
@@ -4319,7 +6816,7 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_MBUTTONUP => {
-            with(|u| {
+            withp(h, |u| {
                 // held and dragged: stop on release. A quick click keeps scrolling until the next click.
                 if u.auto.as_ref().is_some_and(|a| a.moved || a.t0.elapsed() > Duration::from_millis(400)) {
                     u.auto = None;
@@ -4330,7 +6827,8 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_RBUTTONDOWN => {
-            with(|u| {
+            shell::menu_warm(); // its menu is asked for on the button's release
+            withp(h, |u| {
                 if u.auto.take().is_some() {
                     ReleaseCapture();
                 }
@@ -4341,18 +6839,48 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             context_menu(h, l);
             return 0;
         }
-        WM_SETCURSOR if with(|u| u.auto.is_some()) == Some(true) => {
+        WM_SETCURSOR if withp(h, |u| u.auto.is_some()) == Some(true) => {
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
             return 1;
         }
         WM_CHAR if wp >= 32 => {
-            // typing while the list has focus goes to the search box
-            if let Some(edit) = with(|u| u.edit) {
-                SetFocus(edit);
-                SendMessageW(edit, WM_CHAR, wp, l);
+            // typing while the list has focus goes to the search box, at the end of what's there. With one item
+            // selected it looks inside that folder (or the selected file's): the folder goes into the box first.
+            let Some((edit, dir)) = withp(h, |u| {
+                let one = (u.sel.count() == 1).then(|| u.sel.iter().next().and_then(|i| u.get(i))).flatten();
+                let dir = one.and_then(|r| if r.is_dir { Some(r.path.clone()) } else { std::path::Path::new(&r.path).parent().map(|d| d.to_string_lossy().into_owned()) });
+                (u.edit, dir)
+            }) else {
+                return 0;
+            };
+            match dir {
+                Some(d) => {
+                    withp(h, |u| u.search_in(&d));
+                }
+                None => {
+                    SetFocus(edit);
+                    SendMessageW(edit, 0x00B1, GetWindowTextLengthW(edit) as usize, GetWindowTextLengthW(edit) as isize); // EM_SETSEL: caret at the end
+                }
+            }
+            SendMessageW(edit, WM_CHAR, wp, l);
+            return 0;
+        }
+        WM_COMMAND if (wp >> 16) as u32 == 0x0200 => {
+            // EN_KILLFOCUS from the rename field: keep the name, once the focus has settled
+            PostMessageW(h, WM_RENAME_END, l as usize, 0);
+            return 0;
+        }
+        WM_RENAME_END => {
+            if RENAMING.with(|r| r.borrow().as_ref().is_some_and(|r| r.0 as usize == wp)) && GetFocus() as usize != wp {
+                end_rename(true);
             }
             return 0;
         }
+        WM_RENAME => {
+            start_rename();
+            return 0;
+        }
+        WM_CTLCOLOREDIT => return main_proc(GetParent(h), m, wp, l), // the rename field: the search box's colours
         _ => {}
     }
     DefWindowProcW(h, m, wp, l)
@@ -4382,6 +6910,68 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_pane_of_two_below_the_other_takes_the_whole_bottom_half() {
+        // 1 | 2, and 2 dragged onto 1's bottom: the preview (`Ui::landing`) lays it out with 2 out of its old place
+        let mut root = Node::split_off(Node::Leaf(1), 1, Node::Leaf(2), 7);
+        assert!(root.detach(2));
+        root.dock(Node::Leaf(2), Dock::Pane(1, 3), 8);
+        root.settle();
+        let (mut leaves, mut gutters) = (Vec::new(), Vec::new());
+        root.place(RECT { left: 0, top: 0, right: 1000, bottom: 610 }, 10, &mut leaves, &mut gutters);
+        let r = leaves.iter().find(|l| l.0 == 2).unwrap().1;
+        assert_eq!((r.left, r.top, r.right, r.bottom), (0, 310, 1000, 610));
+    }
+
+    #[test]
+    fn springs_settle_on_their_target_without_bouncing() {
+        let (mut x, mut v) = (0.0, 0.0);
+        let mut path = vec![];
+        while spring(&mut x, &mut v, 1.0, 1.0 / 60.0, 22.0, 0.0005) {
+            path.push(x);
+        }
+        assert_eq!((x, v), (1.0, 0.0));
+        assert!(path.windows(2).all(|w| w[0] <= w[1] && w[1] <= 1.0), "only ever forward, never past");
+        assert!(path.len() < 60, "settles within a second, took {} frames", path.len());
+    }
+
+    #[test]
+    fn panes_split_move_and_close() {
+        let r = RECT { left: 0, top: 0, right: 1010, bottom: 500 };
+        let mut t = Node::Leaf(0);
+        assert!(t.insert(0, 1, &mut Some(Node::Leaf(1)), 10)); // 1 right of 0
+        assert!(t.insert(1, 3, &mut Some(Node::Leaf(2)), 11)); // 2 below 1
+        assert_eq!(t.leaves(), [0, 1, 2]);
+        while t.animate(1.0 / 60.0) {}
+        let (mut leaves, mut gutters) = (vec![], vec![]);
+        t.place(r, 10, &mut leaves, &mut gutters);
+        let l0 = leaves[0].1;
+        assert_eq!((leaves[0].0, l0.left, l0.top, l0.right, l0.bottom), (0, 0, 0, 500, 500));
+        assert_eq!(leaves[1].1.left, 510);
+        assert_eq!((leaves[2].1.top, leaves[2].1.bottom), (255, 500)); // (500 - 10 gap) / 2 + 10
+        assert_eq!(gutters.iter().map(|g| (g.0, g.3)).collect::<Vec<_>>(), [(10, true), (11, false)]);
+        // closing 1: it shrinks away, then leaves 2 in its place
+        assert!(t.collapse(1));
+        assert_eq!(t.settled(1), Some(false));
+        while t.animate(1.0 / 60.0) {}
+        assert_eq!(t.settled(1), Some(true));
+        assert!(t.detach(1));
+        assert_eq!(t.leaves(), [0, 2]);
+        assert!(!t.detach(7));
+        assert!(t.detach(2));
+        assert!(!t.detach(0)); // the last one stays
+        assert_eq!(t.leaves(), [0]);
+    }
+
+    #[test]
+    fn the_folder_on_screen_comes_from_a_folder_listing_query() {
+        assert_eq!(listed_dir(r#"child:"C:\Users\ann\Docs""#).as_deref(), Some(r"C:\Users\ann\Docs"));
+        assert_eq!(listed_dir(r#" descendant:"D:\Photos" beach "#).as_deref(), Some(r"D:\Photos")); // narrowed by a word
+        assert_eq!(listed_dir(r#"child:"E:""#).as_deref(), Some(r"E:\")); // a drive's top
+        assert_eq!(listed_dir("holiday photos"), None);
+        assert_eq!(listed_dir(r#"child:"C:\unclosed"#), None);
+    }
+
+    #[test]
     fn highlight_runs_are_case_insensitive() {
         let t = terms("Foo ext:txt \"bar\"");
         let s = w("xFOOybarz");
@@ -4407,6 +6997,22 @@ mod tests {
     }
 
     #[test]
+    fn mix_moves_each_channel_toward_the_other_color() {
+        assert_eq!(mix(0x000000, 0xff8040, 0.5), 0x804020);
+        assert_eq!(mix(0x123456, 0xabcdef, 0.0), 0x123456);
+    }
+
+    #[test]
+    fn mosaic_entries_go_after_explorers_open_group_with_tidy_lines() {
+        let e = |l: &str| MItem { label: l.into(), ..Default::default() };
+        let names = |v: Vec<MItem>| v.iter().map(|i| if i.label.is_empty() { "-".to_string() } else { i.label.clone() }).collect::<Vec<_>>().join(" ");
+        let shell = vec![e("Open"), e(""), e(""), e("Copy"), e(""), e("Copy")];
+        assert_eq!(names(merge(shell.clone(), vec![e("Mine")], false)), "Open - Mine - Copy");
+        assert_eq!(names(merge(shell, vec![e("View")], true)), "View - Open - Copy");
+        assert_eq!(names(merge(Vec::new(), vec![e("View")], true)), "View");
+    }
+
+    #[test]
     fn pixels_premultiply_and_shrink() {
         // 2×2: opaque red, transparent, opaque white, half-transparent white → one pixel, averaged, premultiplied
         let px = [255, 0, 0, 255, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 128];
@@ -4426,37 +7032,60 @@ mod tests {
     }
 
     #[test]
-    fn col_positions_packs_flex_then_fixed_left_to_right() {
-        // width 1000, pad 10, gap 10, 2 flex + 2 fixed (150, 100): content = 1000-20-30=950;
-        // flex share = (950-250)/2 = 350 each.
-        let v = col_positions(1000, 10, 10, 2, &[150, 100], false);
-        assert_eq!(v, [(10, 360), (370, 720), (730, 880), (890, 990)]);
+    fn fit_cols_packs_flex_then_fixed_left_to_right() {
+        // width 1000, pad 10, gap 10, fixed 150/100/100: content = 1000-20-40 = 940; Name and Path split 940-350
+        let v = fit_cols(1000, 10, 10, 0.5, [150, 100, 100], 100, 50, false);
+        assert_eq!(v, [(10, 305), (315, 610), (620, 770), (780, 880), (890, 990)]);
         // columns are contiguous, gapped by exactly `gap`, and stay inside [pad, width-pad]
         for w in v.windows(2) {
             assert_eq!(w[1].0 - w[0].1, 10);
         }
-        assert_eq!(v.first().unwrap().0, 10);
-        assert_eq!(v.last().unwrap().1, 990);
     }
 
     #[test]
-    fn col_positions_rtl_mirrors_the_row_keeping_each_columns_width_and_index() {
-        let ltr = col_positions(1000, 10, 10, 2, &[150, 100], false);
-        let rtl = col_positions(1000, 10, 10, 2, &[150, 100], true);
-        // same widths, same reading-order (column 0 first), but the row is flush against the right edge
-        for (&(a, b), &(c, d)) in ltr.iter().zip(&rtl) {
-            assert_eq!(b - a, d - c, "column width preserved under mirroring");
+    fn fit_cols_rtl_mirrors_the_row_keeping_each_columns_width_and_index() {
+        for width in [1000, 400] {
+            let ltr = fit_cols(width, 10, 10, 0.5, [85, 150, 150], 180, 60, false);
+            let rtl = fit_cols(width, 10, 10, 0.5, [85, 150, 150], 180, 60, true);
+            // same widths, same reading-order (column 0 first), but the row is flush against the right edge
+            for (&(a, b), &(c, d)) in ltr.iter().zip(&rtl) {
+                assert_eq!(b - a, d - c, "column width preserved under mirroring");
+            }
+            assert_eq!(rtl[0].1, width - 10); // column 0 (reading order) is flush against the row's right edge
         }
-        assert!(rtl[0].0 > ltr[0].0, "column 0 shifts toward the right edge in RTL");
-        assert_eq!(rtl[0].1, 990); // column 0 (reading order) is flush against the row's right edge in RTL
-        assert_eq!(rtl.last().unwrap().0, 10); // the last column ends up flush against the left edge (pad)
     }
 
     #[test]
-    fn col_positions_handles_zero_flex_columns_and_empty_input() {
-        assert_eq!(col_positions(1000, 10, 10, 0, &[], false), Vec::<(i32, i32)>::new());
-        // fixed-only row: still packs left-to-right after `pad`
-        let v = col_positions(1000, 10, 10, 0, &[50, 60], false);
-        assert_eq!(v, [(10, 60), (70, 130)]);
+    fn fit_cols_gives_way_to_the_name_when_narrow() {
+        let fit = |width| fit_cols(width, 10, 10, 0.5, [85, 150, 150], 180, 60, false);
+        let w = |v: [(i32, i32); 5]| v.map(|(a, b)| b - a);
+        // Path shrinks first, then goes; Type, then Size go; Modified stays while Name has its minimum
+        assert_eq!(w(fit(1000)), [278, 277, 85, 150, 150]);
+        assert_eq!(w(fit(685)), [180, 60, 85, 150, 150]);
+        assert_eq!(w(fit(684)), [249, 0, 85, 150, 150]);
+        assert_eq!(w(fit(400)), [220, 0, 0, 0, 150]);
+        assert_eq!(fit(400)[4], (240, 390));
+        // nothing left but the name, which takes the whole row
+        assert_eq!(w(fit(150)), [130, 0, 0, 0, 0]);
+        // never overlapping, whatever the width
+        for width in (0..1200).step_by(7) {
+            let v = fit(width);
+            for k in 0..4 {
+                assert!(v[k].1 <= v[k + 1].0, "{width}: {v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn column_resizing_trades_width_between_neighbours_and_keeps_a_minimum() {
+        let w = [300, 300, 85, 150, 150];
+        assert_eq!(col_resize(w, 0, 50, 40), [350, 250, 85, 150, 150]);
+        assert_eq!(col_resize(w, 2, 500, 40), [300, 300, 195, 40, 150]); // Type stops at the minimum
+        assert_eq!(col_resize(w, 2, -500, 40), [300, 300, 40, 195, 150]);
+        // uneven shares: the flexible pair splits the room by it, the last one taking the rounding
+        let v = fit_cols(1000, 10, 10, 0.3, [150, 100, 0], 100, 50, false);
+        assert_eq!((v[0].1 - v[0].0, v[1].1 - v[1].0), (207, 483));
+        assert_eq!(parse_cols("0.3,90,140,160"), (0.3, [90, 140, 160]));
+        assert_eq!(parse_cols("junk"), COLS_DEFAULT);
     }
 }

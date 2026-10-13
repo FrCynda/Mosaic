@@ -27,7 +27,7 @@ const ROOT_RECORD: u32 = 5;
 const FILETIME_UNIX_DIFF_S: i64 = 11_644_473_600;
 /// Guard against malformed parent cycles when walking to the root. Set far above
 /// any real NTFS nesting (a legitimate tree never approaches this) so the cap
-/// only ever fires on a corrupt parent cycle — not on a genuinely deep path,
+/// only ever fires on a corrupt parent cycle â€” not on a genuinely deep path,
 /// which would otherwise be silently truncated to a wrong-but-absolute path.
 const MAX_PATH_DEPTH: usize = 4096;
 /// "No entry" in the record map.
@@ -65,7 +65,8 @@ pub(crate) fn filetime_to_unix_s(ft: u64) -> u32 {
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct Rec {
-    /// Bytes, 48 bits (256 TB) split in two; all ones for folders and unknown sizes. See [`Rec::size`].
+    /// Bytes, 48 bits (256 TB) split in two; all ones for unknown sizes. A folder holds the total of everything
+    /// under it (see [`SearchIndex::sum_folders`]). See [`Rec::size`].
     size_lo: u32,
     /// MFT record number; `NONE` marks a retired slot (deleted, or renamed into a new slot).
     record: u32,
@@ -84,7 +85,7 @@ pub struct Rec {
 
 impl Rec {
     const NO_SIZE: u64 = (1 << 48) - 1;
-    /// Bytes; `u64::MAX` for folders and unknown sizes.
+    /// Bytes; `u64::MAX` for unknown sizes.
     fn size(&self) -> u64 {
         match (self.size_hi as u64) << 32 | self.size_lo as u64 {
             Self::NO_SIZE => u64::MAX,
@@ -97,6 +98,13 @@ impl Rec {
     }
     fn is_dir(&self) -> bool {
         self.attrs & FILE_ATTRIBUTE_DIRECTORY != 0
+    }
+    /// What this entry adds to its folder's total: a file's size, a folder's own total.
+    fn weight(&self) -> u64 {
+        match self.size() {
+            u64::MAX => 0,
+            s => s,
+        }
     }
     fn lower_len(&self) -> usize {
         (self.len & LEN_MASK) as usize
@@ -111,7 +119,7 @@ impl Rec {
 pub struct Hit {
     pub name: String,
     pub path: String,
-    /// Size in bytes; `-1` for directories or unknown.
+    /// Size in bytes (a folder: everything under it); `-1` when unknown.
     pub size: i64,
     /// Last-modified Unix milliseconds; `0` when unknown.
     pub modified: i64,
@@ -138,6 +146,10 @@ pub struct SearchResult {
     /// Set by content search when the candidate pool hit its cap.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub capped: bool,
+    /// A folder listing's version: the same one again is the same rows in the same order (nothing in or below the
+    /// folder changed), so the GUI can keep what it shows. `None` for other searches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<u64>,
 }
 
 impl SearchResult {
@@ -175,6 +187,56 @@ pub struct SearchIndex {
     /// Folder path (lowercased) -> its MFT record, for `dir_record`: each folder walked to once, not per listing.
     /// Checked on use (the record must still be that folder), so renames and deletes never serve a stale answer.
     dirs: parking_lot::Mutex<HashMap<String, u32>>,
+    /// The last `TOUCHED` live changes, oldest first: (stamp, record, a folder it was or now is in, the slot it
+    /// changed or retired or `NONE`). Lets a folder listing tell whether anything in or below its folder changed
+    /// since it was ranked (`changed_under`), and the everything view take in just what changed (`patch_all`), so a
+    /// busy disk elsewhere doesn't re-rank every entry to show the same files again.
+    touched: std::collections::VecDeque<(u64, u32, u32, u32)>,
+    /// Live changes applied so far (the last one's stamp).
+    stamp: u64,
+    /// Changes applied since the cache last saved, for its change log (`infrastructure::cache::append`). `None` when
+    /// that log can't stand for them any more (too many piled up, or a save failed): the next save writes it all.
+    /// Each with whether it added or moved the entry (see [`coalesce`]).
+    unsaved: parking_lot::Mutex<Option<Vec<(Change, bool)>>>,
+}
+
+/// Changes `SearchIndex::touched` remembers; a listing more changes old than that re-ranks.
+const TOUCHED: usize = 4096;
+/// Unsaved changes kept at most (~100 bytes each), should saves stop (a journal gap leaves no position to save).
+const UNSAVED_MAX: usize = 200_000;
+
+/// A live change as applied: the saved index plus its changes, replayed in order, is the index again.
+#[derive(Serialize, Deserialize)]
+pub enum Change {
+    Upsert(RawRecord),
+    Delete(u64),
+}
+
+/// `changes` (each with whether it must stay: see below) less the ones replay doesn't need: an update in place to an
+/// entry (its size, times, name), followed later by an update to the same link (same parent and name) or by its
+/// deletion. Most changes are such: a file written, then written again or deleted, within minutes. Replay ends the
+/// same: the entry sits in the same folder either way, and folder totals are sums, so its old bytes come off and its
+/// newest go on at the later change instead. What added an entry or moved it stays, at its place: what follows can
+/// depend on where it is (the files made inside a new folder; its old folder deleted and that record reused).
+fn coalesce(changes: Vec<(Change, bool)>) -> Vec<Change> {
+    let (mut updated, mut deleted) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let mut kept: Vec<Change> = changes
+        .into_iter()
+        .rev()
+        .filter(|(c, stays)| match c {
+            Change::Delete(r) => {
+                deleted.insert(*r);
+                true
+            }
+            Change::Upsert(raw) => {
+                let later = !updated.insert((raw.record_no, raw.parent_no, raw.name.clone())) || deleted.contains(&raw.record_no);
+                *stays || !later
+            }
+        })
+        .map(|(c, _)| c)
+        .collect();
+    kept.reverse();
+    kept
 }
 
 /// Append `name` to the arena: lowercased bytes, then case data. Returns the `Rec::name`/`Rec::len` pair.
@@ -205,7 +267,7 @@ fn new_rec(r: &RawRecord) -> Option<Rec> {
     if r.name.is_empty() || r.record_no == ROOT_RECORD as u64 || r.record_no >= NONE as u64 || r.parent_no >= NONE as u64 {
         return None;
     }
-    let size = if r.is_dir { u64::MAX } else { r.size.unwrap_or(u64::MAX) };
+    let size = if r.is_dir { 0 } else { r.size.unwrap_or(u64::MAX) };
     Some(Rec {
         size_lo: 0,
         size_hi: 0,
@@ -313,6 +375,9 @@ impl SearchIndex {
             drive,
             usn: None,
             dirs: Default::default(),
+            touched: Default::default(),
+            stamp: 0,
+            unsaved: parking_lot::Mutex::new(Some(Vec::new())),
         };
         let order = idx.live_name_order();
         idx.rebuild(order);
@@ -336,6 +401,87 @@ impl SearchIndex {
 
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Live changes applied so far: what a cached listing notes, to ask `changed_under` later.
+    pub fn stamp(&self) -> u64 {
+        self.stamp
+    }
+
+    fn touch(&mut self, record: u32, parent: u32, slot: u32) {
+        self.stamp += 1;
+        if self.touched.len() == TOUCHED {
+            self.touched.pop_front();
+        }
+        self.touched.push_back((self.stamp, record, parent, slot));
+    }
+
+    fn log(&mut self, stays: bool, c: impl FnOnce() -> Change) {
+        let u = self.unsaved.get_mut();
+        match u {
+            Some(v) if v.len() < UNSAVED_MAX => v.push((c(), stays)),
+            _ => *u = None,
+        }
+    }
+
+    /// The changes since the last save (left empty), less those a later one overrides, or `None` when only a whole
+    /// save will do.
+    pub fn take_unsaved(&self) -> Option<Vec<Change>> {
+        self.unsaved.lock().as_mut().map(|v| coalesce(std::mem::take(v)))
+    }
+
+    /// The index was saved whole (`true`), or a save failed (`false`: the next one must be whole).
+    pub fn saved_whole(&self, ok: bool) {
+        *self.unsaved.lock() = ok.then(Vec::new);
+    }
+
+    /// Apply a saved index's change log, as when they happened. They're already saved, so not logged again.
+    pub fn replay(&mut self, changes: Vec<Change>) {
+        *self.unsaved.get_mut() = None;
+        for c in changes {
+            match c {
+                Change::Upsert(raw) => self.apply_upsert(raw),
+                Change::Delete(record_no) => self.apply_delete(record_no),
+            }
+        }
+        *self.unsaved.get_mut() = Some(Vec::new());
+    }
+
+    /// The changes since `since`, newest first; `None` when too many changes ago to tell.
+    fn changes_since(&self, since: u64) -> Option<impl Iterator<Item = &(u64, u32, u32, u32)>> {
+        let known = self.stamp == since || self.touched.front().is_some_and(|&(s, ..)| s <= since + 1);
+        known.then(|| self.touched.iter().rev().take_while(move |e| e.0 > since))
+    }
+
+    /// Whether a change since `since` could alter a listing of folders `dirs`: one of them, or anything at any
+    /// depth below one (a folder's total size counts everything under it). True when too many changes ago to tell.
+    pub fn changed_under(&self, dirs: &[u32], since: u64) -> bool {
+        let Some(mut changes) = self.changes_since(since) else { return true };
+        changes.any(|&(_, record, parent, _)| {
+            if dirs.contains(&record) {
+                return true;
+            }
+            let mut cur = parent;
+            for _ in 0..MAX_PATH_DEPTH {
+                if dirs.contains(&cur) {
+                    return true;
+                }
+                match self.first.get(cur as usize).filter(|&&p| p != NONE && cur != ROOT_RECORD) {
+                    Some(&p) => cur = self.recs[p as usize].parent,
+                    None => break,
+                }
+            }
+            false
+        })
+    }
+
+    /// The folders a plain folder listing (`child:`, or Home's `parent:` terms) shows the contents of; `None` for
+    /// any other search, or when one of them isn't there.
+    pub fn listing_dirs(&self, matcher: &Matcher) -> Option<Vec<u32>> {
+        if let Some(t) = matcher.only_child() {
+            return self.dir_record(t, false).map(|d| vec![d]);
+        }
+        matcher.only_parents()?.into_iter().map(|t| self.dir_record(t, true)).collect()
     }
 
     fn is_live(&self, i: usize) -> bool {
@@ -390,6 +536,52 @@ impl SearchIndex {
         self.more = HashMap::new();
         for i in 0..self.recs.len() {
             self.link_add(self.recs[i].record, i as u32);
+        }
+        self.sum_folders();
+    }
+
+    /// Every folder's total size, from scratch: each folder's own files summed, then that sum added to each of
+    /// its ancestors. Runs at load and on every rebuild, which also squares away any drift the live updates
+    /// (`add_up`) picked up from out-of-order journal events. Memory only: nothing is read from or written to disk.
+    fn sum_folders(&mut self) {
+        // each folder's own files, summed by position
+        let mut own = vec![0u64; self.recs.len()];
+        for r in self.recs.iter().filter(|r| r.record != NONE && !r.is_dir()) {
+            if let Some(&p) = self.first.get(r.parent as usize).filter(|&&p| p != NONE) {
+                own[p as usize] += r.weight();
+            }
+        }
+        for (r, &b) in self.recs.iter_mut().zip(&own) {
+            if r.is_dir() {
+                *r = r.with_size(b);
+            }
+        }
+        // then each one's sum climbs to its ancestors
+        for (p, &b) in own.iter().enumerate() {
+            if b != 0 && self.recs[p].is_dir() && self.recs[p].record != NONE {
+                self.add_up(self.recs[p].parent, b as i64);
+            }
+        }
+    }
+
+    /// Add `delta` bytes to folder `parent` (an MFT record) and every folder above it.
+    fn add_up(&mut self, mut parent: u32, delta: i64) {
+        if delta == 0 {
+            return;
+        }
+        for _ in 0..MAX_PATH_DEPTH {
+            if parent == ROOT_RECORD {
+                return;
+            }
+            let Some(&p) = self.first.get(parent as usize).filter(|&&p| p != NONE) else {
+                return;
+            };
+            let r = &mut self.recs[p as usize];
+            if !r.is_dir() {
+                return;
+            }
+            *r = r.with_size((r.weight() as i64 + delta).max(0) as u64);
+            parent = r.parent;
         }
     }
 
@@ -460,7 +652,7 @@ impl SearchIndex {
     }
 
     /// The absolute path of `record`'s first surviving link. Used to turn a USN event's bare
-    /// record number back into a real path — e.g. for the content indexer to open and re-read.
+    /// record number back into a real path â€” e.g. for the content indexer to open and re-read.
     pub fn path_of(&self, record: u32) -> Option<String> {
         let &p = self.first.get(record as usize).filter(|&&p| p != NONE)?;
         Some(self.build_path(p as usize, false))
@@ -495,6 +687,7 @@ impl SearchIndex {
             hits,
             error: None,
             capped: false,
+            stamp: None,
         }
     }
 
@@ -502,8 +695,7 @@ impl SearchIndex {
     /// direction applied). Cheap to page through: see `Catalog`'s view cache.
     pub fn ranked(&self, opts: &SearchOptions, matcher: &Matcher) -> Vec<u32> {
         let all = matcher.matches_all();
-        // like Explorer, hide protected operating-system files (hidden + system: NTUSER.DAT.LOG1, *.blf, ntuser.ini...)
-        let shown = |a: u32| if a & 0x6 == 0x6 { opts.show_system } else { opts.show_hidden || a & 0x2 == 0 }; // protected (hidden + system) and hidden files only on request
+        let shown = |a: u32| shown(a, opts);
         // a plain folder listing: compare parent record numbers instead of rebuilding every path
         let child_of = matcher.only_child().map(|t| self.dir_record(t, false));
         let folders: Option<Vec<u32>> = matcher.only_parents().map(|ts| ts.into_iter().filter_map(|t| self.dir_record(t, true)).collect());
@@ -526,7 +718,7 @@ impl SearchIndex {
                         (None, None) => all || self.entry_matches(i, matcher, &mut scratch),
                     };
                 if hit {
-                    *o = if ff && (r.is_dir() || (self.is_lnk(i) && self.lnk_to_folder(i))) { 2 } else { 1 };
+                    *o = if ff && self.folder_like(i) { 2 } else { 1 };
                 }
             }
         });
@@ -599,6 +791,55 @@ impl SearchIndex {
         }
         out.extend_from_slice(&head[start..]);
         out
+    }
+
+    /// [`Self::ranked`] of a search matching everything by name (the empty search box, `order`) as it stood at stamp
+    /// `since`, brought up to date with the changes since: the slots they touched leave, and the live ones come
+    /// back in at their place. Two passes over the order instead of matching, filtering and splitting every entry.
+    /// False when too many changes ago to tell (`order` is then untouched).
+    pub fn patch_all(&self, order: &mut Vec<u32>, since: u64, opts: &SearchOptions) -> bool {
+        let Some(changes) = self.changes_since(since) else { return false };
+        let mut gone = vec![0u64; self.recs.len().div_ceil(64)];
+        let mut back = Vec::new();
+        for &(_, record, _, slot) in changes {
+            for p in self.positions(record).into_iter().chain((slot != NONE).then_some(slot)) {
+                let (w, b) = (p as usize / 64, 1u64 << (p % 64));
+                if gone[w] & b == 0 {
+                    gone[w] |= b;
+                    if self.is_live(p as usize) && shown(self.recs[p as usize].attrs, opts) {
+                        back.push(p);
+                    }
+                }
+            }
+        }
+        if gone.iter().all(|&w| w == 0) {
+            return true;
+        }
+        order.retain(|&p| gone[p as usize / 64] & (1 << (p % 64)) == 0);
+        // the order `ranked` gives: folders first (when grouped), then by name either way
+        let ff = opts.folders_first;
+        let cmp = |a: u32, b: u32| {
+            let group = (ff && self.folder_like(b as usize)).cmp(&(ff && self.folder_like(a as usize)));
+            let name = self.lower(a as usize).cmp(self.lower(b as usize));
+            group.then(if opts.ascending { name } else { name.reverse() })
+        };
+        back.sort_unstable_by(|&a, &b| cmp(a, b));
+        let mut out = Vec::with_capacity(order.len() + back.len());
+        let mut start = 0;
+        for t in back {
+            let k = start + order[start..].partition_point(|&h| cmp(h, t).is_le());
+            out.extend_from_slice(&order[start..k]);
+            out.push(t);
+            start = k;
+        }
+        out.extend_from_slice(&order[start..]);
+        *order = out;
+        true
+    }
+
+    /// Listed with the folders when they're grouped first: a folder, or a shortcut to one.
+    fn folder_like(&self, i: usize) -> bool {
+        self.recs[i].is_dir() || (self.is_lnk(i) && self.lnk_to_folder(i))
     }
 
     fn is_lnk(&self, i: usize) -> bool {
@@ -761,11 +1002,11 @@ impl SearchIndex {
         crate::datestore::set(self.drive, rec.record, filetime_to_unix_s(raw.created_ft), filetime_to_unix_s(raw.accessed_ft));
         let positions = self.positions(rec.record);
         let target = match positions.as_slice() {
-            // Unknown record — a new file or the first link.
+            // Unknown record â€” a new file or the first link.
             [] => None,
             // Single-link file: replace that one row in place. A USN event can't
             // say which old (parent, name) it replaced, but for a sole link a
-            // rename, a move, and a metadata change all update the same row — so
+            // rename, a move, and a metadata change all update the same row â€” so
             // match by record only (preserving the pre-hardlink behaviour).
             [p] => Some(*p as usize),
             // Hardlinked record: the event names one link, so match it by parent
@@ -776,6 +1017,24 @@ impl SearchIndex {
                 .map(|&p| p as usize)
                 .find(|&p| self.recs[p].parent == rec.parent && self.name(p) == raw.name.as_str()),
         };
+        // folder totals: take the old entry's bytes off its old folders, put the new ones on its new folders. A
+        // folder event carries no total, so it keeps the one it had.
+        let old = target.map(|i| (self.recs[i].parent, self.recs[i].weight()));
+        self.log(old.is_none_or(|o| o.0 != rec.parent), || Change::Upsert(raw.clone())); // added or moved: stays
+        let slot = target.map_or(NONE, |i| i as u32);
+        self.touch(rec.record, rec.parent, slot);
+        if let Some((parent, _)) = old.filter(|o| o.0 != rec.parent) {
+            self.touch(rec.record, parent, slot); // moved: the folder it left changed too
+        }
+        if rec.is_dir() {
+            rec = rec.with_size(old.map_or(0, |o| o.1));
+        }
+        if old != Some((rec.parent, rec.weight())) {
+            if let Some((parent, bytes)) = old {
+                self.add_up(parent, -(bytes as i64));
+            }
+            self.add_up(rec.parent, rec.weight() as i64);
+        }
         match target {
             // most journal events are content/metadata changes or moves: same name, so the slot (and its place in
             // the name order) stays
@@ -815,7 +1074,14 @@ impl SearchIndex {
         let Ok(record) = u32::try_from(record_no) else {
             return;
         };
-        for pos in self.positions(record) {
+        let positions = self.positions(record);
+        if !positions.is_empty() {
+            self.log(false, || Change::Delete(record_no));
+        }
+        for pos in positions {
+            let r = self.recs[pos as usize];
+            self.touch(record, r.parent, pos);
+            self.add_up(r.parent, -(r.weight() as i64));
             self.retire(pos as usize);
         }
         if let Some(p) = self.first.get_mut(record as usize) {
@@ -862,12 +1128,17 @@ struct PathScratch {
     path_lower: String,
 }
 
-/// Size as a sort/display key: `-1` for directories or unknown size.
+/// Whether an entry with attributes `a` is listed: like Explorer, protected operating-system files (hidden + system:
+/// NTUSER.DAT.LOG1, *.blf, ntuser.ini...) and hidden ones only on request.
+fn shown(a: u32, opts: &SearchOptions) -> bool {
+    if a & 0x6 == 0x6 { opts.show_system } else { opts.show_hidden || a & 0x2 == 0 }
+}
+
+/// Size as a sort/display key: a folder's total, `-1` for an unknown size.
 fn size_key(r: &Rec) -> i64 {
-    if r.is_dir() || r.size() == u64::MAX {
-        -1
-    } else {
-        r.size() as i64
+    match r.size() {
+        u64::MAX => -1,
+        s => s as i64,
     }
 }
 
@@ -877,7 +1148,7 @@ fn lnk_header_is_folder(h: &[u8]) -> bool {
 }
 
 /// Extension slice of a lowercased name (after the last dot), or `""` if none.
-/// A leading dot is a dotfile (`.gitignore`), not an extension — matching what
+/// A leading dot is a dotfile (`.gitignore`), not an extension â€” matching what
 /// the UI's Ext column displays.
 fn ext_of(name_lower: &str) -> &str {
     match name_lower.rfind('.') {
@@ -981,7 +1252,7 @@ mod tests {
 
     #[test]
     fn names_round_trip_through_the_arena() {
-        let all = ["readme.txt", "ReadMe.TXT", "Ünïcödé Fïlé.PDF", "ünïcödé", "a", "ABCDEFGHIJKLMNOPQRSTUVWXYZ.X", "İstanbul"];
+        let all = ["readme.txt", "ReadMe.TXT", "ÃœnÃ¯cÃ¶dÃ© FÃ¯lÃ©.PDF", "Ã¼nÃ¯cÃ¶dÃ©", "a", "ABCDEFGHIJKLMNOPQRSTUVWXYZ.X", "Ä°stanbul"];
         let idx = index(all.iter().enumerate().map(|(k, n)| raw(10 + k as u64, 5, n)).collect());
         assert_eq!(names(&idx), all);
         for (i, n) in all.iter().enumerate() {
@@ -996,6 +1267,35 @@ mod tests {
         let idx = index(vec![raw(10, 5, "readme.txt")]);
         assert_eq!(idx.path_of(10), Some("C:\\readme.txt".into()));
         assert_eq!(idx.path_of(999), None);
+    }
+
+    #[test]
+    fn folders_total_everything_under_them_through_live_changes() {
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        let file = |r, p, n: &str, s| RawRecord { size: Some(s), ..raw(r, p, n) };
+        // a (10) holds b (11) and a.txt; b holds b.txt
+        let mut idx = index(vec![dir(10, 5, "a"), dir(11, 10, "b"), file(20, 11, "b.txt", 100), file(21, 10, "a.txt", 10), file(22, 5, "r.txt", 5)]);
+        let size = |idx: &SearchIndex, rec: u32| idx.hit(idx.first[rec as usize]).size;
+        let both = |idx: &SearchIndex| (size(idx, 10), size(idx, 11));
+        assert_eq!(both(&idx), (110, 100));
+        idx.apply_upsert(file(20, 11, "b.txt", 300)); // grew
+        assert_eq!(both(&idx), (310, 300));
+        idx.apply_upsert(file(20, 5, "b.txt", 300)); // moved out to the root
+        assert_eq!(both(&idx), (10, 0));
+        idx.apply_upsert(file(23, 11, "new.txt", 7)); // created
+        assert_eq!(both(&idx), (17, 7));
+        idx.apply_upsert(dir(11, 5, "b")); // folder moved to the root: keeps its total
+        assert_eq!(both(&idx), (10, 7));
+        idx.apply_upsert(dir(11, 10, "c")); // renamed (new slot) and moved back
+        assert_eq!(both(&idx), (17, 7));
+        idx.apply_delete(21);
+        idx.apply_delete(23);
+        assert_eq!(both(&idx), (0, 0));
+        idx.apply_upsert(file(24, 11, "x.txt", 42));
+        let live = both(&idx);
+        idx.rebuild(idx.live_name_order()); // recomputed from scratch: same answer
+        assert_eq!(both(&idx), live);
+        assert_eq!(live, (42, 42));
     }
 
     #[test]
@@ -1017,6 +1317,213 @@ mod tests {
         assert_eq!(by_name(&idx), ["a.txt", "b.txt", "C.txt", "z.txt"]);
         assert_ne!(idx.epoch(), epoch);
         assert_links_consistent(&idx);
+    }
+
+    #[test]
+    fn a_listing_hears_only_of_changes_in_or_below_its_folder() {
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        // 20 docs \ 21 deep, 30 music, under the root
+        let mut idx = index(vec![dir(20, 5, "docs"), dir(21, 20, "deep"), dir(30, 5, "music"), raw(40, 30, "song.mp3")]);
+        let s = idx.stamp();
+        assert!(!idx.changed_under(&[20], s), "nothing happened yet");
+        idx.apply_upsert(raw(41, 30, "other.mp3"));
+        assert!(!idx.changed_under(&[20], s), "a file elsewhere");
+        assert!(idx.changed_under(&[30], s));
+        let s = idx.stamp();
+        idx.apply_upsert(raw(42, 21, "note.txt"));
+        assert!(idx.changed_under(&[20], s), "two levels down: docs' total size changed");
+        let s = idx.stamp();
+        idx.apply_upsert(raw(40, 20, "song.mp3")); // moved out of music into docs
+        assert!(idx.changed_under(&[30], s) && idx.changed_under(&[20], s));
+        let s = idx.stamp();
+        idx.apply_delete(42);
+        assert!(idx.changed_under(&[21], s) && !idx.changed_under(&[30], s));
+        // too many changes since: can't tell, so it has changed
+        let s = idx.stamp();
+        for k in 0..TOUCHED as u64 + 1 {
+            idx.apply_upsert(raw(41, 30, if k % 2 == 0 { "x" } else { "y" }));
+        }
+        assert!(idx.changed_under(&[20], s));
+    }
+
+    #[test]
+    fn the_saved_index_plus_its_change_log_loads_back_as_the_live_index() {
+        use crate::infrastructure::cache;
+        use std::io::Write;
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        let every = |idx: &SearchIndex| {
+            let mut v: Vec<(String, i64)> = (0..idx.recs.len() as u32).filter(|&i| idx.is_live(i as usize)).map(|i| idx.hit(i)).map(|h| (h.path, h.size)).collect();
+            v.sort();
+            v
+        };
+        let d = std::env::temp_dir().join(format!("mosaic-log-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("C.idx");
+        // a snapshot big enough that two small batches stay in the log
+        let mut idx = index((0..400).map(|r| raw(100 + r, 5, &format!("file{r}.txt"))).chain([dir(20, 5, "docs")]).collect());
+        cache::save_to(&path, 'C', 1, 2, 10, idx.parts()).unwrap();
+        idx.apply_upsert(raw(40, 20, "new.txt"));
+        idx.apply_upsert(raw(100, 5, "renamed.txt"));
+        idx.apply_delete(101);
+        assert!(cache::append_to(&path, 20, &idx.take_unsaved().unwrap()).unwrap());
+        idx.apply_upsert(raw(102, 20, "file2.txt")); // moved
+        idx.apply_upsert(raw(40, 20, "newer.txt"));
+        assert!(cache::append_to(&path, 30, &idx.take_unsaved().unwrap()).unwrap());
+        let log = path.with_extension("log");
+        let good = std::fs::metadata(&log).unwrap().len();
+        std::fs::OpenOptions::new().append(true).open(&log).unwrap().write_all(&[7, 0, 0]).unwrap(); // torn append
+        let s = cache::load_from(&path, 'C').unwrap();
+        assert_eq!(s.next_usn, 30, "the journal resumes past the log");
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), good, "the torn frame is cut off");
+        let mut back = SearchIndex::from_parts('C', s.recs, s.names);
+        s.log.iter().for_each(|f| back.replay(cache::changes(f)));
+        assert_eq!(every(&back), every(&idx));
+        assert!(back.take_unsaved().unwrap().is_empty(), "replayed changes are saved already");
+        cache::save_to(&path, 'C', 1, 2, 40, back.parts()).unwrap();
+        assert!(!log.exists(), "folded into the snapshot");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_coalesced_change_log_replays_to_the_live_index() {
+        for k in 1..=20 {
+            coalesced_replay(k * 0x9e3779b97f4a7c15);
+        }
+    }
+
+    fn coalesced_replay(mut seed: u64) {
+        use crate::infrastructure::cache;
+        let every = |idx: &SearchIndex| {
+            let mut v: Vec<(String, i64)> = (0..idx.recs.len() as u32).filter(|&i| idx.is_live(i as usize)).map(|i| idx.hit(i)).map(|h| (h.path, h.size)).collect();
+            v.sort();
+            v
+        };
+        let d = std::env::temp_dir().join(format!("mosaic-coalesce-{}-{seed}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("C.idx");
+        let mut rnd = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        // the model: record -> (parent, name, is_dir, size); 5 is the root
+        let mut live: std::collections::BTreeMap<u64, (u64, String, bool, u64)> = Default::default();
+        let mut scan = vec![];
+        for r in 0..40u64 {
+            let (p, dir) = (if r < 8 { 5 } else { 100 + r % 8 }, r < 8);
+            live.insert(100 + r, (p, format!("e{r}"), dir, if dir { 0 } else { r + 1 }));
+            scan.push(RawRecord { is_dir: dir, size: (!dir).then_some(r + 1), ..raw(100 + r, p, &format!("e{r}")) });
+        }
+        // untouched: a snapshot big enough that the log stays beside it
+        scan.extend((0..20_000u64).map(|k| RawRecord { size: Some(rnd(1 << 30) as u64), ..raw(10_000 + k, 5, &format!("f{}", rnd(1 << 20))) }));
+        let mut idx = index(scan);
+        cache::save_to(&path, 'C', 1, 2, 10, idx.parts()).unwrap();
+        // a new folder, a file made in it, then the folder reported again (its time changed): the folder's first
+        // event is what the file's bytes are added to, so it must stay in place
+        let folder = RawRecord { is_dir: true, size: None, ..raw(150, 5, "new") };
+        idx.apply_upsert(folder.clone());
+        idx.apply_upsert(RawRecord { size: Some(77), ..raw(151, 150, "in.txt") });
+        idx.apply_upsert(folder);
+        live.insert(150, (5, "new".into(), true, 0));
+        live.insert(151, (150, "in.txt".into(), false, 77));
+        assert!(cache::append_to(&path, 11, &idx.take_unsaved().unwrap()).unwrap());
+        let (mut next, mut gone, mut applied, mut logged) = (200u64, vec![], 0, 0);
+        let under = |live: &std::collections::BTreeMap<u64, (u64, String, bool, u64)>, mut p: u64, r: u64| {
+            while p != 5 {
+                if p == r {
+                    return true;
+                }
+                p = live[&p].0;
+            }
+            false
+        };
+        for usn in 0..30i64 {
+            for _ in 0..200 {
+                let keys: Vec<u64> = live.keys().copied().collect();
+                let dirs: Vec<u64> = std::iter::once(5).chain(live.iter().filter(|e| e.1 .2).map(|e| *e.0)).collect();
+                // mostly the newest few, as real churn is: the same temp files written again and deleted
+                let r = if rnd(4) == 0 { keys[rnd(keys.len())] } else { keys[keys.len() - 1 - rnd(keys.len().min(6))] };
+                let up = |r: u64, e: &(u64, String, bool, u64)| RawRecord { is_dir: e.2, size: (!e.2).then_some(e.3), ..raw(r, e.0, &e.1) };
+                match rnd(8) {
+                    // reported again unchanged, as a folder is each time an entry inside it changes
+                    6 => {}
+                    0 | 1 => {
+                        // new entry, now and then in a record number freed earlier
+                        let r = if !gone.is_empty() && rnd(3) == 0 {
+                            gone.swap_remove(rnd(gone.len()))
+                        } else {
+                            next += 1;
+                            next
+                        };
+                        let e = (dirs[rnd(dirs.len())], format!("n{}", rnd(50)), rnd(4) == 0, rnd(1000) as u64);
+                        idx.apply_upsert(up(r, &e));
+                        live.insert(r, e);
+                        applied += 1;
+                        continue;
+                    }
+                    2 | 3 if !live[&r].2 => live.get_mut(&r).unwrap().3 = rnd(1000) as u64,
+                    4 => live.get_mut(&r).unwrap().1 = format!("m{}", rnd(50)),
+                    5 => {
+                        let p = dirs[rnd(dirs.len())];
+                        if !under(&live, p, r) {
+                            live.get_mut(&r).unwrap().0 = p;
+                        }
+                    }
+                    _ if !live.values().any(|e| e.0 == r) => {
+                        idx.apply_delete(r);
+                        live.remove(&r);
+                        gone.push(r);
+                        applied += 1;
+                        continue;
+                    }
+                    _ => continue,
+                }
+                if let Some(e) = live.get(&r) {
+                    idx.apply_upsert(up(r, e));
+                }
+                applied += 1;
+            }
+            let c = idx.take_unsaved().unwrap();
+            logged += c.len();
+            assert!(cache::append_to(&path, usn + 12, &c).unwrap());
+        }
+        assert!(logged < applied * 9 / 10, "{logged} of {applied} changes logged");
+        let s = cache::load_from(&path, 'C').unwrap();
+        let mut back = SearchIndex::from_parts('C', s.recs, s.names);
+        s.log.iter().for_each(|f| back.replay(cache::changes(f)));
+        let (a, b) = (every(&back), every(&idx));
+        if a != b {
+            let diff: Vec<_> = a.iter().filter(|x| !b.contains(x)).chain(b.iter().filter(|x| !a.contains(x))).collect();
+            panic!("replayed vs live: {diff:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_everything_view_takes_in_changes_as_a_full_rank_would() {
+        let dir = |r, p, n: &str| RawRecord { is_dir: true, size: None, ..raw(r, p, n) };
+        for (ff, asc) in [(true, true), (true, false), (false, true), (false, false)] {
+            let opts = SearchOptions { folders_first: ff, ascending: asc, ..SearchOptions::default() };
+            let m = Matcher::compile(&opts).unwrap();
+            let mut idx = index(vec![dir(20, 5, "m"), raw(30, 20, "c.txt"), raw(31, 5, "k.txt"), raw(32, 5, "t.txt"), raw(33, 20, "q.txt")]);
+            let (mut order, s) = (idx.ranked(&opts, &m), idx.stamp());
+            idx.apply_upsert(raw(40, 5, "a.txt")); // new
+            idx.apply_upsert(dir(41, 5, "z")); // new folder
+            idx.apply_upsert(raw(31, 5, "x.txt")); // renamed
+            idx.apply_upsert(raw(32, 20, "t.txt")); // moved
+            idx.apply_delete(33);
+            idx.apply_upsert(RawRecord { attributes: 0x2, ..raw(30, 20, "c.txt") }); // hidden now
+            idx.apply_upsert(raw(42, 5, "b.txt"));
+            idx.apply_upsert(raw(42, 5, "y.txt")); // created, then renamed
+            assert!(idx.patch_all(&mut order, s, &opts));
+            assert_eq!(order, idx.ranked(&opts, &m), "folders first {ff}, ascending {asc}");
+            let s = idx.stamp();
+            for k in 0..TOUCHED as u64 + 1 {
+                idx.apply_upsert(raw(31, 5, if k % 2 == 0 { "x.txt" } else { "w.txt" }));
+            }
+            assert!(!idx.patch_all(&mut order, s, &opts), "too many changes ago to tell");
+        }
     }
 
     #[test]
@@ -1141,6 +1648,21 @@ mod tests {
         }
         assert_eq!(idx.recs.capacity(), 2 + 2 * REBUILD_AT, "one more room, not twice the index");
         assert!(idx.names.capacity() <= idx.names.len() + NAME_ROOM + 16);
+    }
+
+    /// `MOSAIC_IDX=<path to a real C.idx> cargo test --release bench_folder_sizes -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_folder_sizes() {
+        let snap = crate::infrastructure::cache::load_from(std::path::Path::new(&std::env::var("MOSAIC_IDX").unwrap()), 'C').unwrap();
+        let mut idx = SearchIndex::from_parts('C', snap.recs, snap.names);
+        let t = std::time::Instant::now();
+        idx.sum_folders();
+        println!("BENCH sum_folders_ms={:.1} entries={}", t.elapsed().as_secs_f64() * 1000.0, idx.len());
+        for p in [r"c:\windows", r"c:\program files", r"c:\users"] {
+            let r = idx.dir_record(p, false).unwrap();
+            println!("BENCH {p} = {:.2} GB", idx.hit(idx.first[r as usize]).size as f64 / 1e9);
+        }
     }
 
     /// `MOSAIC_BENCH_IDX=<path to a real {drive}.idx> cargo test --release bench_real_index -- --ignored --nocapture`

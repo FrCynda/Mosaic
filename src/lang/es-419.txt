@@ -1,0 +1,14 @@
+filter.video=Video
+menu.icons_xl=Íconos muy grandes
+menu.icons_l=Íconos grandes
+menu.icons_m=Íconos medianos
+menu.icons_s=Íconos pequeños
+menu.zoom_in=Íconos más grandes
+menu.zoom_out=Íconos más pequeños
+tip.smooth=Desplazamiento suave con la rueda del mouse en vez de saltar fila por fila
+tip.grid_view=Muestra los resultados como íconos en miniatura en una cuadrícula
+side.videos=Videos
+tip.back=Atrás (Alt+Izquierda o el botón Atrás del mouse)
+tip.forward=Adelante (Alt+Derecha o el botón Adelante del mouse)
+theme.apply=Aplicar
+theme.cancel=Cancelar

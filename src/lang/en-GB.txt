@@ -1,0 +1,4 @@
+menu.folder_color=Colour folder names
+tip.theme=Switch between the dark and light colour themes
+theme.apply=Apply
+theme.cancel=Cancel

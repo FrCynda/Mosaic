@@ -203,7 +203,7 @@ pub unsafe fn create(parent: HWND, scale: f64) -> HWND {
     });
     let hwnd = CreateWindowExW(0, pc.as_ptr(), null(), WS_CHILD | WS_CLIPCHILDREN, 0, 0, 10, 10, parent, null_mut(), inst, null());
     let video = CreateWindowExW(0, vc.as_ptr(), null(), WS_CHILD, 0, 0, 10, 10, hwnd, null_mut(), inst, null());
-    if let Ok(gfx) = Gfx::new(scale, crate::i18n::lang() == "ar") {
+    if let Ok(gfx) = Gfx::new(scale, crate::i18n::rtl()) {
         let p = Preview {
             hwnd,
             video,
@@ -304,7 +304,7 @@ pub fn invalidate() {
 
 pub fn rescale(scale: f64) {
     with(|p| {
-        if let Ok(g) = Gfx::new(scale, crate::i18n::lang() == "ar") {
+        if let Ok(g) = Gfx::new(scale, crate::i18n::rtl()) {
             p.scale = scale;
             p.cv = Canvas::new(p.hwnd, &g);
             p.mono = mono(&g, scale);
@@ -1061,8 +1061,9 @@ impl Preview {
         let px = |v: i32| (v as f64 * s).round() as i32;
         let rad = |v: f64| (v * s) as f32;
         let c = self.card();
-        cv.clear(theme().bg);
-        cv.rrect(&c, rad(8.0), Some(theme().card), Some(theme().line));
+        // flush against the window's right edge: a panel, a hairline along its left (the divider strip is its own)
+        cv.clear(theme().card);
+        cv.fill(&RECT { left: 0, top: c.top, right: 1, bottom: c.bottom }, theme().line, 1.0);
         if self.grip > 0.0 {
             // the divider's grip: the middle quarter of the strip, lit by the main window (hover, drag)
             let (x, y, half) = (c.left / 2, (c.top + c.bottom) / 2, (c.bottom - c.top) / 8);

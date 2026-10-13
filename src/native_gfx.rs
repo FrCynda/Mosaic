@@ -33,10 +33,11 @@ fn v(x: f32, y: f32) -> Vector2 {
 pub struct Fonts {
     pub reg: IDWriteTextFormat,
     pub semi: IDWriteTextFormat,
-    pub logo: IDWriteTextFormat,
     pub small: IDWriteTextFormat,
     pub label: IDWriteTextFormat, // grid names: two centered lines
+    pub big: IDWriteTextFormat,   // a dialog's title: 17 px semibold
     pub lh: i32,                  // line height of the 12 px text (CSS line-height 1.4)
+    pub big_lh: i32,
 }
 
 pub struct Gfx {
@@ -109,10 +110,11 @@ unsafe fn fonts(dw: &IDWriteFactory, s: f32, rtl: bool) -> Result<Fonts> {
     Ok(Fonts {
         reg: mk(w!("Segoe UI"), 12.0, 400, false)?, // = Everything: Segoe UI 9 pt
         semi: mk(w!("Segoe UI"), 12.0, 600, false)?,
-        logo: mk(w!("Segoe UI"), 20.0, 700, false)?,
         small: mk(w!("Segoe UI"), 9.0, 400, false)?,
         label,
+        big: mk(w!("Segoe UI"), 17.0, 600, false)?,
         lh: (12.0 * 1.4 * s).round() as i32,
+        big_lh: (17.0 * 1.4 * s).round() as i32,
     })
 }
 
@@ -122,6 +124,8 @@ pub struct Canvas {
     hwnd: *mut c_void,
     d2: ID2D1Factory,
     rt: Option<ID2D1HwndRenderTarget>,
+    /// Instead of `rt`, for a layered window: drawn into a bitmap ([`Canvas::begin_dc`]).
+    dc_rt: Option<ID2D1DCRenderTarget>,
     brush: Option<Brush>,
     pub accent: Option<Brush>,
     round: Option<ID2D1StrokeStyle>,
@@ -132,7 +136,42 @@ impl Canvas {
     pub fn new(hwnd: *mut c_void, gfx: &Gfx) -> Canvas {
         let props = D2D1_STROKE_STYLE_PROPERTIES { startCap: D2D1_CAP_STYLE_ROUND, endCap: D2D1_CAP_STYLE_ROUND, lineJoin: D2D1_LINE_JOIN_ROUND, ..Default::default() };
         let round = unsafe { gfx.d2.CreateStrokeStyle(&props, None).ok() };
-        Canvas { hwnd, d2: gfx.d2.clone(), rt: None, brush: None, accent: None, round, gen: 0 }
+        Canvas { hwnd, d2: gfx.d2.clone(), rt: None, dc_rt: None, brush: None, accent: None, round, gen: 0 }
+    }
+
+    /// Draw into `dc`'s 32-bit premultiplied bitmap, `w`×`h` from its top left, cleared to transparent: a layered
+    /// window's picture, for `UpdateLayeredWindow`. Text is grayscale (ClearType needs an opaque background).
+    pub fn begin_dc(&mut self, dc: *mut c_void, w: i32, h: i32) -> bool {
+        unsafe {
+            if self.dc_rt.is_none() {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                    pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    ..Default::default()
+                };
+                let Ok(rt) = self.d2.CreateDCRenderTarget(&props) else { return false };
+                rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+                self.brush = rt.CreateSolidColorBrush(&color(0, 1.0), None).ok();
+                self.dc_rt = Some(rt);
+            }
+            let rt = self.dc_rt.as_ref().unwrap();
+            let r = windows61::Win32::Foundation::RECT { left: 0, top: 0, right: w, bottom: h };
+            if rt.BindDC(windows61::Win32::Graphics::Gdi::HDC(dc), &r).is_err() {
+                return false;
+            }
+            rt.BeginDraw();
+            rt.Clear(Some(&color(0, 0.0)));
+        }
+        true
+    }
+    pub fn end_dc(&mut self) {
+        if let Some(rt) = &self.dc_rt {
+            if unsafe { rt.EndDraw(None, None) }.is_err() {
+                self.dc_rt = None; // made anew next time
+            }
+        }
     }
 
     /// Make (or resize) the render target. False when there is none to draw with.
@@ -190,8 +229,11 @@ impl Canvas {
         }
     }
 
-    fn rt(&self) -> &ID2D1HwndRenderTarget {
-        self.rt.as_ref().unwrap()
+    fn rt(&self) -> &ID2D1RenderTarget {
+        match &self.rt {
+            Some(rt) => rt,
+            None => self.dc_rt.as_ref().unwrap(),
+        }
     }
     fn b(&self, c: u32, a: f32) -> &Brush {
         let b = self.brush.as_ref().unwrap();
@@ -262,6 +304,43 @@ impl Canvas {
         Some(g)
     }
 
+    /// A browser tab: rounded top corners, and at its foot concave flares of radius `flare` that run out into the
+    /// line under the tab strip. `border` outlines the sides and the top (not the foot: the tab opens onto what's below).
+    pub fn tab(&self, r: &RECT, rad: f32, flare: f32, fill: u32, border: Option<u32>) {
+        let r = rf(r);
+        let shape = |closed: bool, inset: f32| -> Option<ID2D1PathGeometry> {
+            unsafe {
+                let g = self.d2.CreatePathGeometry().ok()?;
+                let s = g.Open().ok()?;
+                let arc = |x: f32, y: f32, rad: f32, cw: bool| {
+                    let dir = if cw { D2D1_SWEEP_DIRECTION_CLOCKWISE } else { D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE };
+                    s.AddArc(&D2D1_ARC_SEGMENT { point: v(x, y), size: D2D_SIZE_F { width: rad, height: rad }, rotationAngle: 0.0, sweepDirection: dir, arcSize: D2D1_ARC_SIZE_SMALL });
+                };
+                let (l, t, rr, b) = (r.left + inset, r.top + inset, r.right - inset, r.bottom);
+                let (rad, fl) = ((rad - inset).max(0.0), flare + inset);
+                s.BeginFigure(v(l - fl, b), if closed { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
+                arc(l, b - fl, fl, false);
+                s.AddLine(v(l, t + rad));
+                arc(l + rad, t, rad, true);
+                s.AddLine(v(rr - rad, t));
+                arc(rr, t + rad, rad, true);
+                s.AddLine(v(rr, b - fl));
+                arc(rr + fl, b, fl, false);
+                s.EndFigure(if closed { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+                s.Close().ok()?;
+                Some(g)
+            }
+        };
+        unsafe {
+            if let Some(g) = shape(true, 0.0) {
+                self.rt().FillGeometry(&g, self.b(fill, 1.0), None);
+            }
+            if let (Some(c), Some(g)) = (border, shape(false, 0.5)) {
+                self.rt().DrawGeometry(&g, self.b(c, 1.0), 1.0, None);
+            }
+        }
+    }
+
     pub fn circle(&self, x: f32, y: f32, rad: f32, fill: u32, a: f32) {
         unsafe { self.rt().FillEllipse(&D2D1_ELLIPSE { point: v(x, y), radiusX: rad, radiusY: rad }, self.b(fill, a)) };
     }
@@ -278,6 +357,37 @@ impl Canvas {
             s.BeginFigure(v(x - half, y - d), D2D1_FIGURE_BEGIN_HOLLOW);
             s.AddLine(v(x, y + d));
             s.AddLine(v(x + half, y - d));
+            s.EndFigure(D2D1_FIGURE_END_OPEN);
+            if s.Close().is_ok() {
+                self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());
+            }
+        }
+    }
+
+    /// A × centred on (x, y), `half` from the middle to each corner.
+    pub fn cross(&self, x: f32, y: f32, half: f32, c: u32, width: f32) {
+        unsafe {
+            let Ok(g) = self.d2.CreatePathGeometry() else { return };
+            let Ok(s) = g.Open() else { return };
+            for (a, b) in [((x - half, y - half), (x + half, y + half)), ((x - half, y + half), (x + half, y - half))] {
+                s.BeginFigure(v(a.0, a.1), D2D1_FIGURE_BEGIN_HOLLOW);
+                s.AddLine(v(b.0, b.1));
+                s.EndFigure(D2D1_FIGURE_END_OPEN);
+            }
+            if s.Close().is_ok() {
+                self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());
+            }
+        }
+    }
+
+    /// A check mark centred on (x, y), `half` wide on each side.
+    pub fn check(&self, x: f32, y: f32, half: f32, c: u32, width: f32) {
+        unsafe {
+            let Ok(g) = self.d2.CreatePathGeometry() else { return };
+            let Ok(s) = g.Open() else { return };
+            s.BeginFigure(v(x - half, y), D2D1_FIGURE_BEGIN_HOLLOW);
+            s.AddLine(v(x - half * 0.3, y + half * 0.7));
+            s.AddLine(v(x + half, y - half * 0.7));
             s.EndFigure(D2D1_FIGURE_END_OPEN);
             if s.Close().is_ok() {
                 self.rt().DrawGeometry(&g, self.b(c, 1.0), width, self.round.as_ref());

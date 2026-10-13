@@ -172,7 +172,7 @@ pub unsafe fn create(parent: HWND, scale: f64) -> HWND {
         RegisterClassExW(&wc);
     });
     let hwnd = CreateWindowExW(0, class.as_ptr(), null(), WS_CHILD, 0, 0, 10, 10, parent, null_mut(), inst, null());
-    if let Ok(gfx) = Gfx::new(scale, crate::i18n::lang() == "ar") {
+    if let Ok(gfx) = Gfx::new(scale, crate::i18n::rtl()) {
         let mut s = Side {
             hwnd,
             cv: Canvas::new(hwnd, &gfx),
@@ -212,7 +212,7 @@ pub fn relabel() {
 
 pub fn rescale(scale: f64) {
     with(|s| {
-        if let Ok(g) = Gfx::new(scale, crate::i18n::lang() == "ar") {
+        if let Ok(g) = Gfx::new(scale, crate::i18n::rtl()) {
             s.scale = scale;
             s.cv = Canvas::new(s.hwnd, &g);
             s.gfx = g;
@@ -387,10 +387,11 @@ impl Side {
         let lh = g.f.lh;
         let mut c: RECT = unsafe { std::mem::zeroed() };
         unsafe { GetClientRect(self.hwnd, &mut c) };
-        cv.clear(theme().bg);
-        cv.rrect(&c, (8.0 * s) as f32, Some(theme().card), Some(theme().line));
+        // flush against the window's left edge: a panel, a hairline along its right
+        cv.clear(theme().card);
+        cv.fill(&RECT { left: c.right - 1, ..c }, theme().line, 1.0);
         let off = self.y.round() as i32;
-        cv.clip(&RECT { left: c.left + 1, top: c.top + 1, right: c.right - 1, bottom: c.bottom - 1 });
+        cv.clip(&RECT { left: c.left, top: c.top, right: c.right - 1, bottom: c.bottom });
         for &(i, a, b) in &rows {
             let it = &self.items[i];
             let r = RECT { left: px(6), top: a - off, right: c.right - px(6), bottom: b - off };

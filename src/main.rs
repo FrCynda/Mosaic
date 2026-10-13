@@ -130,7 +130,7 @@ fn build_query(q: &str, cat: &str, meta: &str) -> String {
 }
 
 // ---- search command -----------------------------------------------------------------------------------------
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, PartialEq)]
 struct SearchArgs {
     q: String,
     cat: String,
@@ -410,7 +410,7 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
         *LAST.lock() = Some((key, hits.clone(), error.clone()));
         (hits, error)
     });
-    application::SearchResult { total: hits.len(), took_ms: 0, hits: hits.iter().skip(offset).take(limit).cloned().collect(), error, capped: false }
+    application::SearchResult { total: hits.len(), took_ms: 0, hits: hits.iter().skip(offset).take(limit).cloned().collect(), error, capped: false, stamp: None }
 }
 
 fn ext_of(name: &str) -> Option<String> {
@@ -564,6 +564,7 @@ fn main() {
     // child, not the indexer — same crash-isolation reasoning as IPreviewHandler in native_preview.rs
     if let Some(k) = std::env::args().position(|a| a == "--extract") {
         let path = std::env::args().nth(k + 1).unwrap_or_default();
+        extract::confine_worker();
         if let Some(text) = extract::full_text(&path) {
             print!("{text}");
         }
@@ -594,6 +595,10 @@ fn main() {
         let dir = std::env::args().nth(k + 1).unwrap_or_else(|| "dist".into());
         let choice: Vec<(String, String)> = std::env::args().skip(k + 2).filter_map(|a| a.split_once('=').map(|(r, n)| (r.to_string(), n.to_string()))).collect();
         std::process::exit(i32::from(native::dist(std::path::Path::new(&dir), &choice).is_err()));
+    }
+    if std::env::args().any(|a| a == "--shell-menu") {
+        shell::menu_main();
+        return;
     }
     if std::env::args().any(|a| a == "--shell-helper") {
         shell::helper_main();

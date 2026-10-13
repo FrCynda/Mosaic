@@ -18,6 +18,11 @@ pub struct Catalog {
     generation: u64,
     /// The last query's full ranked order: paging (scrolling) slices it instead of re-searching.
     view: Mutex<Option<View>>,
+    /// The last few folder listings' orders (each pane's, Home): a live refresh asks again every couple of seconds
+    /// while the disk is busy elsewhere, and gets these back unless something in the folder changed.
+    listings: Mutex<std::collections::VecDeque<Listing>>,
+    /// Indexes swapped in (`upsert_volume`).
+    swaps: u64,
 }
 
 struct View {
@@ -25,8 +30,22 @@ struct View {
     generation: u64,
     /// The index's rebuild epoch: positions from an older one point at other entries.
     epoch: u64,
+    /// The index's change stamp the order is current with (see `SearchIndex::patch_all`).
+    stamp: u64,
     order: Vec<u32>,
 }
+
+struct Listing {
+    key: String,
+    epoch: u64,
+    /// The folders listed, and the index's change stamp when they were (see `SearchIndex::changed_under`).
+    dirs: Vec<u32>,
+    stamp: u64,
+    order: Vec<u32>,
+}
+/// Listings kept, and the most entries one may hold (a drive root's `descendant`-sized listing isn't worth it).
+const LISTINGS: usize = 8;
+const LISTING_MAX: usize = 100_000;
 
 impl Catalog {
     /// Insert a freshly-built volume index, replacing any prior index for the
@@ -34,6 +53,9 @@ impl Catalog {
     pub fn upsert_volume(&mut self, index: SearchIndex) {
         let drive = index.drive();
         self.generation += 1;
+        self.listings.get_mut().clear(); // a new index counts its changes and epochs from zero again
+        *self.view.get_mut() = None;
+        self.swaps += 1;
         match self.volumes.iter_mut().find(|v| v.drive() == drive) {
             Some(slot) => *slot = index,
             None => self.volumes.push(index),
@@ -99,14 +121,18 @@ impl Catalog {
                 hits: Vec::new(),
                 error: None,
                 capped: false,
+                stamp: None,
             },
             [only] => {
-                let page = |order: &[u32]| SearchResult {
+                // a listing's version: its stamp, told apart from a rescanned index's (which counts from zero again)
+                let version = |stamp: u64| stamp ^ self.swaps << 48;
+                let page = |order: &[u32], stamp: Option<u64>| SearchResult {
                     total: order.len(),
                     took_ms: 0,
                     hits: order.iter().skip(opts.offset).take(opts.limit).filter(|&&i| only.contains(i)).map(|&i| only.hit(i)).collect(),
                     error: None,
                     capped: false,
+                    stamp: stamp.map(version),
                 };
                 // everything but the page window identifies the ranked order; a distinct field
                 // changes what that order contains, so it must be part of the cache key too.
@@ -118,20 +144,47 @@ impl Catalog {
                 // view, so disk churn (a re-rank every second or so) never stalls a scroll.
                 // ponytail: rows can show a renamed/deleted entry until the next refresh (the UI re-runs on index change)
                 let epoch = only.epoch();
-                if let Some(v) = self.view.lock().as_ref().filter(|v| {
-                    v.key == key && v.epoch == epoch && (opts.offset > 0 || v.generation == self.generation)
-                }) {
-                    return page(&v.order);
+                if let Some(v) = self.view.lock().as_mut().filter(|v| v.key == key && v.epoch == epoch) {
+                    if opts.offset > 0 || v.generation == self.generation {
+                        return page(&v.order, None);
+                    }
+                    // everything, by name (the empty search box): take in just what changed since
+                    if matcher.matches_all() && matches!(opts.sort, SortKey::Name) && distinct.is_none() && only.patch_all(&mut v.order, v.stamp, opts) {
+                        (v.generation, v.stamp) = (self.generation, only.stamp());
+                        return page(&v.order, None);
+                    }
                 }
+                // a folder listing: the same order again unless something in or below the folder changed
+                let dirs = if distinct.is_none() { only.listing_dirs(&matcher) } else { None };
+                if let Some(dirs) = &dirs {
+                    let mut ls = self.listings.lock();
+                    if let Some(k) = ls.iter().position(|l| l.key == key && l.epoch == epoch && l.dirs == *dirs) {
+                        if !only.changed_under(dirs, ls[k].stamp) {
+                            let l = ls.remove(k).unwrap();
+                            let res = page(&l.order, Some(l.stamp));
+                            ls.push_back(l); // most recently used last
+                            return res;
+                        }
+                        ls.remove(k);
+                    }
+                }
+                let stamp = only.stamp();
                 let mut order = only.ranked(opts, &matcher); // outside the lock: pages of the current view keep flowing
                 if let Some(field) = &distinct {
                     order = dedup_order(only, order, field);
                 }
-                let res = page(&order);
+                let res = page(&order, dirs.as_ref().map(|_| stamp));
+                if let Some(dirs) = dirs.filter(|_| order.len() <= LISTING_MAX) {
+                    let mut ls = self.listings.lock();
+                    if ls.len() == LISTINGS {
+                        ls.pop_front();
+                    }
+                    ls.push_back(Listing { key: key.clone(), epoch, dirs, stamp, order: order.clone() });
+                }
                 // kept only when there are pages left to fetch: a result that fits in one page (the folder-icon
                 // checks, `folder_kind`) would otherwise replace the list's view and make its next page re-rank
                 if order.len() > opts.offset + opts.limit {
-                    *self.view.lock() = Some(View { order, key, generation: self.generation, epoch });
+                    *self.view.lock() = Some(View { order, key, generation: self.generation, epoch, stamp });
                 }
                 res
             }
@@ -158,6 +211,7 @@ impl Catalog {
                     hits,
                     error: None,
                     capped: false,
+                    stamp: None,
                 }
             }
         };

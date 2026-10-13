@@ -57,28 +57,44 @@ pub fn strip_xml(s: &str) -> String {
     out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
+/// XML decompressed from one Office file, all parts together. The content indexer runs this as SYSTEM on any file a
+/// user can write, so a zip bomb (a part declaring a few KB that inflates to GBs) must stop here: past the cap the
+/// rest is never inflated. Office XML runs ~5x its text, so this still covers about `CONTENT_TEXT_MAX` of text.
+const OFFICE_XML_MAX: u64 = 32 << 20;
+/// Parts a real Office file has are counted in hundreds; a central directory of millions is hostile.
+const OFFICE_ENTRIES_MAX: usize = 20_000;
+
 /// Plain text pulled out of an Office/OpenDocument zip (`ext` must be one of [`OFFICE`]).
 pub fn office_text(path: &str, ext: &str) -> Option<String> {
     let f = std::fs::File::open(path).ok()?;
     let mut z = zip::ZipArchive::new(f).ok()?;
-    fn read(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
-        let mut e = z.by_name(name).ok()?;
-        let mut s = String::new();
-        std::io::Read::read_to_string(&mut e, &mut s).ok()?;
-        Some(s)
+    if z.len() > OFFICE_ENTRIES_MAX {
+        return None;
     }
+    let mut left = OFFICE_XML_MAX;
+    let mut read = |z: &mut zip::ZipArchive<std::fs::File>, name: &str| -> Option<String> {
+        let e = z.by_name(name).ok()?;
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(e, left), &mut b).ok()?;
+        left -= b.len() as u64;
+        Some(String::from_utf8_lossy(&b).into_owned()) // lossy: the cap can cut a character
+    };
     let xml = match ext {
         "docx" | "docm" | "dotx" | "dotm" => read(&mut z, "word/document.xml").unwrap_or_default(),
         "xlsx" | "xlsm" => read(&mut z, "xl/sharedStrings.xml").unwrap_or_default(),
         "odt" | "ods" | "odp" => read(&mut z, "content.xml").unwrap_or_default(),
         "pptx" | "pptm" => {
-            let mut names: Vec<String> = (0..z.len()).filter_map(|i| Some(z.by_index(i).ok()?.name().to_string())).filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml")).collect();
+            let mut names: Vec<String> = z.file_names().filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml")).map(String::from).collect();
             names.sort_by_key(|n| n.trim_start_matches("ppt/slides/slide").trim_end_matches(".xml").parse::<u32>().unwrap_or(0));
             names.iter().filter_map(|n| read(&mut z, n)).collect::<Vec<_>>().join("\n\n")
         }
         _ => String::new(),
     };
-    let text = strip_xml(&xml);
+    let mut text = strip_xml(&xml);
+    if text.len() > CONTENT_TEXT_MAX {
+        let cut = (0..=CONTENT_TEXT_MAX).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+        text.truncate(cut);
+    }
     (!text.trim().is_empty()).then_some(text)
 }
 
@@ -202,6 +218,61 @@ pub fn full_text(path: &str) -> Option<String> {
     local_text(path).or_else(|| has_ifilter(path).then(|| ifilter_text(path)).flatten())
 }
 
+/// The `--extract` worker shuts itself in before it opens anything: it runs third-party IFilter code on files any user
+/// can write, under the service's SYSTEM account. It joins a job of its own (1 GB of memory, 60 s of CPU, then
+/// Windows kills it), drops every privilege but traverse checking, and lowers itself to low integrity: reading the
+/// file still works (integrity only blocks writing up), but writing to nearly anything on the machine doesn't.
+/// Best effort: a step that fails leaves the rest in place, and the service also kills the worker on a timeout.
+pub fn confine_worker() {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, LUID};
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::*;
+    use windows_sys::Win32::System::JobObjects::*;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let wz = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    // SAFETY: Win32 calls on our own process, its token and a job created here; buffers are sized by the API.
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if !job.is_null() {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_PROCESS_TIME | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+            info.BasicLimitInformation.PerProcessUserTimeLimit = 60 * 10_000_000; // 100 ns units
+            info.ProcessMemoryLimit = 1 << 30;
+            let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+            if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, size) != 0 {
+                AssignProcessToJobObject(job, GetCurrentProcess());
+            }
+        }
+        let mut tok = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_DEFAULT, &mut tok) == 0 {
+            return;
+        }
+        let mut len = 0u32;
+        GetTokenInformation(tok, TokenPrivileges, std::ptr::null_mut(), 0, &mut len);
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)]; // u64s: aligned for TOKEN_PRIVILEGES
+        if GetTokenInformation(tok, TokenPrivileges, buf.as_mut_ptr().cast(), len, &mut len) != 0 {
+            let tp = buf.as_mut_ptr() as *mut TOKEN_PRIVILEGES;
+            let mut traverse = LUID { LowPart: 0, HighPart: 0 };
+            LookupPrivilegeValueW(std::ptr::null(), wz("SeChangeNotifyPrivilege").as_ptr(), &mut traverse);
+            let privs = std::slice::from_raw_parts_mut((*tp).Privileges.as_mut_ptr(), (*tp).PrivilegeCount as usize);
+            for p in privs {
+                let keep = p.Luid.LowPart == traverse.LowPart && p.Luid.HighPart == traverse.HighPart;
+                p.Attributes = if keep { p.Attributes } else { SE_PRIVILEGE_REMOVED };
+            }
+            AdjustTokenPrivileges(tok, 0, tp, 0, std::ptr::null_mut(), std::ptr::null_mut());
+        }
+        let mut low = std::ptr::null_mut();
+        if ConvertStringSidToSidW(wz("S-1-16-4096").as_ptr(), &mut low) != 0 {
+            const SE_GROUP_INTEGRITY: u32 = 0x20;
+            let label = TOKEN_MANDATORY_LABEL { Label: SID_AND_ATTRIBUTES { Sid: low, Attributes: SE_GROUP_INTEGRITY } };
+            let size = std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(low);
+            SetTokenInformation(tok, TokenIntegrityLevel, &label as *const _ as *const _, size);
+            LocalFree(low);
+        }
+        CloseHandle(tok);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +307,27 @@ mod tests {
 
         let text = office_text(path.to_str().unwrap(), "docx").unwrap();
         assert!(text.contains("hello docx"), "got: {text:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_zip_bomb_is_inflated_only_up_to_the_cap() {
+        let dir = std::env::temp_dir().join(format!("extract_bomb_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bomb.docx");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        z.start_file::<_, ()>("word/document.xml", zip::write::FileOptions::default().large_file(true)).unwrap();
+        let block = vec![b'a'; 1 << 20];
+        for _ in 0..1024 {
+            std::io::Write::write_all(&mut z, &block).unwrap(); // 1 GB of text, a few MB on disk
+        }
+        z.finish().unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() < 8 << 20);
+
+        let t = std::time::Instant::now();
+        let text = office_text(path.to_str().unwrap(), "docx").unwrap();
+        assert_eq!(text.len(), CONTENT_TEXT_MAX);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

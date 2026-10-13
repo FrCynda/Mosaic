@@ -26,6 +26,11 @@ const WRITER_BUDGET: usize = 45_000_000;
 /// Segments past this many docs are left alone by merging: otherwise every few commits rewrite the whole
 /// multi-GB index (the 30MB/s of disk writes and a core of CPU with nothing changing).
 const MAX_MERGE_DOCS: usize = 100_000;
+/// Segments smaller than this many docs count as this size when merging picks like-sized ones: none. Everything under
+/// the floor is one class, merged whole each time 8 gather, so a segment just under it (tantivy's 10,000: a ~70 MB
+/// one, ~11 GB a day; 100: tens of docs but MBs of logs) was rewritten every few live batches to take in a few KB.
+/// Without a floor, segments merge only with ones their own size, so a document is rewritten once per class it climbs.
+const MIN_MERGE_LAYER: u32 = 1;
 const CHUNK: usize = 20_000; // files whose paths the bulk scan holds at once
 /// Live changes are applied at most this often: a file rewritten constantly is extracted once per window.
 const LIVE_BATCH: std::time::Duration = std::time::Duration::from_secs(60);
@@ -91,6 +96,7 @@ impl Engine {
             let writer = self.index.writer_with_num_threads(3, WRITER_BUDGET)?;
             let mut policy = tantivy::merge_policy::LogMergePolicy::default();
             policy.set_max_docs_before_merge(MAX_MERGE_DOCS);
+            policy.set_min_layer_size(MIN_MERGE_LAYER);
             writer.set_merge_policy(Box::new(policy));
             *w = Some(writer);
         }
@@ -277,10 +283,19 @@ pub fn commit() {
 
 pub fn search(query: &str, limit: usize) -> Result<Vec<(String, f32)>, String> {
     let mut hits = engine()?.search(query, limit).map_err(|e| format!("content search failed: {e}"))?;
-    // user files changed but not yet indexed (the batch minute, or HOT_COOLDOWN): searched as they are now, from a
-    // throwaway in-RAM index, so results are current without writing anything. `try_lock`: a batch in flight holds
-    // the lock while it indexes these very files.
-    let fresh: Vec<String> = PENDING.try_lock().map_or_else(Vec::new, |p| p.keys().filter(|p| !churny(p)).cloned().collect());
+    // files changed but not yet indexed (the batch minute, HOT_COOLDOWN, or the daily batch of app state and logs):
+    // searched as they are now, newest first, from a throwaway in-RAM index, so results are current without writing
+    // anything. Not system churn (thousands of temp files an hour): that's searched as of its daily batch. `try_lock`:
+    // a batch in flight holds the lock while it indexes these very files.
+    let fresh: Vec<String> = PENDING.try_lock().map_or_else(Vec::new, |p| {
+        let mut v: Vec<(&String, i64)> = p
+            .iter()
+            .filter(|(p, _)| !system_churn(&p.to_ascii_lowercase()))
+            .map(|(p, ev)| (p, if let ChangeEvent::Upserted { mtime, .. } = ev { *mtime } else { i64::MAX }))
+            .collect();
+        v.sort_unstable_by_key(|e| std::cmp::Reverse(e.1));
+        v.into_iter().map(|(p, _)| p.clone()).collect()
+    });
     if fresh.is_empty() {
         return Ok(hits);
     }
@@ -293,14 +308,15 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<(String, f32)>, String> {
 }
 
 // ponytail: plain-text/Office files only (IFilter types like PDF would need a subprocess per query), and capped at
-// 200 files / 32 MB of text: past that (a build, an unzip) the rest is searched from the index, as of its last batch
+// 200 files / 32 MB of text / 2000 looked at: past that (a build, an unzip) the rest is searched from the index, as of
+// its last batch
 /// The hits among `paths` as they are now, and the paths that answer covers (read, or gone).
 fn search_fresh(paths: &[String], query: &str, limit: usize) -> tantivy::Result<(Vec<(String, f32)>, Vec<String>)> {
     let (schema, fields) = schema();
     let index = Index::create_in_ram(schema);
     let mut w: IndexWriter = index.writer_with_num_threads(1, 15_000_000)?;
     let (mut read, mut budget) = (Vec::new(), 32usize << 20);
-    for path in paths {
+    for path in paths.iter().take(2000) {
         if read.len() == 200 || budget == 0 {
             break;
         }
@@ -332,21 +348,64 @@ pub fn progress() -> Option<(usize, usize)> {
 /// most of a typical corpus. Only a file with a registered IFilter (`extract::has_ifilter`) pays
 /// for a subprocess at all, and only then for the reason that one exists — a misbehaving filter
 /// DLL takes down that throwaway child, never this process.
-fn index_file(path: &str, mtime: i64, size: i64) {
+/// Whether it wrote anything to the index.
+fn index_file(path: &str, mtime: i64, size: i64) -> bool {
     if let Some(body) = crate::extract::local_text(path) {
+        if body.trim().is_empty() {
+            // an empty file (a lock, a placeholder): a document per such file was a new segment a minute for nothing
+            skip_mark(path, mtime, size);
+            return forget(path);
+        }
         upsert(path, mtime, size, &body);
-        return;
+        return true;
     }
     if !crate::extract::has_ifilter(path) {
         skip_mark(path, mtime, size); // no text in it: don't open it again until it changes
-        return;
+        return false;
     }
-    let Ok(exe) = crate::native::content_exe().or_else(|_| std::env::current_exe()) else { return };
-    let Ok(out) = std::process::Command::new(exe).arg("--extract").arg(path).output() else { return };
-    let body = String::from_utf8_lossy(&out.stdout);
+    let Ok(exe) = crate::native::content_exe().or_else(|_| std::env::current_exe()) else { return false };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--extract").arg(path);
+    let Some(out) = run_capped(cmd, EXTRACT_TIMEOUT, EXTRACT_MAX) else { return false };
+    let body = String::from_utf8_lossy(&out);
     // an empty result is stored too (an empty body): the stored mtime/size is what lets the next session's scan
     // skip this file instead of starting another subprocess for it, every time
     upsert(path, mtime, size, body.trim());
+    true
+}
+
+/// Drops `path`'s document, if it has one. Whether it did.
+fn forget(path: &str) -> bool {
+    let indexed = engine().ok().and_then(|e| e.get(path)).is_some();
+    if indexed {
+        remove(path);
+    }
+    indexed
+}
+
+/// A worker still running after this is killed (a filter stuck on a malformed file); what it printed so far is kept.
+const EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Output read from a worker: its own caps (`IFILTER_MAX_CHARS`, `CONTENT_TEXT_MAX`) with room for UTF-8.
+const EXTRACT_MAX: u64 = 16 << 20;
+
+/// Run `cmd` and return its stdout, at most `max` bytes; killed once `timeout` passes. A worker that keeps printing
+/// past the cap finds its pipe closed and dies on the next write.
+fn run_capped(mut cmd: std::process::Command, timeout: std::time::Duration, max: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.take(max).read_to_end(&mut b);
+        let _ = tx.send(b); // dropping `out` here closes the pipe
+    });
+    let got = rx.recv_timeout(timeout);
+    let _ = child.kill(); // no-op once it exited; a stuck or flooding worker ends here
+    let _ = child.wait();
+    // after a kill the pipe closes at once, unless something the worker started still holds it: don't wait on that
+    got.or_else(|_| rx.recv_timeout(std::time::Duration::from_secs(1))).ok()
 }
 
 /// Files looked at and found to hold no text (binaries, media...), as hashes of (path, mtime, size). Only files
@@ -357,6 +416,8 @@ struct Skip {
     added: std::collections::HashSet<u64>,
 }
 
+/// Loaded only while [`bulk_index`] runs, the one reader of it and the one place it's saved: ~8 MB per million
+/// files that a live change has no use for.
 static SKIP: Mutex<Option<Skip>> = Mutex::new(None);
 
 fn skip_path() -> PathBuf {
@@ -371,25 +432,22 @@ fn skip_key(path: &str, mtime: i64, size: i64) -> u64 {
     h
 }
 
-fn with_skip<T>(f: impl FnOnce(&mut Skip) -> T) -> T {
-    let mut g = SKIP.lock();
-    let s = g.get_or_insert_with(|| {
-        let sorted = std::fs::read(skip_path()).unwrap_or_default().chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
-        Skip { sorted, added: Default::default() }
-    });
-    f(s)
+fn skip_load() {
+    let sorted = std::fs::read(skip_path()).unwrap_or_default().chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+    *SKIP.lock() = Some(Skip { sorted, added: Default::default() });
 }
 
+/// Outside a bulk pass this drops the mark, as it always did: only a bulk pass saved them.
 fn skip_mark(path: &str, mtime: i64, size: i64) {
     let k = skip_key(path, mtime, size);
-    with_skip(|s| {
+    if let Some(s) = SKIP.lock().as_mut() {
         s.added.insert(k);
-    });
+    }
 }
 
 fn skipped(path: &str, mtime: i64, size: i64) -> bool {
     let k = skip_key(path, mtime, size);
-    with_skip(|s| s.sorted.binary_search(&k).is_ok() || s.added.contains(&k))
+    SKIP.lock().as_ref().is_some_and(|s| s.sorted.binary_search(&k).is_ok() || s.added.contains(&k))
 }
 
 /// Left by a clean stop ([`shutdown`]) of a session whose index was complete: a full pass stood behind it and every
@@ -415,13 +473,13 @@ pub fn mark_complete() {
 }
 
 fn skip_save() {
-    with_skip(|s| {
+    if let Some(s) = SKIP.lock().as_mut() {
         s.sorted.extend(s.added.drain());
         s.sorted.sort_unstable();
         s.sorted.dedup();
         let bytes: Vec<u8> = s.sorted.iter().flat_map(|k| k.to_le_bytes()).collect();
         let _ = std::fs::write(skip_path(), bytes);
-    });
+    }
 }
 
 /// One-time (per session) walk of every already-known file, indexing anything new or changed since the
@@ -434,6 +492,7 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
     use std::sync::atomic::Ordering::Relaxed;
     BULK_TOTAL.store(total, Relaxed);
     BULK_DONE.store(0, Relaxed);
+    skip_load();
     // `chunk(from, n)` builds the paths of files `from..from + n` only when their turn comes: memory stays flat
     // however many files there are. `None` (the index was rebuilt meanwhile) ends the pass; the next start redoes it.
     let scan = || {
@@ -464,6 +523,7 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
     };
     commit();
     skip_save();
+    *SKIP.lock() = None;
     if complete {
         mark_complete();
     }
@@ -477,18 +537,13 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
 /// costs one extraction). Locked for the whole of a batch, so [`shutdown`] waits for one in flight.
 static PENDING: LazyLock<Mutex<std::collections::HashMap<String, ChangeEvent>>> = LazyLock::new(Default::default);
 
-/// Whether `ev` touched the index at all (anything but the index's own files).
+/// Whether `ev` changed the index. Most events don't (an attribute change, a file with no text, a deleted temp
+/// file never indexed), and then nothing is written: every commit is a new meta.json and fsyncs, even an empty one.
 fn apply(ev: ChangeEvent) -> bool {
     match ev {
         ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
-        ChangeEvent::Upserted { path, mtime, size } => {
-            index_file(&path, mtime, size);
-            true
-        }
-        ChangeEvent::Deleted { path } => {
-            remove(&path);
-            true
-        }
+        ChangeEvent::Upserted { path, mtime, size } => engine().ok().and_then(|e| e.get(&path)) != Some((mtime, size)) && index_file(&path, mtime, size),
+        ChangeEvent::Deleted { path } => forget(&path),
     }
 }
 
@@ -570,8 +625,17 @@ pub fn shutdown(within: std::time::Duration) {
 /// Applied per minute, each change cost an extraction, a commit and later segment merges (~30 GB/day of SSD writes).
 /// So its changes wait for the daily [`CHURN_BATCH`] instead: temp and cache files created and deleted within the
 /// day cancel out unseen, and a file rewritten all day is indexed once, as it ended up.
+/// Same for app state outside AppData and for logs: dot-folders (`.git`, `.cache`, tools' session files), installed
+/// packages, `.log` files and `logs` folders. Appended to or recreated all day, they were most of the live segments
+/// and the merges after them. Unlike system churn, a search still reads them as they are now ([`search`]).
 fn churny(path: &str) -> bool {
     let p = path.to_ascii_lowercase();
+    let dir = p.rsplit_once('\\').map_or("", |(d, _)| d);
+    system_churn(&p) || dir.contains(r"\.") || p.contains(r"\node_modules\") || p.contains(r"\logs\") || p.ends_with(".log")
+}
+
+/// Windows, ProgramData and AppData, of a lowercased path.
+fn system_churn(p: &str) -> bool {
     let rest = p.get(2..).unwrap_or_default(); // past the drive letter
     rest.starts_with(r"\windows\") || rest.starts_with(r"\programdata\") || p.contains(r"\appdata\")
 }
@@ -622,6 +686,22 @@ fn is_own(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stuck_worker_is_killed_and_a_flooding_one_cut_off() {
+        let t = std::time::Instant::now();
+        let mut hang = std::process::Command::new("powershell");
+        hang.args(["-NoProfile", "-Command", "Start-Sleep 30"]);
+        assert_eq!(run_capped(hang, std::time::Duration::from_secs(2), 1000), Some(Vec::new()));
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "took {:?}", t.elapsed());
+
+        let big = std::env::temp_dir().join(format!("flood_{}.txt", std::process::id()));
+        std::fs::write(&big, vec![b'x'; 4 << 20]).unwrap();
+        let mut flood = std::process::Command::new("cmd");
+        flood.arg("/c").arg("type").arg(&big);
+        assert_eq!(run_capped(flood, std::time::Duration::from_secs(30), 1000).map(|b| b.len()), Some(1000));
+        let _ = std::fs::remove_file(&big);
+    }
 
     /// A from-scratch in-RAM index (never touches `engine()`'s on-disk singleton, so tests can't
     /// collide with each other or with a real running app's index) exercising the full
@@ -705,6 +785,13 @@ mod tests {
         assert!(!churny(r"C:\Users\me\Documents\Windows\notes.txt"));
         assert!(!churny(r"C:\Users\me\appdata.txt"));
         assert!(!churny(r"C:\Program Files\App\readme.txt"));
+        assert!(churny(r"C:\Users\me\.tool\projects\session.jsonl"));
+        assert!(churny(r"C:\Users\me\code\app\.git\COMMIT_EDITMSG"));
+        assert!(churny(r"C:\Users\me\code\app\node_modules\x\index.js"));
+        assert!(churny(r"C:\Server\logs\today.txt"));
+        assert!(churny(r"C:\Users\me\code\app\build.log"));
+        assert!(!churny(r"C:\Users\me\code\app\.env"), "a dot-file, not a dot-folder");
+        assert!(!churny(r"C:\Users\me\Documents\v1.2\notes.txt"));
     }
 
     #[test]
