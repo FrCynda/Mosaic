@@ -31,6 +31,10 @@
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <!-- Windows' newer heap (Windows 10 2004+): less memory left committed after frees than the default heap.
+           Measured: the window ~54 -> 44 MB, the index service ~222 -> 216 MB. mimalloc did better for the service
+           alone (~206) but worse for the window (~59), and the two together worse than either. -->
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
     </windowsSettings>
   </application>
 </assembly>

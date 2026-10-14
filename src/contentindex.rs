@@ -86,7 +86,9 @@ impl Engine {
     fn open(index: Index, fields: Fields) -> tantivy::Result<Self> {
         // manual, reloaded synchronously in `commit()`: `OnCommitWithDelay` reloads on its own schedule,
         // so a search right after committing could still see the pre-commit snapshot
-        let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
+        // no decompressed-block cache: tantivy keeps 100 blocks (~1.6 MB) per segment, tens of MB over the index's
+        // segments, for lookups (`get`, a hit's path) that decompress a block in microseconds anyway
+        let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).doc_store_cache_num_blocks(0).try_into()?;
         Ok(Engine { index, fields, writer: Mutex::new(None), reader })
     }
 
@@ -288,13 +290,13 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<(String, f32)>, String> {
     // anything. Not system churn (thousands of temp files an hour): that's searched as of its daily batch. `try_lock`:
     // a batch in flight holds the lock while it indexes these very files.
     let fresh: Vec<String> = PENDING.try_lock().map_or_else(Vec::new, |p| {
-        let mut v: Vec<(&String, i64)> = p
+        let mut v: Vec<(&str, i64)> = p
             .iter()
             .filter(|(p, _)| !system_churn(&p.to_ascii_lowercase()))
-            .map(|(p, ev)| (p, if let ChangeEvent::Upserted { mtime, .. } = ev { *mtime } else { i64::MAX }))
+            .map(|(p, w)| (&**p, w.map_or(i64::MAX, |w| w.0)))
             .collect();
         v.sort_unstable_by_key(|e| std::cmp::Reverse(e.1));
-        v.into_iter().map(|(p, _)| p.clone()).collect()
+        v.into_iter().map(|(p, _)| p.to_string()).collect()
     });
     if fresh.is_empty() {
         return Ok(hits);
@@ -535,15 +537,24 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
 /// Runs on its own thread so extraction (a subprocess spawn per file) never blocks the USN watcher.
 /// Changes heard but not yet applied: latest event per path, applied once per LIVE_BATCH window (a file saved 1000x
 /// costs one extraction). Locked for the whole of a batch, so [`shutdown`] waits for one in flight.
-static PENDING: LazyLock<Mutex<std::collections::HashMap<String, ChangeEvent>>> = LazyLock::new(Default::default);
+/// A day of system churn is hundreds of thousands of paths: each is kept once, as a `Box<str>` (no spare capacity).
+static PENDING: LazyLock<Mutex<std::collections::HashMap<Box<str>, Waiting>>> = LazyLock::new(Default::default);
+/// A waiting change: the file's (mtime, size) as last heard, `None` once deleted.
+type Waiting = Option<(i64, i64)>;
 
-/// Whether `ev` changed the index. Most events don't (an attribute change, a file with no text, a deleted temp
-/// file never indexed), and then nothing is written: every commit is a new meta.json and fsyncs, even an empty one.
-fn apply(ev: ChangeEvent) -> bool {
-    match ev {
-        ChangeEvent::Upserted { ref path, .. } | ChangeEvent::Deleted { ref path } if is_own(path) => false,
-        ChangeEvent::Upserted { path, mtime, size } => engine().ok().and_then(|e| e.get(&path)) != Some((mtime, size)) && index_file(&path, mtime, size),
-        ChangeEvent::Deleted { path } => forget(&path),
+/// Whether a change still has work to do in a batch. A deleted file without a document has none (most churn: temp
+/// files made and deleted within the day): dropped when heard, not held in memory until its batch.
+fn worth_keeping(path: &str, w: Waiting) -> bool {
+    w.is_some() || engine().map_or(true, |e| e.get(path).is_some())
+}
+
+/// Whether the change to `path` changed the index. Most don't (an attribute change, a file with no text, a deleted
+/// temp file never indexed), and then nothing is written: every commit is a new meta.json and fsyncs, even an empty one.
+fn apply(path: &str, w: Waiting) -> bool {
+    match w {
+        _ if is_own(path) => false,
+        Some((mtime, size)) => engine().ok().and_then(|e| e.get(path)) != Some((mtime, size)) && index_file(path, mtime, size),
+        None => forget(path),
     }
 }
 
@@ -558,21 +569,26 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
     std::thread::spawn(move || {
         load_pending();
         let mut first = std::time::Instant::now();
-        let mut recent: std::collections::HashMap<String, std::time::Instant> = Default::default();
+        let mut recent: std::collections::HashMap<Box<str>, std::time::Instant> = Default::default();
         loop {
             let waiting = !PENDING.lock().is_empty();
             let wait = if waiting { LIVE_BATCH.saturating_sub(first.elapsed()) } else { std::time::Duration::from_secs(3600) };
             match rx.recv_timeout(wait) {
                 Ok(ev) => {
-                    let path = match &ev {
-                        ChangeEvent::Upserted { path, .. } | ChangeEvent::Deleted { path } => path.clone(),
+                    let (path, w) = match ev {
+                        ChangeEvent::Upserted { path, mtime, size } => (path, Some((mtime, size))),
+                        ChangeEvent::Deleted { path } => (path, None),
                     };
                     if !is_own(&path) {
                         let mut pending = PENDING.lock();
+                        if !worth_keeping(&path, w) {
+                            pending.remove(path.as_str());
+                            continue;
+                        }
                         if pending.is_empty() {
                             first = std::time::Instant::now();
                         }
-                        pending.insert(path, ev);
+                        pending.insert(path.into_boxed_str(), w);
                     }
                     continue;
                 }
@@ -585,18 +601,19 @@ pub fn spawn_consumer(rx: std::sync::mpsc::Receiver<ChangeEvent>) {
             recent.retain(|_, t| now - *t < HOT_COOLDOWN);
             use std::sync::atomic::Ordering::Relaxed;
             let churn_due = unix_now().saturating_sub(CHURN_SINCE.load(Relaxed)) >= CHURN_BATCH.as_secs();
-            let ready: Vec<String> = pending.keys().filter(|p| if churny(p) { churn_due } else { !recent.contains_key(*p) }).cloned().collect();
+            let ready: Vec<Box<str>> = pending.keys().filter(|p| if churny(p) { churn_due } else { !recent.contains_key(*p) }).cloned().collect();
             let mut any = false;
             for p in ready {
-                let ev = pending.remove(&p).unwrap();
-                if matches!(ev, ChangeEvent::Upserted { .. }) && !churny(&p) {
+                let w = pending.remove(&p).unwrap();
+                any |= apply(&p, w);
+                if w.is_some() && !churny(&p) {
                     recent.insert(p, now);
                 }
-                any |= apply(ev);
             }
             flush(any);
             if churn_due {
                 CHURN_SINCE.store(unix_now(), Relaxed);
+                pending.shrink_to_fit(); // the day's churn is gone: its table needn't stay that big
             }
             first = now; // what's still cooling down is looked at again next batch
         }
@@ -611,7 +628,7 @@ pub fn shutdown(within: std::time::Duration) {
     let pending = parking_lot::MutexGuard::leak(pending); // never unlocked
     if !pending.is_empty() {
         let since = CHURN_SINCE.load(std::sync::atomic::Ordering::Relaxed);
-        let text: String = std::iter::once(since.to_string()).chain(pending.drain().map(|(p, _)| p)).map(|l| l + "\n").collect();
+        let text: String = std::iter::once(since.to_string()).chain(pending.drain().map(|(p, _)| p.into_string())).map(|l| l + "\n").collect();
         if std::fs::write(pending_path(), text).is_err() {
             return; // not kept: no marker, so the next start's full pass picks these up
         }
@@ -662,14 +679,16 @@ fn load_pending() {
     CHURN_SINCE.store(lines.next().and_then(|l| l.parse().ok()).unwrap_or_else(unix_now), std::sync::atomic::Ordering::Relaxed);
     let mut pending = PENDING.lock();
     for path in lines {
-        let ev = match std::fs::metadata(path) {
+        let w = match std::fs::metadata(path) {
             Ok(m) if m.is_file() => {
                 let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
-                ChangeEvent::Upserted { path: path.to_string(), mtime, size: m.len() as i64 }
+                Some((mtime, m.len() as i64))
             }
-            _ => ChangeEvent::Deleted { path: path.to_string() },
+            _ => None,
         };
-        pending.insert(path.to_string(), ev);
+        if worth_keeping(path, w) {
+            pending.insert(path.into(), w);
+        }
     }
 }
 
@@ -686,6 +705,37 @@ fn is_own(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read-only: documents, words and stored path bytes per top folder of the live index (run elevated, the
+    /// service's files are SYSTEM's). Words stand in for each folder's share of the postings on disk.
+    #[test]
+    #[ignore]
+    fn bench_content_breakdown() {
+        let (schema, f) = schema();
+        let index = open_index(&dir(), schema).unwrap();
+        let searcher = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into().map(|r: IndexReader| r.searcher()).unwrap();
+        let mut groups: std::collections::BTreeMap<&str, (u64, u64, u64)> = Default::default();
+        for sr in searcher.segment_readers() {
+            let norms = sr.get_fieldnorms_reader(f.body).unwrap();
+            let store = sr.get_store_reader(0).unwrap();
+            for d in sr.doc_ids_alive() {
+                let doc: TantivyDocument = store.get(d).unwrap();
+                let Some(OwnedValue::Str(p)) = doc.get_first(f.path) else { continue };
+                let l = p.to_ascii_lowercase();
+                let g = match &l.get(2..).unwrap_or_default() {
+                    r if r.starts_with(r"\windows\") => "Windows",
+                    r if r.starts_with(r"\programdata\") => "ProgramData",
+                    _ if l.contains(r"\appdata\") => "AppData",
+                    _ => "everything else",
+                };
+                let e = groups.entry(g).or_default();
+                *e = (e.0 + 1, e.1 + norms.fieldnorm(d) as u64, e.2 + p.len() as u64);
+            }
+        }
+        for (g, (docs, words, path)) in groups {
+            println!("BENCH {g:16} docs={docs} words={words} path_bytes={path}");
+        }
+    }
 
     #[test]
     fn a_stuck_worker_is_killed_and_a_flooding_one_cut_off() {

@@ -36,13 +36,24 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
 
-/// `Rec::len`: lowercased name length in the low 14 bits, case kind in the top 2 (0: the name is already all
-/// lowercase, no case data).
-const LEN_MASK: u16 = 0x3FFF;
+/// `Rec::bits`, low to high: lowercased name length (10 bits: an NTFS name is at most 255 UTF-16 units, so at most
+/// 765 bytes lowercased), case kind (2; 0: the name is already all lowercase, no case data), attributes (13, see
+/// [`ATTRS`]), then size bits 32..39 (7, see [`Rec::size`]).
+const LEN_MASK: u32 = 0x3FF;
+const CASE_SHIFT: u32 = 10;
+/// The name part of `Rec::bits`, as [`push_name`] returns it.
+const NAME_BITS: u32 = 0xFFF;
+const ATTR_SHIFT: u32 = 12;
+const SIZE_SHIFT: u32 = 25;
 /// ASCII name: one bit per byte (set = uppercase) follows the lowercased bytes.
-const CASE_MASK: u16 = 1;
+const CASE_MASK: u32 = 1;
 /// Anything else: a u16 length and the original UTF-8 follow the lowercased bytes.
-const CASE_FULL: u16 = 2;
+const CASE_FULL: u32 = 2;
+/// The `FILE_ATTRIBUTE_*` flags kept, by bit: read-only, hidden, system, directory, archive, temporary, sparse,
+/// reparse point, compressed, offline, not content indexed, encrypted, recall on data access. An entry with none of
+/// them reads as NORMAL (0x80), as Windows reports it; the others don't occur on NTFS files or aren't used here.
+const ATTRS: [u32; 13] = [0x1, 0x2, 0x4, 0x10, 0x20, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x40_0000];
+const DIR_BIT: u32 = 1 << (ATTR_SHIFT + 3);
 
 /// Retired + unsorted entries that trigger a [`SearchIndex::rebuild`]. Until then deletes and renames only retire
 /// a slot and new names queue in a small unsorted tail, so the ~150 ms full name sort runs rarely, not on every
@@ -59,14 +70,14 @@ pub(crate) fn filetime_to_unix_s(ft: u64) -> u32 {
     }
 }
 
-/// One file or folder, 28 bytes (no 8-byte field, so no padding: 10 MB less over 2.5M entries). Created/accessed times aren't kept (Everything doesn't index them by default
+/// One file or folder, 24 bytes (no 8-byte field, so no padding). Created/accessed times aren't kept (Everything doesn't index them by default
 /// either); `dc:`/`da:` filters therefore match nothing.
 /// `repr(C)` with no padding and only integer fields, so the cache stores the array's bytes as they are.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct Rec {
-    /// Bytes, 48 bits (256 TB) split in two; all ones for unknown sizes. A folder holds the total of everything
-    /// under it (see [`SearchIndex::sum_folders`]). See [`Rec::size`].
+    /// Low 32 bits of the size. A folder holds the total of everything under it (see
+    /// [`SearchIndex::sum_folders`]). See [`Rec::size`].
     size_lo: u32,
     /// MFT record number; `NONE` marks a retired slot (deleted, or renamed into a new slot).
     record: u32,
@@ -76,28 +87,53 @@ pub struct Rec {
     name: u32,
     /// Last modified, Unix seconds; 0 = unknown.
     mtime: u32,
-    /// `FILE_ATTRIBUTE_*`; DIRECTORY marks folders.
-    attrs: u32,
-    size_hi: u16,
-    /// See [`LEN_MASK`].
-    len: u16,
+    /// Name length and case kind, attributes, high size bits: see [`LEN_MASK`].
+    bits: u32,
 }
 
 impl Rec {
-    const NO_SIZE: u64 = (1 << 48) - 1;
+    /// The stored size is 39 bits: bytes below 256 GB, whole KB at and above (to 256 TB; the size column shows
+    /// 0.1 GB there). All ones for unknown sizes.
+    const NO_SIZE: u64 = (1 << 39) - 1;
+    const IN_KB: u64 = 1 << 38;
     /// Bytes; `u64::MAX` for unknown sizes.
     fn size(&self) -> u64 {
-        match (self.size_hi as u64) << 32 | self.size_lo as u64 {
+        match ((self.bits >> SIZE_SHIFT) as u64) << 32 | self.size_lo as u64 {
             Self::NO_SIZE => u64::MAX,
+            s if s & Self::IN_KB != 0 => (s & !Self::IN_KB) << 10,
             s => s,
         }
     }
     fn with_size(self, size: u64) -> Rec {
-        let s = size.min(Self::NO_SIZE);
-        Rec { size_lo: s as u32, size_hi: (s >> 32) as u16, ..self }
+        let s = match size {
+            u64::MAX => Self::NO_SIZE,
+            s if s < Self::IN_KB => s,
+            s => Self::IN_KB | (s.saturating_add(512) >> 10).min(Self::IN_KB - 2),
+        };
+        Rec { size_lo: s as u32, bits: self.bits & !(u32::MAX << SIZE_SHIFT) | ((s >> 32) as u32) << SIZE_SHIFT, ..self }
+    }
+    /// `FILE_ATTRIBUTE_*`.
+    fn attrs(&self) -> u32 {
+        let a = self.bits >> ATTR_SHIFT;
+        match ATTRS.iter().enumerate().filter(|&(k, _)| a >> k & 1 != 0).fold(0, |m, (_, f)| m | f) {
+            0 => 0x80, // FILE_ATTRIBUTE_NORMAL
+            m => m,
+        }
+    }
+    fn with_attrs(self, attrs: u32) -> Rec {
+        let a = ATTRS.iter().enumerate().filter(|&(_, f)| attrs & f != 0).fold(0, |m, (k, _)| m | 1 << k);
+        Rec { bits: self.bits & !(0x1FFF << ATTR_SHIFT) | a << ATTR_SHIFT, ..self }
+    }
+    /// Point at a name in the arena: the pair [`push_name`] returns.
+    fn set_name(&mut self, (name, bits): (u32, u32)) {
+        self.name = name;
+        self.bits = self.bits & !NAME_BITS | bits;
+    }
+    fn case_kind(&self) -> u32 {
+        self.bits >> CASE_SHIFT & 3
     }
     fn is_dir(&self) -> bool {
-        self.attrs & FILE_ATTRIBUTE_DIRECTORY != 0
+        self.bits & DIR_BIT != 0
     }
     /// What this entry adds to its folder's total: a file's size, a folder's own total.
     fn weight(&self) -> u64 {
@@ -107,7 +143,7 @@ impl Rec {
         }
     }
     fn lower_len(&self) -> usize {
-        (self.len & LEN_MASK) as usize
+        (self.bits & LEN_MASK) as usize
     }
     fn modified_ms(&self) -> Option<i64> {
         (self.mtime != 0).then(|| self.mtime as i64 * 1000)
@@ -200,6 +236,13 @@ pub struct SearchIndex {
     unsaved: parking_lot::Mutex<Option<Vec<(Change, bool)>>>,
 }
 
+/// See [`SearchIndex::rebuild_plan`].
+pub struct RebuildPlan {
+    order: Vec<u32>,
+    names: Vec<u8>,
+    name_at: Vec<u32>,
+}
+
 /// Changes `SearchIndex::touched` remembers; a listing more changes old than that re-ranks.
 const TOUCHED: usize = 4096;
 /// Unsaved changes kept at most (~100 bytes each), should saves stop (a journal gap leaves no position to save).
@@ -239,27 +282,28 @@ fn coalesce(changes: Vec<(Change, bool)>) -> Vec<Change> {
     kept
 }
 
-/// Append `name` to the arena: lowercased bytes, then case data. Returns the `Rec::name`/`Rec::len` pair.
-fn push_name(names: &mut Vec<u8>, name: &str) -> (u32, u16) {
+/// Append `name` (at most 255 UTF-16 units) to the arena: lowercased bytes, then case data. Returns the
+/// `Rec::name` offset and the name part of `Rec::bits`.
+fn push_name(names: &mut Vec<u8>, name: &str) -> (u32, u32) {
     let off = names.len() as u32;
     if name.is_ascii() {
         names.extend(name.bytes().map(|b| b.to_ascii_lowercase()));
         if !name.bytes().any(|b| b.is_ascii_uppercase()) {
-            return (off, name.len() as u16);
+            return (off, name.len() as u32);
         }
         for chunk in name.as_bytes().chunks(8) {
             names.push(chunk.iter().enumerate().fold(0u8, |m, (k, b)| m | ((b.is_ascii_uppercase() as u8) << k)));
         }
-        return (off, name.len() as u16 | CASE_MASK << 14);
+        return (off, name.len() as u32 | CASE_MASK << CASE_SHIFT);
     }
     let lower = name.to_lowercase();
     names.extend_from_slice(lower.as_bytes());
     if lower == name {
-        return (off, lower.len() as u16);
+        return (off, lower.len() as u32);
     }
     names.extend_from_slice(&(name.len() as u16).to_le_bytes());
     names.extend_from_slice(name.as_bytes());
-    (off, lower.len() as u16 | CASE_FULL << 14)
+    (off, lower.len() as u32 | CASE_FULL << CASE_SHIFT)
 }
 
 /// A record for `r`, minus its name; `None` for records that are never search hits or can't be stored.
@@ -267,18 +311,17 @@ fn new_rec(r: &RawRecord) -> Option<Rec> {
     if r.name.is_empty() || r.record_no == ROOT_RECORD as u64 || r.record_no >= NONE as u64 || r.parent_no >= NONE as u64 {
         return None;
     }
-    let size = if r.is_dir { 0 } else { r.size.unwrap_or(u64::MAX) };
-    Some(Rec {
-        size_lo: 0,
-        size_hi: 0,
-        record: r.record_no as u32,
-        parent: r.parent_no as u32,
-        name: 0,
-        mtime: filetime_to_unix_s(r.modified_ft),
-        attrs: if r.is_dir { r.attributes | FILE_ATTRIBUTE_DIRECTORY } else { r.attributes & !FILE_ATTRIBUTE_DIRECTORY },
-        len: 0,
+    // longer than NTFS allows: wouldn't fit `LEN_MASK`
+    if r.name.encode_utf16().nth(255).is_some() {
+        return None;
     }
-    .with_size(size))
+    let size = if r.is_dir { 0 } else { r.size.unwrap_or(u64::MAX) };
+    let attrs = if r.is_dir { r.attributes | FILE_ATTRIBUTE_DIRECTORY } else { r.attributes & !FILE_ATTRIBUTE_DIRECTORY };
+    Some(
+        Rec { record: r.record_no as u32, parent: r.parent_no as u32, mtime: filetime_to_unix_s(r.modified_ft), ..Rec::default() }
+            .with_attrs(attrs)
+            .with_size(size),
+    )
 }
 
 /// Retire entries whose parent chain never reaches the drive root (leftovers of deleted folders, such as Windows
@@ -338,7 +381,7 @@ impl SearchIndex {
                 seqs[rec.record as usize] = r.seq;
                 parent_seqs.push(r.parent_seq);
                 crate::datestore::set(drive, rec.record, filetime_to_unix_s(r.created_ft), filetime_to_unix_s(r.accessed_ft));
-                (rec.name, rec.len) = push_name(&mut names, &r.name);
+                rec.set_name(push_name(&mut names, &r.name));
                 recs.push(rec);
                 if recs.len() & 0x3FFF == 0 {
                     progress.store(recs.len(), Ordering::Relaxed);
@@ -379,8 +422,8 @@ impl SearchIndex {
             stamp: 0,
             unsaved: parking_lot::Mutex::new(Some(Vec::new())),
         };
-        let order = idx.live_name_order();
-        idx.rebuild(order);
+        let plan = idx.rebuild_plan();
+        idx.rebuild(plan);
         idx
     }
 
@@ -505,24 +548,59 @@ impl SearchIndex {
         v
     }
 
-    /// Drop retired slots and their names, and install `order` from [`Self::live_name_order`] as the name view.
-    /// O(n) copying; the caller guarantees no mutation happened since `order` was taken.
-    pub fn rebuild(&mut self, order: Vec<u32>) {
+    /// What [`Self::rebuild`] installs, worked out under a read lock (`&self`): the name order, and the new name
+    /// arena with where each entry's name now sits. Sorting and laying out ~2.5M names takes a few hundred ms; under
+    /// the write lock that would stall every search meanwhile.
+    pub fn rebuild_plan(&self) -> RebuildPlan {
+        let order = self.live_name_order();
+        // names laid out in name order, each distinct one once: entries with the same name (`index.js`, `LICENSE`, a
+        // folder of `.gitignore`s) share its bytes, ~40% of the arena on a typical drive. Equal names sit together in
+        // `order`; `run` holds where each case spelling of the current lowercased name (`run_lower`) was stored.
+        let mut name_at = vec![0u32; self.recs.len()];
+        let mut names: Vec<u8> = Vec::with_capacity(self.names.len() / 2 + NAME_ROOM);
+        let mut run: Vec<(usize, usize)> = Vec::new();
+        let mut run_lower = 0..0;
+        for &i in &order {
+            let i = i as usize;
+            let (s, n, l) = (self.recs[i].name as usize, self.stored_len(i), self.recs[i].lower_len());
+            let b = &self.names[s..s + n];
+            if names[run_lower.clone()] != b[..l] {
+                run.clear();
+            }
+            let at = match run.iter().find(|&&(rs, rn)| names[rs..rs + rn] == *b) {
+                Some(&(rs, _)) => rs,
+                None => {
+                    let at = names.len();
+                    if run.is_empty() {
+                        run_lower = at..at + l;
+                    }
+                    run.push((at, n));
+                    names.extend_from_slice(b);
+                    at
+                }
+            };
+            name_at[i] = at as u32;
+        }
+        names.shrink_to(names.len() + NAME_ROOM);
+        RebuildPlan { order, names, name_at }
+    }
+
+    /// Drop retired slots and their names, and install a [`Self::rebuild_plan`]. O(n) copying; the caller guarantees
+    /// no mutation happened since the plan was made.
+    pub fn rebuild(&mut self, plan: RebuildPlan) {
+        let RebuildPlan { order, names, name_at } = plan;
         let live = self.len();
         let mut new_pos = vec![NONE; self.recs.len()];
         // room for the entries that arrive until the next rebuild: a Vec growing by doubling would reserve a
         // second copy of the whole index (~100 MB for 2M files) on the first file created after startup
         let mut recs = Vec::with_capacity(live + REBUILD_AT);
-        let mut names = Vec::with_capacity(self.names.len() + NAME_ROOM);
         for i in 0..self.recs.len() {
             if self.is_live(i) {
                 new_pos[i] = recs.len() as u32;
-                let (s, n) = (self.recs[i].name as usize, self.stored_len(i));
-                recs.push(Rec { name: names.len() as u32, ..self.recs[i] });
-                names.extend_from_slice(&self.names[s..s + n]);
+                recs.push(Rec { name: name_at[i], ..self.recs[i] });
             }
         }
-        names.shrink_to(names.len() + NAME_ROOM);
+        drop(name_at);
         self.by_name = order.into_iter().map(|i| new_pos[i as usize]).collect();
         debug_assert_eq!(self.by_name.len(), live);
         drop(new_pos);
@@ -551,15 +629,28 @@ impl SearchIndex {
                 own[p as usize] += r.weight();
             }
         }
-        for (r, &b) in self.recs.iter_mut().zip(&own) {
-            if r.is_dir() {
-                *r = r.with_size(b);
+        // then each one's sum climbs to its ancestors, summed exactly before it's stored (sizes from 256 GB up are
+        // kept in KB: adding there one folder at a time would round at every step)
+        let mut total = own.clone();
+        for (p, &b) in own.iter().enumerate() {
+            if b == 0 || !self.recs[p].is_dir() || self.recs[p].record == NONE {
+                continue;
+            }
+            let mut parent = self.recs[p].parent;
+            for _ in 0..MAX_PATH_DEPTH {
+                match self.first.get(parent as usize) {
+                    Some(&a) if parent != ROOT_RECORD && a != NONE && self.recs[a as usize].is_dir() => {
+                        total[a as usize] += b;
+                        parent = self.recs[a as usize].parent;
+                    }
+                    _ => break,
+                }
             }
         }
-        // then each one's sum climbs to its ancestors
-        for (p, &b) in own.iter().enumerate() {
-            if b != 0 && self.recs[p].is_dir() && self.recs[p].record != NONE {
-                self.add_up(self.recs[p].parent, b as i64);
+        drop(own);
+        for (r, &b) in self.recs.iter_mut().zip(&total) {
+            if r.is_dir() {
+                *r = r.with_size(b);
             }
         }
     }
@@ -603,7 +694,7 @@ impl SearchIndex {
         let r = &self.recs[i];
         let lower = self.lower(i);
         let tail = &self.names[r.name as usize + lower.len()..];
-        match r.len >> 14 {
+        match r.case_kind() {
             CASE_MASK => Cow::Owned(
                 lower
                     .bytes()
@@ -624,7 +715,7 @@ impl SearchIndex {
     fn stored_len(&self, i: usize) -> usize {
         let r = &self.recs[i];
         let n = r.lower_len();
-        n + match r.len >> 14 {
+        n + match r.case_kind() {
             CASE_MASK => n.div_ceil(8),
             CASE_FULL => {
                 let at = r.name as usize + n;
@@ -695,7 +786,7 @@ impl SearchIndex {
     /// direction applied). Cheap to page through: see `Catalog`'s view cache.
     pub fn ranked(&self, opts: &SearchOptions, matcher: &Matcher) -> Vec<u32> {
         let all = matcher.matches_all();
-        let shown = |a: u32| shown(a, opts);
+        let shown = |r: &Rec| shown(r, opts);
         // a plain folder listing: compare parent record numbers instead of rebuilding every path
         let child_of = matcher.only_child().map(|t| self.dir_record(t, false));
         let folders: Option<Vec<u32>> = matcher.only_parents().map(|ts| ts.into_iter().filter_map(|t| self.dir_record(t, true)).collect());
@@ -711,7 +802,7 @@ impl SearchIndex {
                 let i = c * CHUNK + k;
                 let r = &self.recs[i];
                 let hit = r.record != NONE
-                    && shown(r.attrs)
+                    && shown(r)
                     && match (&folders, child_of) {
                         (Some(set), _) => set.contains(&r.record),
                         (None, Some(dir)) => dir == Some(r.parent),
@@ -806,7 +897,7 @@ impl SearchIndex {
                 let (w, b) = (p as usize / 64, 1u64 << (p % 64));
                 if gone[w] & b == 0 {
                     gone[w] |= b;
-                    if self.is_live(p as usize) && shown(self.recs[p as usize].attrs, opts) {
+                    if self.is_live(p as usize) && shown(&self.recs[p as usize], opts) {
                         back.push(p);
                     }
                 }
@@ -857,7 +948,7 @@ impl SearchIndex {
             return v;
         }
         // never open an online-only cloud file: reading it would download it
-        let v = r.attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) == 0 && {
+        let v = r.attrs() & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) == 0 && {
             use std::io::Read;
             let mut head = [0u8; 0x1C];
             std::fs::File::open(self.build_path(i, false)).and_then(|mut f| f.read_exact(&mut head)).is_ok()
@@ -873,7 +964,7 @@ impl SearchIndex {
         match sort {
             SortKey::Size => size_key(r),
             SortKey::Modified => r.mtime as i64,
-            SortKey::Attributes => r.attrs as i64,
+            SortKey::Attributes => r.attrs() as i64,
             SortKey::Created => self.created_accessed(i).0 as i64,
             SortKey::Accessed => self.created_accessed(i).1 as i64,
             SortKey::Name | SortKey::Ext | SortKey::Path => 0,
@@ -907,7 +998,7 @@ impl SearchIndex {
             modified: r.modified_ms().unwrap_or(0),
             created: created as i64,
             accessed: accessed as i64,
-            attributes: r.attrs,
+            attributes: r.attrs(),
             is_dir: r.is_dir(),
         }
     }
@@ -990,7 +1081,7 @@ impl SearchIndex {
             modified_ms: r.modified_ms(),
             created_ms: (created != 0).then_some(created as i64 * 1000),
             accessed_ms: (accessed != 0).then_some(accessed as i64 * 1000),
-            attributes: r.attrs,
+            attributes: r.attrs(),
         })
     }
 
@@ -1039,7 +1130,7 @@ impl SearchIndex {
             // most journal events are content/metadata changes or moves: same name, so the slot (and its place in
             // the name order) stays
             Some(i) if self.name(i) == raw.name.as_str() => {
-                (rec.name, rec.len) = (self.recs[i].name, self.recs[i].len);
+                rec.set_name((self.recs[i].name, self.recs[i].bits & NAME_BITS));
                 self.recs[i] = rec;
             }
             // renamed: retire the old slot and add the new name to the tail, so the name order stays valid
@@ -1063,7 +1154,7 @@ impl SearchIndex {
         if self.names.capacity() - self.names.len() < 3 * name.len() + 2 {
             self.names.reserve_exact(NAME_ROOM);
         }
-        (rec.name, rec.len) = push_name(&mut self.names, name);
+        rec.set_name(push_name(&mut self.names, name));
         self.recs.push(rec);
         self.recs.len() as u32 - 1
     }
@@ -1130,7 +1221,8 @@ struct PathScratch {
 
 /// Whether an entry with attributes `a` is listed: like Explorer, protected operating-system files (hidden + system:
 /// NTUSER.DAT.LOG1, *.blf, ntuser.ini...) and hidden ones only on request.
-fn shown(a: u32, opts: &SearchOptions) -> bool {
+fn shown(r: &Rec, opts: &SearchOptions) -> bool {
+    let a = r.bits >> ATTR_SHIFT; // hidden (0x2) and system (0x4) keep their Windows bits in `ATTRS`
     if a & 0x6 == 0x6 { opts.show_system } else { opts.show_hidden || a & 0x2 == 0 }
 }
 
@@ -1161,7 +1253,7 @@ fn ext_of(name_lower: &str) -> &str {
 mod tests {
     #[test]
     fn orphans_are_dropped() {
-        let r = |record, parent| Rec { size_lo: 0, size_hi: 0, record, parent, name: 0, mtime: 0, attrs: 0, len: 0 };
+        let r = |record, parent| Rec { record, parent, ..Rec::default() };
         // 10 sits in the root; 11 is under 10; 12 is under the missing record 99; 13 is under 12
         let mut recs = vec![r(10, ROOT_RECORD), r(11, 10), r(12, 99), r(13, 12)];
         drop_orphans(&mut recs);
@@ -1191,7 +1283,7 @@ mod tests {
         let (mut recs, mut names) = (Vec::new(), Vec::new());
         for r in raws {
             let mut rec = new_rec(&r).unwrap();
-            (rec.name, rec.len) = push_name(&mut names, &r.name);
+            rec.set_name(push_name(&mut names, &r.name));
             recs.push(rec);
         }
         SearchIndex::from_parts('C', recs, names)
@@ -1242,12 +1334,25 @@ mod tests {
     }
 
     #[test]
-    fn rec_stays_28_bytes() {
-        assert_eq!(std::mem::size_of::<Rec>(), 28);
-        let r = Rec { size_lo: 0, size_hi: 0, record: 1, parent: 5, name: 0, mtime: 0, attrs: 0, len: 0 };
-        for s in [0, 1, u32::MAX as u64 + 7, (1 << 48) - 2, u64::MAX] {
+    fn rec_stays_24_bytes() {
+        assert_eq!(std::mem::size_of::<Rec>(), 24);
+        let mut r = Rec { record: 1, parent: 5, ..Rec::default() };
+        r.set_name((9, 765 | CASE_FULL << CASE_SHIFT));
+        let r = r.with_attrs(0x40_0000 | 0x4000 | 0x10 | 0x2 | 0x1);
+        // exact below 256 GB, within half a KB above, up to 256 TB
+        for s in [0, 1, u32::MAX as u64 + 7, (1 << 38) - 1, u64::MAX] {
             assert_eq!(r.with_size(s).size(), s);
         }
+        for s in [1 << 38, (1 << 40) + 1000, (1 << 47) + 777] {
+            assert!(r.with_size(s).size().abs_diff(s) <= 512, "{s}");
+        }
+        // the fields don't overlap
+        let r = r.with_size((1 << 48) - 2);
+        assert_eq!((r.name, r.lower_len(), r.case_kind()), (9, 765, CASE_FULL));
+        assert_eq!(r.attrs(), 0x40_0000 | 0x4000 | 0x10 | 0x2 | 0x1);
+        assert!(r.is_dir());
+        assert_eq!(Rec::default().attrs(), 0x80); // nothing set reads as NORMAL
+        assert!(!Rec::default().with_size(u64::MAX).with_attrs(0x10).with_attrs(0).is_dir());
     }
 
     #[test]
@@ -1293,9 +1398,28 @@ mod tests {
         assert_eq!(both(&idx), (0, 0));
         idx.apply_upsert(file(24, 11, "x.txt", 42));
         let live = both(&idx);
-        idx.rebuild(idx.live_name_order()); // recomputed from scratch: same answer
+        idx.rebuild(idx.rebuild_plan()); // recomputed from scratch: same answer
         assert_eq!(both(&idx), live);
         assert_eq!(live, (42, 42));
+    }
+
+    #[test]
+    fn rebuild_stores_each_distinct_name_once_and_keeps_every_spelling() {
+        let names = ["index.js", "README.md", "index.js", "readme.md", "README.md", "a.txt", "index.js", "Ünïcode.txt", "Ünïcode.txt"];
+        let mut idx = index(names.iter().enumerate().map(|(k, n)| raw(10 + k as u64, 5, n)).collect());
+        idx.rebuild(idx.rebuild_plan());
+        let distinct = ["index.js", "README.md", "readme.md", "a.txt", "Ünïcode.txt"];
+        let mut arena = Vec::new();
+        for n in distinct {
+            push_name(&mut arena, n);
+        }
+        assert_eq!(idx.names.len(), arena.len(), "one copy per distinct spelling");
+        let mut shown: Vec<String> = (0..idx.recs.len()).map(|i| idx.name(i).into_owned()).collect();
+        let mut want: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        shown.sort();
+        want.sort();
+        assert_eq!(shown, want, "every entry still shows its own spelling");
+        assert_links_consistent(&idx);
     }
 
     #[test]
@@ -1311,7 +1435,7 @@ mod tests {
         assert_eq!(idx.len(), 4);
         assert_links_consistent(&idx);
         let epoch = idx.epoch();
-        idx.rebuild(idx.live_name_order());
+        idx.rebuild(idx.rebuild_plan());
         assert_eq!(idx.recs.len(), 4, "retired slots are gone");
         assert_eq!(idx.names.len(), (0..4).map(|i| idx.stored_len(i)).sum::<usize>(), "and so are their names");
         assert_eq!(by_name(&idx), ["a.txt", "b.txt", "C.txt", "z.txt"]);
@@ -1684,7 +1808,7 @@ mod tests {
         let old_out = std::path::Path::new(&path).with_extension("v4.idx");
         bincode::serialize_into(std::io::BufWriter::new(std::fs::File::create(&old_out).unwrap()), &s).unwrap();
         println!("BENCH cache old_bincode_save_ms={}", t.elapsed().as_millis());
-        let recs: Vec<Rec> = s.recs.iter().map(|o| Rec { size_lo: o.size_lo, size_hi: o.size_hi, record: o.record, parent: o.parent, name: o.name, mtime: o.mtime, attrs: o.attrs, len: o.len }).collect();
+        let recs: Vec<Rec> = s.recs.iter().map(|o| { let mut r = Rec { record: o.record, parent: o.parent, mtime: o.mtime, ..Rec::default() }.with_attrs(o.attrs).with_size(match (o.size_hi as u64) << 32 | o.size_lo as u64 { 0xFFFF_FFFF_FFFF => u64::MAX, s => s }); r.set_name((o.name, (o.len & 0x3FFF) as u32 | ((o.len >> 14) as u32) << CASE_SHIFT)); r }).collect();
         let new_path = std::path::Path::new(&path).with_extension("v5.idx");
         let t = Instant::now();
         crate::infrastructure::cache::save_to(&new_path, s.drive, 1, 2, 3, (&recs, &s.names)).unwrap();
@@ -1699,7 +1823,7 @@ mod tests {
         drop_orphans(&mut recs);
         let idx = SearchIndex::from_parts(s.drive, recs, snap.names);
         let build = t.elapsed();
-        let heap = idx.recs.capacity() * 28 + idx.names.capacity() + idx.first.capacity() * 4 + idx.by_name.capacity() * 4;
+        let heap = idx.recs.capacity() * size_of::<Rec>() + idx.names.capacity() + idx.first.capacity() * 4 + idx.by_name.capacity() * 4;
         println!("BENCH load_ms={} from_parts_ms={} entries={} index_heap_mb={:.1}", load.as_millis(), build.as_millis(), idx.len(), heap as f64 / 1048576.0);
         let mut cat = Catalog::default();
         cat.upsert_volume(idx);
@@ -1741,6 +1865,53 @@ mod tests {
             cat.search(&SearchOptions { offset: p * 100, ..opts.clone() });
         }
         println!("BENCH page_scroll  per_page_ms={:.3}", t.elapsed().as_secs_f64() * 1000.0 / 200.0);
+    }
+
+    /// Private bytes after each step of bringing a real index up and searching it, as the service does:
+    /// `MOSAIC_BENCH_IDX=<path to a real {drive}.idx> cargo test --release bench_memory -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_memory() {
+        use crate::application::Catalog;
+        #[repr(C)]
+        #[derive(Default)]
+        struct Pmc { cb: u32, faults: u32, peak_ws: usize, ws: usize, q: [usize; 4], pagefile: usize, peak_pf: usize, private: usize }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn K32GetProcessMemoryInfo(h: isize, p: *mut Pmc, cb: u32) -> i32;
+        }
+        let mb = |label: &str| {
+            let mut p = Pmc { cb: size_of::<Pmc>() as u32, ..Default::default() };
+            // SAFETY: -1 is our own process; `p` is a PROCESS_MEMORY_COUNTERS_EX of the size passed.
+            unsafe { K32GetProcessMemoryInfo(-1, &mut p, p.cb) };
+            println!("BENCH mem {label:<14} private_mb={:6.1} ws_mb={:6.1}", p.private as f64 / 1048576.0, p.ws as f64 / 1048576.0);
+        };
+        mb("start");
+        let snap = crate::infrastructure::cache::load_from(std::path::Path::new(&std::env::var("MOSAIC_BENCH_IDX").unwrap()), 'C').unwrap();
+        mb("loaded");
+        let mut recs = snap.recs;
+        drop_orphans(&mut recs);
+        let mut idx = SearchIndex::from_parts('C', recs, snap.names);
+        let t = std::time::Instant::now();
+        let plan = idx.rebuild_plan();
+        let planned = t.elapsed();
+        let t = std::time::Instant::now();
+        idx.rebuild(plan);
+        println!("BENCH rebuild plan_ms={} (read lock) install_ms={} (write lock)", planned.as_millis(), t.elapsed().as_millis());
+        let n = |c: usize, s: usize| c as f64 * s as f64 / 1048576.0;
+        println!("BENCH parts entries={} recs_mb={:.1} names_mb={:.1} first_mb={:.1} by_name_mb={:.1}", idx.len(), n(idx.recs.capacity(), size_of::<Rec>()), n(idx.names.capacity(), 1), n(idx.first.capacity(), 4), n(idx.by_name.capacity(), 4));
+        mb("indexed");
+        let mut seen = std::collections::HashSet::new();
+        let unique: usize = (0..idx.recs.len()).filter(|&i| idx.is_live(i)).map(|i| { let s = idx.recs[i].name as usize; &idx.names[s..s + idx.stored_len(i)] }).filter(|b| seen.insert(*b)).map(|b| b.len()).sum();
+        println!("BENCH names unique_mb={:.1} of {:.1}", unique as f64 / 1048576.0, idx.names.len() as f64 / 1048576.0);
+        drop(seen);
+        let mut cat = Catalog::default();
+        cat.upsert_volume(idx);
+        for (q, sort) in [("", SortKey::Name), ("win", SortKey::Name), ("", SortKey::Size), ("ext:txt", SortKey::Modified), ("ext:txt", SortKey::Path), ("", SortKey::Ext)] {
+            cat.volume_mut('C');
+            cat.search(&SearchOptions { query: q.into(), sort, limit: 100, folders_first: true, ..SearchOptions::default() });
+        }
+        mb("searched");
     }
 
     #[test]

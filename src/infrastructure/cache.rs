@@ -24,7 +24,7 @@ use crate::application::Rec;
 
 /// Bumped whenever the on-disk layout changes; mismatches are ignored on load.
 /// v2 added per-entry creation/access times and DOS attributes; v3 is the compact record + name arena layout.
-const FORMAT_VERSION: u32 = 6; // 4: 28-byte Rec (48-bit size); 5: raw arrays, repr(C) Rec; 6: zstd
+const FORMAT_VERSION: u32 = 7; // 4: 28-byte Rec (48-bit size); 5: raw arrays, repr(C) Rec; 6: zstd; 7: 24-byte Rec
 
 /// A persisted per-volume index plus its journal resume point. Loads straight into the index's own arrays.
 pub struct Snapshot {
@@ -48,7 +48,7 @@ fn cache_dir() -> Option<PathBuf> {
 const HEADER: usize = 4 * 4 + 8 * 4;
 
 fn rec_bytes(recs: &[Rec]) -> &[u8] {
-    // SAFETY: `Rec` is `repr(C)`, integers only, no padding (`rec_stays_28_bytes`): every byte is initialized.
+    // SAFETY: `Rec` is `repr(C)`, integers only, no padding (`rec_stays_24_bytes`): every byte is initialized.
     unsafe { std::slice::from_raw_parts(recs.as_ptr().cast(), std::mem::size_of_val(recs)) }
 }
 

@@ -1137,19 +1137,14 @@ pub fn stamp(src: &std::path::Path, out: &std::path::Path, name: &str, set: [(i3
     std::fs::copy(me, &tmp)?;
     let err = || std::io::Error::last_os_error();
     unsafe {
-        // the manifest is kept, or added to a plain cargo build (common controls v6, asInvoker, long paths); version and icons are replaced
-        let lib = LoadLibraryExW(wz(&me.to_string_lossy()).as_ptr(), null_mut(), LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-        let res = FindResourceW(lib, 1 as _, 24 as _); // RT_MANIFEST #1
-        let manifest = if res.is_null() { include_bytes!("../mosaic.manifest").to_vec() } else { std::slice::from_raw_parts(LockResource(LoadResource(lib, res)) as *const u8, SizeofResource(lib, res) as usize).to_vec() };
-        FreeLibrary(lib);
+        // our manifest (common controls v6, asInvoker, long paths, segment heap) in place of any the linker added;
+        // version and icons are replaced too
         let h = windows_sys::Win32::System::LibraryLoader::BeginUpdateResourceW(wz(&tmp.to_string_lossy()).as_ptr(), 1);
         if h.is_null() {
             return Err(err());
         }
         let put = |ty: u16, id: u16, data: &[u8]| UpdateResourceW(h, ty as _, id as _, 0, data.as_ptr() as _, data.len() as u32);
-        if !manifest.is_empty() {
-            put(24, 1, &manifest);
-        }
+        put(24, 1, include_bytes!("../mosaic.manifest")); // RT_MANIFEST #1
         put(16, 1, &version_info(name)); // RT_VERSION
         let mut group = vec![0u8, 0, 1, 0, set.len() as u8, 0]; // GRPICONDIR: reserved, type 1 (icon), count
         for (k, (s, png)) in set.iter().enumerate() {

@@ -334,10 +334,10 @@ fn run(
             // Nothing new.
             // Once enough changes piled up, sort under a read lock and only compact under the write lock, so
             // searches (scrolling) never wait on the sort. Safe: this thread is the only one that mutates this volume.
-            let order = catalog.read().volume(drive).filter(|i| i.rebuild_due()).map(|i| i.live_name_order());
-            if let Some(order) = order {
+            let plan = catalog.read().volume(drive).filter(|i| i.rebuild_due()).map(|i| i.rebuild_plan());
+            if let Some(plan) = plan {
                 if let Some(idx) = catalog.write().volume_mut(drive) {
-                    idx.rebuild(order);
+                    idx.rebuild(plan);
                 }
             }
             if wait && asked.elapsed() < Duration::from_millis(300) {

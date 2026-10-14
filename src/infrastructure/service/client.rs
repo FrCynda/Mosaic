@@ -91,6 +91,8 @@ mod tests {
             t.sort_by(|a, b| a.partial_cmp(b).unwrap());
             t[4]
         };
+        let s = c.status();
+        println!("BENCH svc_entries={} content={}/{} changes={}", s.count, s.content_done, s.content_total, s.changes);
         println!("BENCH svc_status   median_ms={:.2}", med(&|| { c.status(); }));
         let o = |q: &str, offset| SearchOptions { query: q.into(), limit: 100, offset, folders_first: true, ..SearchOptions::default() };
         for q in ["", "win", "ext:jpg;png;gif", "zzqxj"] {
