@@ -8,9 +8,9 @@ use std::ptr::{null, null_mut};
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, KF_FLAG_DEFAULT};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
+use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Screenshots, FOLDERID_Videos, KF_FLAG_DEFAULT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, ScreenToClient, PAINTSTRUCT};
 use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -18,7 +18,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::gfx::{Bitmap, Canvas, Gfx};
-use super::{mix, png_pixels, put, shell, t, theme, wz, xy};
+use super::{mix, png_pixels, put, shell, t, theme, wz, xy, MItem};
 
 const WM_ICON: u32 = WM_APP + 10;
 /// Width (CSS px) of the panel.
@@ -27,10 +27,52 @@ pub const WIDTH: i32 = 200;
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Place,
-    Drive, // at the bottom, with how full it is
+    Pin,        // a folder pinned by the user
+    Head(bool), // Recent files (false) / folders (true): opens the whole list; its chevron folds the rows below
+    Child,      // a recent file or folder, under its header
+    Drive,      // at the bottom, with how full it is
     Sep,
 }
 
+/// What the panel shows: its right-click menu's choices, kept in the settings ("sidebar").
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    recent_files: bool,
+    recent_dirs: bool,
+    open_files: bool, // unfolded
+    open_dirs: bool,
+    recent_n: usize,
+    folders: bool,
+    places: bool, // This PC, Network, Linux
+    terminals: bool,
+    drives: bool,
+    bars: bool,
+    compact: bool,
+    hidden: Vec<String>, // targets, lowercased
+    pins: Vec<String>,
+}
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs { recent_files: true, recent_dirs: true, open_files: true, open_dirs: true, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new() }
+    }
+}
+impl Prefs {
+    /// The "Show" submenu's switches, by number.
+    fn flag(&mut self, k: u8) -> &mut bool {
+        match k {
+            0 => &mut self.recent_files,
+            1 => &mut self.recent_dirs,
+            2 => &mut self.folders,
+            3 => &mut self.places,
+            4 => &mut self.terminals,
+            5 => &mut self.drives,
+            _ => &mut self.bars,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Item {
     kind: Kind,
     label: String,
@@ -55,6 +97,10 @@ struct Side {
     tracking: bool,
     grab: Option<i32>, // dragging the scrollbar thumb: where it was grabbed, from its top
     cur: String,       // the place on screen, as an item's `target` (lowercased): marked
+    cur_dir: Option<String>, // the folder on screen, as it's spelled
+    prefs: Prefs,
+    drv: Vec<Item>, // read on a device change only: a sleeping disk can take seconds to answer
+    gen: u64,       // `crate::recent`'s, when its rows were read
 }
 
 thread_local!(static SIDE: RefCell<Option<Side>> = const { RefCell::new(None) });
@@ -138,8 +184,21 @@ fn usage_color(used: f32) -> u32 {
     }
 }
 
-fn build() -> Vec<Item> {
-    let sep = || Item { space: None, kind: Kind::Sep, label: String::new(), target: String::new(), mosaic: false, icon: String::new() };
+fn sep() -> Item {
+    Item { space: None, kind: Kind::Sep, label: String::new(), target: String::new(), mosaic: false, icon: String::new() }
+}
+
+/// A path's last part; a drive's or a share's top whole.
+fn base(p: &str) -> String {
+    let t = p.trim_end_matches('\\');
+    let share_top = t.starts_with(r"\\") && t.matches('\\').count() <= 3;
+    match t.rsplit_once('\\') {
+        Some((_, b)) if !b.is_empty() && !share_top => b.to_string(),
+        _ => p.to_string(),
+    }
+}
+
+fn build(p: &Prefs, drv: &[Item]) -> Vec<Item> {
     // Home and Gallery are virtual shell folders; browse their real folders (profile, Pictures) but keep Explorer's icons
     let place = |label: &str, guid: &str, id: &windows::core::GUID| {
         let mut it = known(id, label).unwrap_or_else(|| special(label, guid));
@@ -151,11 +210,29 @@ fn build() -> Vec<Item> {
         all,
         place(t("side.home"), "F874310E-B6B7-47DC-BC84-B9E6B38F5903", &FOLDERID_Profile),
         place(t("side.gallery"), "E88865EA-0E1C-4E20-9AA6-EDCD0212C87C", &FOLDERID_Pictures),
-        Item { space: None, kind: Kind::Place, label: t("side.recent_files").into(), target: "recent:".into(), mosaic: true, icon: recent_dir() },
-        Item { space: None, kind: Kind::Place, label: t("side.recent_folders").into(), target: "recent-dirs:".into(), mosaic: true, icon: recent_dir() }, // the shell has no icon for it
-        sep(),
     ];
     v[1].target = "home:".into(); // Explorer's Home is the Quick access list, not the profile folder
+    // Gallery opens on the screenshots, the pictures most looked for
+    if let Some(sc) = known(&FOLDERID_Screenshots, "").filter(|i| std::path::Path::new(&i.target).is_dir()) {
+        v[2].target = sc.target;
+    }
+    v.extend(p.pins.iter().map(|d| Item { space: None, kind: Kind::Pin, label: base(d), target: d.clone(), mosaic: true, icon: String::new() }));
+    for (dirs, on, open, label, q) in [(false, p.recent_files, p.open_files, "side.recent_files", "recent:"), (true, p.recent_dirs, p.open_dirs, "side.recent_folders", "recent-dirs:")] {
+        if !on {
+            continue;
+        }
+        // the shell has no icon for Recent folders: the Recent folder's clock, for both
+        v.push(Item { space: None, kind: Kind::Head(dirs), label: t(label).into(), target: q.into(), mosaic: true, icon: recent_dir() });
+        if open {
+            let n = v.len();
+            v.extend(crate::recent::list(dirs, p.recent_n).into_iter().map(|f| Item { space: None, kind: Kind::Child, label: base(&f), target: f, mosaic: dirs, icon: String::new() }));
+            if v.len() == n {
+                // a row that does nothing, so an open header doesn't look broken
+                v.push(Item { space: None, kind: Kind::Child, label: t("side.none_yet").into(), target: String::new(), mosaic: false, icon: String::new() });
+            }
+        }
+    }
+    v.push(sep());
     v.extend(
         [
             known(&FOLDERID_Desktop, t("side.desktop")),
@@ -166,34 +243,47 @@ fn build() -> Vec<Item> {
             known(&FOLDERID_Videos, t("side.videos")),
         ]
         .into_iter()
-        .flatten(),
+        .flatten()
+        .filter(|_| p.folders),
     );
     v.push(sep());
     // listed in Mosaic too, by asking the file system (`crate::direct`); Explorer's icons
     let list = |label: &str, q: &str, guid: &str| Item { target: q.into(), mosaic: true, icon: format!("shell:::{{{guid}}}"), ..special(label, guid) };
-    v.push(list(t("side.this_pc"), "pc:", "20D04FE0-3AEA-1069-A2D8-08002B30309D"));
-    v.push(list(t("side.network"), "net:", "F02C1A0D-BE21-4350-88B0-7367FC96EF3C"));
-    if std::path::Path::new(r"C:\Windows\System32\wsl.exe").exists() {
-        v.push(list(t("side.linux"), "linux:", "B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6"));
+    if p.places {
+        v.push(list(t("side.this_pc"), "pc:", "20D04FE0-3AEA-1069-A2D8-08002B30309D"));
+        v.push(list(t("side.network"), "net:", "F02C1A0D-BE21-4350-88B0-7367FC96EF3C"));
+        if std::path::Path::new(r"C:\Windows\System32\wsl.exe").exists() {
+            v.push(list(t("side.linux"), "linux:", "B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6"));
+        }
     }
     // terminals: open in the selected / current folder (`go_place` resolves it)
     v.push(sep());
     let ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
     let cmd = r"C:\Windows\System32\cmd.exe";
-    for (label, spec, icon) in [("PowerShell", "ps", ps), ("PowerShell (Admin)", "ps:admin", ps), ("Command Prompt", "cmd", cmd), ("Command Prompt (Admin)", "cmd:admin", cmd)] {
+    for (label, spec, icon) in [("PowerShell", "ps", ps), ("PowerShell (Admin)", "ps:admin", ps), ("Command Prompt", "cmd", cmd), ("Command Prompt (Admin)", "cmd:admin", cmd)].into_iter().filter(|_| p.terminals) {
         v.push(Item { space: None, kind: Kind::Place, label: label.into(), target: format!("term:{spec}"), mosaic: false, icon: icon.into() });
     }
     // the drives, last: held to the panel's bottom when there's room (see `rows`)
-    let d = drives();
-    if !d.is_empty() {
+    if p.drives && !drv.is_empty() {
         v.push(sep());
-        v.extend(d);
+        v.extend(drv.iter().cloned());
     }
-    v
+    v.retain(|i| i.kind == Kind::Sep || !p.hidden.contains(&i.target.to_lowercase()));
+    // no line first, last, or after another (a group switched off or hidden whole)
+    let mut out: Vec<Item> = Vec::with_capacity(v.len());
+    for i in v {
+        if i.kind != Kind::Sep || out.last().is_some_and(|l| l.kind != Kind::Sep) {
+            out.push(i);
+        }
+    }
+    if out.last().is_some_and(|l| l.kind == Kind::Sep) {
+        out.pop();
+    }
+    out
 }
 
 /// Make the (hidden) panel as a child of `parent`. Returns its window.
-pub unsafe fn create(parent: HWND, scale: f64) -> HWND {
+pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
     static CLASS: std::sync::Once = std::sync::Once::new();
     let class = wz("MosaicSide");
     let inst = GetModuleHandleW(null());
@@ -208,12 +298,18 @@ pub unsafe fn create(parent: HWND, scale: f64) -> HWND {
     });
     let hwnd = CreateWindowExW(0, class.as_ptr(), null(), WS_CHILD, 0, 0, 10, 10, parent, null_mut(), inst, null());
     if let Ok(gfx) = Gfx::new(scale, crate::i18n::rtl()) {
+        let prefs: Prefs = serde_json::from_str(prefs).unwrap_or_default();
+        let drv = drives();
         let mut s = Side {
             hwnd,
             cv: Canvas::new(hwnd, &gfx),
             gfx,
             scale,
-            items: build(),
+            items: build(&prefs, &drv),
+            prefs,
+            drv,
+            gen: crate::recent::generation(),
+            cur_dir: None,
             png: HashMap::new(),
             bmp: HashMap::new(),
             asked: HashSet::new(),
@@ -238,12 +334,14 @@ pub fn invalidate() {
 /// The focused pane shows search `q`: mark its place (a folder listed, All, Home), or none.
 pub fn current(q: &str) {
     let q = q.trim();
+    let dir = super::listed_dir(q);
     let cur = match q {
         "" => "all:".to_string(),
         _ if super::list_of(q).is_some() => q.to_string(),
-        _ => super::listed_dir(q).map_or(String::new(), |d| d.to_lowercase()),
+        _ => dir.as_ref().map_or(String::new(), |d| d.to_lowercase()),
     };
     with(|s| {
+        s.cur_dir = dir;
         if s.cur != cur {
             s.cur = cur;
             unsafe { InvalidateRect(s.hwnd, null(), 0) };
@@ -254,11 +352,23 @@ pub fn current(q: &str) {
 /// The labels follow the UI language: rebuild the list (and keep the icons already fetched).
 pub fn relabel() {
     with(|s| {
-        s.items = build();
-        s.hot = None;
-        s.ask_icons();
-        unsafe { InvalidateRect(s.hwnd, null(), 0) };
+        s.drv = drives();
+        s.rebuild();
     });
+}
+
+/// The recent rows again, if the lists changed (something was opened).
+pub fn sync() {
+    with(|s| s.sync());
+}
+
+/// The panel's choices, for the settings file.
+pub fn prefs_json() -> String {
+    with(|s| serde_json::to_string(&s.prefs).unwrap_or_default()).unwrap_or_default()
+}
+
+fn save() {
+    super::with(|u| u.save_settings());
 }
 
 pub fn rescale(scale: f64) {
@@ -280,10 +390,27 @@ impl Side {
         (v as f64 * self.scale).round() as i32
     }
 
+    fn rebuild(&mut self) {
+        self.items = build(&self.prefs, &self.drv);
+        self.gen = crate::recent::generation();
+        self.hot = None;
+        self.press = None;
+        self.ask_icons();
+        self.y = self.y.clamp(0.0, self.max_scroll());
+        unsafe { InvalidateRect(self.hwnd, null(), 0) };
+    }
+
+    fn sync(&mut self) {
+        let open = (self.prefs.recent_files && self.prefs.open_files) || (self.prefs.recent_dirs && self.prefs.open_dirs);
+        if open && self.gen != crate::recent::generation() {
+            self.rebuild();
+        }
+    }
+
     /// Ask the shell helper for every item's icon (once each).
     fn ask_icons(&mut self) {
         let (size, hw) = (self.px(48), self.hwnd as isize); // 3x, box-filtered down to 16: sharper than the shell's own 16 px scaling
-        for it in self.items.iter().filter(|i| i.kind != Kind::Sep) {
+        for it in self.items.iter().filter(|i| !i.target.is_empty()) {
             if self.png.contains_key(&it.target) || !self.asked.insert(it.target.clone()) {
                 continue;
             }
@@ -306,7 +433,11 @@ impl Side {
     }
 
     fn row_h(&self) -> i32 {
-        self.gfx.f.lh + self.px(10)
+        self.gfx.f.lh + self.px(if self.prefs.compact { 4 } else { 10 })
+    }
+    /// A drive's row has its usage bar and free space under its name.
+    fn barred(&self, it: &Item) -> bool {
+        it.kind == Kind::Drive && self.prefs.bars
     }
     /// The small text's line height (9 px, CSS line-height 1.4).
     fn small_lh(&self) -> i32 {
@@ -334,8 +465,8 @@ impl Side {
         for (i, it) in self.items.iter().enumerate() {
             let h = match it.kind {
                 Kind::Sep => self.px(9),
-                Kind::Drive => rh + self.px(9) + self.small_lh(), // and its bar, and its space
-                Kind::Place => rh,
+                _ if self.barred(it) => rh + self.px(9) + self.small_lh(), // and its bar, and its space
+                _ => rh,
             };
             v.push((i, y, y + h));
             y += h;
@@ -377,7 +508,7 @@ impl Side {
     fn item_at(&self, x: i32, y: i32) -> Option<usize> {
         let _ = x;
         let y = y + self.y.round() as i32;
-        self.rows().0.into_iter().find(|&(i, a, b)| self.items[i].kind != Kind::Sep && y >= a && y < b).map(|r| r.0)
+        self.rows().0.into_iter().find(|&(i, a, b)| !self.items[i].target.is_empty() && y >= a && y < b).map(|r| r.0)
     }
 
     fn down(&mut self, x: i32, y: i32) {
@@ -414,13 +545,15 @@ impl Side {
         if !self.tracking {
             self.tracking = true;
             self.refresh_space(); // the pointer came over the panel
+            self.sync();
             let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
             unsafe { TrackMouseEvent(&mut t) };
         }
     }
 
-    /// The release of a press: what to open, if the pointer is still on the item pressed.
-    fn up(&mut self, x: i32, y: i32) -> Option<(String, bool)> {
+    /// The release of a press: what to open, if the pointer is still on the item pressed. A header's chevron
+    /// folds or unfolds its rows instead (`Some(None)`: the settings changed).
+    fn up(&mut self, x: i32, y: i32) -> Option<Option<(String, bool)>> {
         if self.grab.take().is_some() {
             unsafe {
                 ReleaseCapture();
@@ -430,7 +563,15 @@ impl Side {
         }
         let i = self.press.take().filter(|&p| self.item_at(x, y) == Some(p))?;
         let it = &self.items[i];
-        Some((it.target.clone(), it.mosaic))
+        if let Kind::Head(dirs) = it.kind {
+            if x < self.px(30) {
+                let open = if dirs { &mut self.prefs.open_dirs } else { &mut self.prefs.open_files };
+                *open = !*open;
+                self.rebuild();
+                return Some(None);
+            }
+        }
+        Some(Some((it.target.clone(), it.mosaic)))
     }
 
     fn wheel(&mut self, delta: i32) {
@@ -466,8 +607,8 @@ impl Side {
         cv.fill(&RECT { left: c.right - 1, ..c }, theme().line, 1.0);
         let off = self.y.round() as i32;
         cv.clip(&RECT { left: c.left, top: c.top, right: c.right - 1, bottom: c.bottom });
-        // the last row going there: Pictures rather than Gallery, which lists the same folder
-        let mark = (!self.cur.is_empty()).then(|| self.items.iter().rposition(|it| it.target.to_lowercase() == self.cur)).flatten();
+        // the last row going there (Pictures rather than Gallery, which lists the same folder), not a recent one
+        let mark = (!self.cur.is_empty()).then(|| self.items.iter().rposition(|it| it.kind != Kind::Child && it.target.to_lowercase() == self.cur)).flatten();
         for &(i, a, b) in &rows {
             let it = &self.items[i];
             let r = RECT { left: px(6), top: a - off, right: c.right - px(6), bottom: b - off };
@@ -489,11 +630,21 @@ impl Side {
                 let bar = RECT { left: r.left + px(1), top: (r.top + r.bottom - h) / 2, right: r.left + px(4), bottom: (r.top + r.bottom + h) / 2 };
                 cv.rrect(&bar, px(2) as f32, Some(theme().accent), None);
             }
-            let drive = it.kind == Kind::Drive;
+            let drive = self.barred(it);
             let slh = self.small_lh();
             // a drive's name over its bar over its free space, the three centred together
             let ty = r.top + (r.bottom - r.top - lh - if drive { px(9) + slh } else { 0 }) / 2;
-            let ix = r.left + px(24);
+            let ix = r.left + px(if it.kind == Kind::Child { 36 } else { 24 });
+            if let Kind::Head(dirs) = it.kind {
+                // its chevron, in the gutter: › folded, ⌄ open
+                let open = if dirs { self.prefs.open_dirs } else { self.prefs.open_files };
+                let (cx, cy, h) = ((r.left + px(12)) as f32, (r.top + r.bottom) as f32 / 2.0, 3.5 * s as f32);
+                if open {
+                    cv.chevron(cx, cy, h, true, theme().muted, 1.3 * s as f32);
+                } else {
+                    cv.lines(&[(cx - h / 2.0, cy - h), (cx + h / 2.0, cy), (cx - h / 2.0, cy + h)], theme().muted, 1.3 * s as f32);
+                }
+            }
             if let Some((bm, _)) = self.bmp.get(&it.target) {
                 let iy = if drive { ty + (lh - px(16)) / 2 } else { r.top + (r.bottom - r.top - px(16)) / 2 };
                 cv.bitmap(bm, &RECT { left: ix, top: iy, right: ix + px(16), bottom: iy + px(16) }, 1.0);
@@ -514,7 +665,7 @@ impl Side {
                 }
             }
             cv.clip(&RECT { right: r.right - px(8), ..r });
-            put(g, cv, &it.label, &g.f.reg, tx, ty, theme().text);
+            put(g, cv, &it.label, &g.f.reg, tx, ty, if it.target.is_empty() { theme().muted } else { theme().text });
             cv.unclip();
         }
         cv.unclip();
@@ -536,7 +687,10 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_SHOWWINDOW if wp != 0 => {
-            with(|s| s.refresh_space());
+            with(|s| {
+                s.refresh_space();
+                s.sync();
+            });
         }
         WM_SIZE => {
             with(|s| s.y = s.y.clamp(0.0, s.max_scroll()));
@@ -566,8 +720,10 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_LBUTTONUP => {
             let (x, y) = xy(l);
-            if let Some(Some((target, mosaic))) = with(|s| s.up(x, y)) {
-                super::go_place(&target, mosaic); // outside `with`: it may open a window or search
+            match with(|s| s.up(x, y)) {
+                Some(Some(Some((target, mosaic)))) => super::go_place(&target, mosaic), // outside `with`: it may open a window or search
+                Some(Some(None)) => save(),
+                _ => {}
             }
             return 0;
         }
@@ -578,9 +734,15 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_MBUTTONUP => {
             let (x, y) = xy(l);
-            if let Some(Some((target, mosaic))) = with(|s| s.up(x, y)) {
-                super::go_place_tab(&target, mosaic);
+            match with(|s| s.up(x, y)) {
+                Some(Some(Some((target, mosaic)))) => super::go_place_tab(&target, mosaic),
+                Some(Some(None)) => save(),
+                _ => {}
             }
+            return 0;
+        }
+        WM_CONTEXTMENU => {
+            menu(h, xy(l));
             return 0;
         }
         WM_CAPTURECHANGED => {
@@ -609,8 +771,163 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
     DefWindowProcW(h, m, wp, l)
 }
 
+/// What the right-click menu does.
+#[derive(Clone)]
+enum A {
+    Open,
+    Tab,
+    Explorer(String),
+    Copy,
+    Reveal,
+    Pin(String),
+    Unpin,
+    Forget,
+    Hide,
+    Eject,
+    Props,
+    Show(u8),
+    Count(usize),
+    Compact,
+    Clear,
+    Unhide,
+}
+
+/// Right-click: what can be done with the row under the pointer, then what the panel shows.
+unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
+    if x == -1 && y == -1 {
+        let mut p = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut p);
+        (x, y) = (p.x, p.y);
+    }
+    let mut c = POINT { x, y };
+    ScreenToClient(h, &mut c);
+    let Some((it, p, cur)) = with(|s| {
+        let i = s.item_at(c.x, c.y);
+        s.hot = i; // the row the menu is for stays lit
+        InvalidateRect(s.hwnd, null(), 0);
+        (i.map(|i| s.items[i].clone()), s.prefs.clone(), s.cur_dir.clone())
+    }) else {
+        return;
+    };
+    let mut acts: Vec<A> = Vec::new();
+    let mut e = |label: &str, on: bool, a: A| {
+        acts.push(a);
+        MItem { label: label.into(), on, tag: acts.len() - 1, ..Default::default() }
+    };
+    let mut v = Vec::new();
+    if let Some(it) = &it {
+        let real = it.target.contains('\\'); // a drive, a folder, a file, a share
+        let list = super::list_of(&it.target);
+        let dir = list.is_some() || (it.mosaic && std::path::Path::new(&it.target).is_dir());
+        let explorer = match () {
+            _ if it.target == "home:" => Some(it.icon.clone()),
+            _ => list.map(|l| l.2.to_string()).or_else(|| (real && dir).then(|| it.target.clone())),
+        };
+        v.push(MItem { bold: true, ..e(t("menu.open"), false, A::Open) });
+        if dir {
+            v.push(e(t("menu.open_tab"), false, A::Tab));
+        }
+        if let Some(x) = explorer {
+            v.push(e(t("side.open_explorer"), false, A::Explorer(x)));
+        }
+        if it.kind == Kind::Child {
+            v.push(e(t("menu.open_folder"), false, A::Reveal));
+        }
+        if real {
+            v.push(e(t("menu.copy_path"), false, A::Copy));
+        }
+        v.push(MItem::default());
+        if real && dir && !matches!(it.kind, Kind::Pin | Kind::Drive) && !p.pins.iter().any(|d| d.eq_ignore_ascii_case(&it.target)) {
+            v.push(e(t("side.pin"), false, A::Pin(it.target.clone())));
+        }
+        match it.kind {
+            Kind::Pin => v.push(e(t("side.unpin"), false, A::Unpin)),
+            Kind::Child => v.push(e(t("side.remove_recent"), false, A::Forget)),
+            _ => v.push(e(t("side.hide"), false, A::Hide)),
+        }
+        if it.kind == Kind::Drive && GetDriveTypeW(wz(&it.target).as_ptr()) == 2 {
+            v.push(e(t("side.eject"), false, A::Eject));
+        }
+        if real {
+            v.push(e(t("menu.properties"), false, A::Props));
+        }
+        v.push(MItem::default());
+    }
+    if let Some(d) = cur.filter(|d| !p.pins.iter().any(|x| x.eq_ignore_ascii_case(d))) {
+        v.push(e(t("side.pin_current"), false, A::Pin(d)));
+    }
+    let mut q = p.clone();
+    let shows = [("side.recent_files", 0), ("side.recent_folders", 1), ("side.folders", 2), ("side.places", 3), ("side.terminals", 4), ("side.drives", 5), ("side.usage", 6)];
+    let sub = shows.iter().map(|&(k, n)| e(t(k), *q.flag(n), A::Show(n))).collect();
+    v.push(MItem { label: t("side.show").into(), sub, ..Default::default() });
+    let sub = [5, 10, 20].iter().map(|&n| e(&n.to_string(), p.recent_n == n, A::Count(n))).collect();
+    v.push(MItem { label: t("side.recent_count").into(), sub, ..Default::default() });
+    v.push(e(t("side.compact"), p.compact, A::Compact));
+    v.push(MItem::default());
+    v.push(e(t("side.clear_recent"), false, A::Clear));
+    v.push(MItem { off: p.hidden.is_empty(), ..e(t("side.unhide"), false, A::Unhide) });
+
+    let main = GetParent(h);
+    let pick = super::cascade(main, x, y, y, 0, true, v, false);
+    with(|s| {
+        s.hot = None;
+        InvalidateRect(s.hwnd, null(), 0);
+    });
+    let Some(a) = pick.and_then(|k| acts.get(k).cloned()) else { return };
+    let (target, mosaic) = it.map_or((String::new(), false), |i| (i.target, i.mosaic));
+    match a {
+        A::Open => super::go_place(&target, mosaic),
+        A::Tab => super::go_place_tab(&target, mosaic),
+        A::Explorer(x) if x.starts_with("shell:") => shell::open_special(&x),
+        A::Explorer(x) => shell::open(&x),
+        A::Copy => {
+            super::clip_text(main, &target);
+        }
+        A::Reveal => shell::reveal(&target),
+        A::Eject => shell::item_verb(&target, "eject"),
+        A::Props => shell::properties(target),
+        A::Forget | A::Clear => {
+            if matches!(a, A::Clear) {
+                crate::recent::clear();
+            } else {
+                crate::recent::forget(&target);
+            }
+            with(|s| s.rebuild());
+        }
+        a => {
+            with(|s| {
+                let p = &mut s.prefs;
+                match a {
+                    A::Pin(d) => p.pins.push(d),
+                    A::Unpin => p.pins.retain(|d| *d != target),
+                    A::Hide => p.hidden.push(target.to_lowercase()),
+                    A::Show(n) => {
+                        let f = p.flag(n);
+                        *f = !*f;
+                    }
+                    A::Count(n) => p.recent_n = n,
+                    A::Compact => p.compact = !p.compact,
+                    _ => p.hidden.clear(),
+                }
+                s.rebuild();
+            });
+            save();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rows_name_is_its_last_part() {
+        use super::base;
+        assert_eq!(base(r"C:\Users\me\Pictures"), "Pictures");
+        assert_eq!(base(r"C:\Users\me\notes.txt"), "notes.txt");
+        assert_eq!(base(r"D:\"), r"D:\");
+        assert_eq!(base(r"\\nas\share"), r"\\nas\share");
+        assert_eq!(base(r"\\nas\share\photos"), "photos");
+    }
+
     #[test]
     fn usage_goes_green_to_red() {
         use super::usage_color as c;

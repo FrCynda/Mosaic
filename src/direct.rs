@@ -1,6 +1,7 @@
 //! Folders the index doesn't hold, listed by asking the file system: network shares (`\\server\share`), Linux
 //! (`\\wsl.localhost\…`), drives that aren't local NTFS (USB sticks, mapped drives), and the lists of them: This PC
-//! (`pc:`), Network (`net:`) and Linux (`linux:`). Only the last listing is kept, for the list to page through.
+//! (`pc:`), Network (`net:`) and Linux (`linux:`); and the recent files and folders (`recent:`, `recent-dirs:`),
+//! wherever they are. Only the last listing is kept, for the list to page through.
 
 use std::os::windows::fs::MetadataExt;
 use std::ptr::{null, null_mut};
@@ -15,10 +16,13 @@ use crate::application::search::{EntryView, Matcher};
 use crate::application::SearchOptions;
 use crate::i18n::t;
 
-/// A list of `q`'s own (This PC, Network, Linux), or the folder of a `child:` query the index can't answer.
+/// The lists made here rather than read from one folder.
+const LISTS: [&str; 5] = ["pc:", "net:", "linux:", "recent:", "recent-dirs:"];
+
+/// A list of `q`'s own (This PC, Network, Linux, Recent), or the folder of a `child:` query the index can't answer.
 fn target(q: &str) -> Option<String> {
     let q = q.trim();
-    if matches!(q, "pc:" | "net:" | "linux:") {
+    if LISTS.contains(&q) {
         return Some(q.into());
     }
     let (d, _) = q.strip_prefix("child:\"")?.split_once('"')?;
@@ -88,7 +92,7 @@ fn list(dir: &str, o: &SearchOptions) -> (Vec<Hit>, Option<String>) {
         Ok(Err(e)) => return (Vec::new(), Some(e)),
         Err(_) => return (Vec::new(), Some(t("direct.no_answer").into())),
     };
-    if !matches!(dir, "pc:" | "net:" | "linux:") {
+    if !LISTS.contains(&dir) {
         // a folder's own: the query's other words, the category, hidden files as asked
         let m = match Matcher::compile(o) {
             Ok(m) => m,
@@ -125,6 +129,7 @@ fn read(dir: &str) -> Result<Vec<Hit>, String> {
     let low = dir.trim_end_matches('\\').to_ascii_lowercase();
     match low.as_str() {
         "pc:" => return Ok(drives(|_| true)),
+        "recent:" | "recent-dirs:" => return Ok(crate::recent::list(low == "recent-dirs:", 200).iter().filter_map(|p| entry(p, std::fs::metadata(p).ok()?)).collect()),
         "net:" => {
             // mapped network drives, then the servers this PC connects to. Not a scan of the network: asking the
             // neighbourhood (SMB1 browsing) took 20 s here to find nothing. A typed `\\server` lists its shares.
@@ -144,26 +149,25 @@ fn read(dir: &str) -> Result<Vec<Hit>, String> {
         _ => {}
     }
     let base = dir.trim_end_matches('\\');
-    let ms = |ft: u64| if ft == 0 { 0 } else { (ft / 10_000) as i64 - 11_644_473_600_000 };
     let rd = std::fs::read_dir(format!("{base}\\")).map_err(|e| e.to_string())?;
-    Ok(rd
-        .flatten()
-        .filter_map(|e| {
-            let m = e.metadata().ok()?; // from the directory listing itself: no extra trip per file
-            let name = e.file_name().to_string_lossy().into_owned();
-            let is_dir = m.file_attributes() & 0x10 != 0;
-            Some(Hit {
-                path: format!("{base}\\{name}"),
-                name,
-                size: if is_dir { -1 } else { m.file_size() as i64 },
-                modified: ms(m.last_write_time()),
-                created: ms(m.creation_time()),
-                accessed: ms(m.last_access_time()),
-                attributes: m.file_attributes(),
-                is_dir,
-            })
-        })
-        .collect())
+    // each entry's metadata comes from the directory listing itself: no extra trip per file
+    Ok(rd.flatten().filter_map(|e| entry(&format!("{base}\\{}", e.file_name().to_string_lossy()), e.metadata().ok()?)).collect())
+}
+
+/// The file or folder at `path`, as a hit.
+fn entry(path: &str, m: std::fs::Metadata) -> Option<Hit> {
+    let ms = |ft: u64| if ft == 0 { 0 } else { (ft / 10_000) as i64 - 11_644_473_600_000 };
+    let is_dir = m.file_attributes() & 0x10 != 0;
+    Some(Hit {
+        name: path.rsplit('\\').next()?.to_string(),
+        path: path.to_string(),
+        size: if is_dir { -1 } else { m.file_size() as i64 },
+        modified: ms(m.last_write_time()),
+        created: ms(m.creation_time()),
+        accessed: ms(m.last_access_time()),
+        attributes: m.file_attributes(),
+        is_dir,
+    })
 }
 
 /// The drives whose type (`GetDriveTypeW`) `keep` takes, as "Label (C:)".

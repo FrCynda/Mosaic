@@ -5,12 +5,14 @@ mod application;
 mod backend;
 mod contentindex;
 mod datestore;
+mod direct;
 mod extract;
 mod hashcache;
 mod i18n;
 mod infrastructure;
 mod kvlog;
 mod metadata;
+mod recent;
 mod native;
 mod shell;
 
@@ -294,12 +296,8 @@ fn home_refresh() -> String {
     if parts.is_empty() {
         parts.push(format!("child:\"{}\"", std::env::var("USERPROFILE").unwrap_or_default()));
     } else {
-        // then the 20 most recently opened files (the shortcuts Windows keeps in Recent), as Explorer's Home does
-        let recent = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join(r"Microsoft\Windows\Recent");
-        let mut links: Vec<_> = std::fs::read_dir(recent).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk"))).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
-        links.sort_by(|a, b| b.0.cmp(&a.0));
-        let files = links.iter().filter_map(|(_, l)| shell::link_target(l.to_str()?)).filter(|t| t.as_bytes().get(1) == Some(&b':') && std::fs::metadata(t).is_ok_and(|m| m.is_file())).take(20);
-        parts.extend(files.map(|p| format!("parent:\"{p}\\x\"")));
+        // then the 20 most recently opened files, as Explorer's Home does
+        parts.extend(recent::list(false, 20).into_iter().filter(|p| p.as_bytes().get(1) == Some(&b':')).map(|p| format!("parent:\"{p}\\x\"")));
     }
     let q = parts.join(" | ");
     let file = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("home.txt");
@@ -333,8 +331,15 @@ fn folder_kind(h: &backend::SearchHandle, path: &str) -> u8 {
 }
 
 fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) -> application::SearchResult {
-    if a.q.trim().eq_ignore_ascii_case("home:") {
-        return h.search(&options(&SearchArgs { q: home_query(), ..a.clone() }, offset, limit));
+    let q = match a.q.trim() {
+        "home:" => Some(home_query()),
+        _ => None,
+    };
+    if let Some(q) = q {
+        return h.search(&options(&SearchArgs { q, ..a.clone() }, offset, limit));
+    }
+    if let Some(r) = direct::find(&a.q, &options(a, offset, limit)) {
+        return r; // a share, Linux, a stick: the index doesn't hold it
     }
     type Hits = std::sync::Arc<Vec<application::index::Hit>>;
     static LAST: Mutex<Option<(String, Hits, Option<String>)>> = Mutex::new(None);

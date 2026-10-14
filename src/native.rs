@@ -1388,7 +1388,7 @@ pub fn run() {
         crate::datestore::set_enabled(get("timestamps") == "1");
         let scale = GetDpiForWindow(main) as f64 / 96.0;
         let pane = preview::create(main, scale);
-        let side = side::create(main, scale);
+        let side = side::create(main, scale, &get("sidebar"));
         // language is fixed for the process's lifetime (set from settings above, no in-app switcher), so RTL fonts
         // can be built once here rather than needing a rebuild-on-switch path.
         let rtl = crate::i18n::rtl();
@@ -1654,6 +1654,8 @@ fn open_item(p: &str) {
     if with(|u| u.browse > 0).unwrap_or(false) && (std::fs::metadata(p).is_ok_and(|m| m.is_dir()) || crate::direct::server(p)) {
         with(|u| u.go_dir(p));
     } else {
+        crate::recent::note(p, std::fs::metadata(p).is_ok_and(|m| m.is_dir()));
+        side::sync();
         shell::open(p);
     }
 }
@@ -1800,6 +1802,8 @@ fn go_place(target: &str, mosaic: bool) {
     if target.starts_with("shell:") {
         shell::open_special(target);
     } else {
+        crate::recent::note(target, std::path::Path::new(target).is_dir());
+        side::sync();
         shell::open(target);
     }
 }
@@ -2110,6 +2114,34 @@ fn zoom_step(grid: bool, size: i32, bigger: bool) -> (bool, i32) {
 fn xy(l: LPARAM) -> (i32, i32) {
     ((l & 0xffff) as i16 as i32, ((l >> 16) & 0xffff) as i16 as i32)
 }
+thread_local!(static WATCH: RefCell<Option<(String, isize)>> = const { RefCell::new(None) });
+
+/// The focused pane lists a folder outside the index (a USB stick, an exFAT drive): `true` when its files changed
+/// since last asked, as the index tells of the folders it sees. One change handle, for that folder only; local
+/// drives only (a share's could block).
+fn watch(q: &str) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification, GetDriveTypeW, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    let want = listed_dir(q).filter(|d| d.as_bytes().get(1) == Some(&b':') && crate::direct::outside(d) && matches!(unsafe { GetDriveTypeW(wz(&d[..3]).as_ptr()) }, 2 | 3));
+    WATCH.with(|w| unsafe {
+        let mut w = w.borrow_mut();
+        if w.as_ref().map(|x| &x.0) != want.as_ref() {
+            if let Some((_, h)) = w.take().filter(|x| x.1 != 0) {
+                FindCloseChangeNotification(h as _);
+            }
+            *w = want.map(|d| {
+                let h = FindFirstChangeNotificationW(wz(&d).as_ptr(), 0, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
+                (d, if h == INVALID_HANDLE_VALUE { 0 } else { h as isize }) // 0: not asked again until the folder changes
+            });
+            return false;
+        }
+        match *w {
+            Some((_, h)) if h != 0 && WaitForSingleObject(h as _, 0) == 0 => FindNextChangeNotification(h as _) != 0,
+            _ => false,
+        }
+    })
+}
+
 /// The folder a query lists: `child:"C:\dir"` / `descendant:"C:\dir"`, maybe followed by more words.
 fn listed_dir(q: &str) -> Option<String> {
     let q = q.trim();
@@ -3153,6 +3185,10 @@ impl Ui {
 
     /// Remember `q` as the newest place (dropping any "forward" ones), after the one we are leaving.
     fn visit(&self, q: &str) {
+        if let Some(d) = listed_dir(q) {
+            crate::recent::note(&d, true);
+            side::sync();
+        }
         let mut h = self.hist.borrow_mut();
         let (v, i) = &mut *h;
         if v.is_empty() {
@@ -3486,6 +3522,9 @@ impl Ui {
             return true;
         }
         let (count, changes) = (st.count, st.changes);
+        if watch(&self.args.q) {
+            self.run(true); // a folder the index doesn't see (a USB stick…) changed
+        }
         if !self.tabs[self.cur].o.muted {
             self.each_visible(|u| u.poll_view(count, changes));
         }
@@ -4711,6 +4750,7 @@ impl Ui {
             ("theme", theme_name()),
             ("lang", crate::i18n::lang()),
             ("tabs", serde_json::to_string(&self.tp).unwrap_or_default()),
+            ("sidebar", side::prefs_json()),
             ("place", if self.secondary { load_settings().remove("place").unwrap_or_default() } else { unsafe { place_of(self.main) } }),
         ]);
         let new = serde_json::to_string(&m).unwrap_or_default();
@@ -6829,7 +6869,15 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             with(|u| u.layout());
             return 0;
         }
-        WM_DEVICECHANGE if matches!(wp, 0x8000 | 0x8004) => side::relabel(), // DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE: a drive came or went
+        WM_DEVICECHANGE if matches!(wp, 0x8000 | 0x8004) => {
+            // DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE: a drive came or went
+            side::relabel();
+            with(|u| {
+                if matches!(u.args.q.trim(), "pc:" | "net:") {
+                    u.run(true);
+                }
+            });
+        }
         WM_CTLCOLOREDIT => {
             // Cached by color, not just created once: `theme()` changes at runtime (the Theme dropdown),
             // and a brush made for the old theme would otherwise paint every edit box the wrong shade forever.
@@ -7259,6 +7307,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 u.save_kinds();
                 u.autosave(true);
             });
+            crate::recent::save();
             PostQuitMessage(0);
             return 0;
         }
