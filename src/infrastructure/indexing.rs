@@ -167,9 +167,19 @@ impl Indexer {
                 if content_current {
                     crate::contentindex::mark_complete();
                 } else {
-                    let (refs, epochs) = catalog.read().file_positions();
                     let scan_catalog = catalog.clone();
-                    thread::spawn(move || crate::contentindex::bulk_index(refs.len(), |from, n| scan_catalog.read().files_at(&refs[from..(from + n).min(refs.len())], &epochs)));
+                    thread::spawn(move || {
+                        // before the file list: it takes a while, and the list goes stale if the index re-sorts meanwhile
+                        crate::contentindex::trim();
+                        // a re-sort of the name index (every REBUILD_AT changes) ends a pass unfinished: go again on a
+                        // fresh list, the files done so far cost a lookup each
+                        loop {
+                            let (refs, epochs) = scan_catalog.read().file_positions();
+                            if crate::contentindex::bulk_index(refs.len(), |from, n| scan_catalog.read().files_at(&refs[from..(from + n).min(refs.len())], &epochs)) {
+                                break;
+                            }
+                        }
+                    });
                 }
                 spawn_cache_saver(catalog, indexed);
             }

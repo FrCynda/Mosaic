@@ -79,6 +79,9 @@ struct Engine {
     // process that actually holds it. The mutex being held across the "does it exist yet" check is
     // what keeps two racing threads from each trying to open a second writer.
     writer: Mutex<Option<IndexWriter>>,
+    /// Something was added or deleted since the last commit. A commit with nothing in it still rewrites `meta.json`
+    /// and `.managed.json`: the bulk pass, skipping thousands of unchanged files a second, did that hundreds of times.
+    dirty: std::sync::atomic::AtomicBool,
     reader: IndexReader,
 }
 
@@ -89,7 +92,7 @@ impl Engine {
         // no decompressed-block cache: tantivy keeps 100 blocks (~1.6 MB) per segment, tens of MB over the index's
         // segments, for lookups (`get`, a hit's path) that decompress a block in microseconds anyway
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).doc_store_cache_num_blocks(0).try_into()?;
-        Ok(Engine { index, fields, writer: Mutex::new(None), reader })
+        Ok(Engine { index, fields, writer: Mutex::new(None), dirty: Default::default(), reader })
     }
 
     fn with_writer<R>(&self, f: impl FnOnce(&mut IndexWriter) -> tantivy::Result<R>) -> tantivy::Result<R> {
@@ -102,6 +105,7 @@ impl Engine {
             writer.set_merge_policy(Box::new(policy));
             *w = Some(writer);
         }
+        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         f(w.as_mut().unwrap())
     }
 
@@ -126,7 +130,7 @@ impl Engine {
     fn commit(&self) -> tantivy::Result<()> {
         // nothing to flush if this process never wrote anything (a search-only reader): reloading
         // the reader is still correct (and cheap) in case another process committed meanwhile
-        if let Some(w) = self.writer.lock().as_mut() {
+        if let Some(w) = self.writer.lock().as_mut().filter(|_| self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)) {
             w.commit()?;
         }
         self.reader.reload()
@@ -138,11 +142,42 @@ impl Engine {
     fn release(&self) -> tantivy::Result<()> {
         let mut w = self.writer.lock();
         if let Some(mut writer) = w.take() {
-            writer.commit()?;
+            if self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                writer.commit()?;
+            }
             writer.wait_merging_threads()?;
         }
         drop(w);
         self.reader.reload()
+    }
+
+    /// Drop every document over `words` words, then rewrite the segments they were in: a delete only marks a
+    /// document, and the merge policy goes by the share of documents deleted, tiny here though they hold most of the
+    /// bytes. The bulk pass then indexes those files again, through [`worth_indexing`].
+    fn drop_long(&self, words: u32) -> tantivy::Result<()> {
+        let searcher = self.reader.searcher();
+        self.with_writer(|w| {
+            let mut segments = Vec::new();
+            for sr in searcher.segment_readers() {
+                let norms = sr.get_fieldnorms_reader(self.fields.body)?;
+                let store = sr.get_store_reader(0)?;
+                let before = segments.len();
+                for d in sr.doc_ids_alive().filter(|&d| norms.fieldnorm(d) > words) {
+                    if let Some(OwnedValue::Str(p)) = store.get::<TantivyDocument>(d)?.get_first(self.fields.path) {
+                        w.delete_term(Term::from_field_text(self.fields.path, p));
+                        if segments.len() == before {
+                            segments.push(sr.segment_id());
+                        }
+                    }
+                }
+            }
+            w.commit()?;
+            for id in segments {
+                let _ = w.merge(&[id]).wait(); // one at a time; fails only if a background merge took it already
+            }
+            Ok(())
+        })?;
+        self.release()
     }
 
     /// The stored `(mtime, size)` of `path`'s current document, if indexed — lets a caller skip
@@ -353,12 +388,13 @@ pub fn progress() -> Option<(usize, usize)> {
 /// Whether it wrote anything to the index.
 fn index_file(path: &str, mtime: i64, size: i64) -> bool {
     if let Some(body) = crate::extract::local_text(path) {
-        if body.trim().is_empty() {
-            // an empty file (a lock, a placeholder): a document per such file was a new segment a minute for nothing
+        let Some(body) = worth_indexing(path, &body) else {
+            // empty (a lock, a placeholder: a document per such file was a new segment a minute for nothing), or
+            // machine data rather than text
             skip_mark(path, mtime, size);
             return forget(path);
-        }
-        upsert(path, mtime, size, &body);
+        };
+        upsert(path, mtime, size, body);
         return true;
     }
     if !crate::extract::has_ifilter(path) {
@@ -372,8 +408,53 @@ fn index_file(path: &str, mtime: i64, size: i64) -> bool {
     let body = String::from_utf8_lossy(&out);
     // an empty result is stored too (an empty body): the stored mtime/size is what lets the next session's scan
     // skip this file instead of starting another subprocess for it, every time
-    upsert(path, mtime, size, body.trim());
+    upsert(path, mtime, size, first_words(body.trim()));
     true
+}
+
+/// Words of one file indexed, about a 300-page book. Past that it's machine output: measured, 27% of every word in
+/// the index sat past this point in its file (minified bundles, game and database files, fonts).
+const MAX_WORDS: usize = 100_000;
+
+/// What of a text file's `body` to index: nothing when it's empty or machine data, else its first [`MAX_WORDS`].
+fn worth_indexing<'a>(path: &str, body: &'a str) -> Option<&'a str> {
+    let body = body.trim();
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or_default();
+    let office = crate::extract::OFFICE.iter().any(|e| e.eq_ignore_ascii_case(ext));
+    (!body.is_empty() && !binary(body) && (office || !minified(body))).then(|| first_words(body))
+}
+
+/// Binary data with a text extension (a database's `.log`): over 1% control characters, which text never has. C1
+/// controls don't count: a Windows-1252 file decoded byte for byte puts its curly quotes and euro signs there.
+fn binary(body: &str) -> bool {
+    let (mut n, mut bad) = (0, 0);
+    for c in body.chars().take(65536) {
+        n += 1;
+        bad += ((c < ' ' && !matches!(c, '\t' | '\n' | '\r' | '\x0c')) || c == '\u{FFFD}') as usize;
+    }
+    bad * 100 > n
+}
+
+/// Minified code or one-line data dumps: over 64 KB with lines averaging past 2000 characters. Not applied to Office
+/// documents, whose extracted paragraphs can run long.
+fn minified(body: &str) -> bool {
+    body.len() > 64 << 10 && body.len() / (body.matches('\n').count() + 1) > 2000
+}
+
+/// `body` up to its [`MAX_WORDS`]-th word, words counted as the index's tokenizer splits them (letter/digit runs).
+fn first_words(body: &str) -> &str {
+    let (mut words, mut in_word) = (0, false);
+    for (i, c) in body.char_indices() {
+        let w = c.is_alphanumeric();
+        if w && !in_word {
+            words += 1;
+            if words > MAX_WORDS {
+                return &body[..i];
+            }
+        }
+        in_word = w;
+    }
+    body
 }
 
 /// Drops `path`'s document, if it has one. Whether it did.
@@ -464,7 +545,45 @@ pub fn take_done() -> bool {
     let _ = std::fs::remove_file(done_path());
     // left by a build that purged Windows/ProgramData/AppData from the index: one full pass brings them back
     let purged = std::fs::remove_file(dir().with_file_name("contentscope1")).is_ok();
-    done && !purged
+    done && !purged && trimmed_path().exists()
+}
+
+/// Written once the index went through [`trim`]: until then the next bulk pass starts with it.
+fn trimmed_path() -> PathBuf {
+    dir().with_file_name("contenttrim1")
+}
+
+/// Once per index: re-check its long documents under [`worth_indexing`] (they were indexed whole, junk included) and
+/// have Windows compress the index folder's new files. Runs at the start of a bulk pass, which then re-indexes them.
+pub fn trim() {
+    if trimmed_path().exists() {
+        return;
+    }
+    compress_dir(&dir());
+    if engine().and_then(|e| e.drop_long(10_000).map_err(|e| e.to_string())).is_ok() {
+        let _ = std::fs::write(trimmed_path(), b"");
+    }
+}
+
+/// NTFS compression on `d`: files created in it from then on are compressed (existing ones aren't rewritten). Measured
+/// ~10% off the positions files, decompressed on first read only (the file cache holds them decompressed).
+fn compress_dir(d: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::*;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_COMPRESSION;
+    let w: Vec<u16> = d.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a NUL-terminated path; the handle is closed below and the in-buffer outlives the call
+    unsafe {
+        let h = CreateFileW(w.as_ptr(), FILE_GENERIC_READ | FILE_GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, std::ptr::null_mut());
+        if h == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let format = COMPRESSION_FORMAT_DEFAULT;
+        let mut n = 0u32;
+        windows_sys::Win32::System::IO::DeviceIoControl(h, FSCTL_SET_COMPRESSION, &format as *const u16 as _, 2, std::ptr::null_mut(), 0, &mut n, std::ptr::null_mut());
+        CloseHandle(h);
+    }
 }
 
 /// A full pass stands behind this session's index (finished now, or vouched for by [`take_done`]).
@@ -489,14 +608,14 @@ fn skip_save() {
 /// synced with files that predate this session's USN events (the whole corpus, on a fresh index).
 /// Spread across the thread pool: extraction (the slow part — file reads, zip parsing, the rare
 /// subprocess) runs concurrently per file; only the final write is serialized, by `Engine`'s own lock.
-pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(String, i64, i64)>> + Sync) {
+pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(String, i64, i64)>> + Sync) -> bool {
     use rayon::prelude::*;
     use std::sync::atomic::Ordering::Relaxed;
     BULK_TOTAL.store(total, Relaxed);
     BULK_DONE.store(0, Relaxed);
     skip_load();
     // `chunk(from, n)` builds the paths of files `from..from + n` only when their turn comes: memory stays flat
-    // however many files there are. `None` (the index was rebuilt meanwhile) ends the pass; the next start redoes it.
+    // however many files there are. `None` (the index was rebuilt meanwhile) ends the pass unfinished: the caller starts another on a fresh list.
     let scan = || {
         for (n, from) in (0..total).step_by(CHUNK).enumerate() {
             if n % 20 == 19 {
@@ -531,6 +650,7 @@ pub fn bulk_index(total: usize, chunk: impl Fn(usize, usize) -> Option<Vec<(Stri
     }
     BULK_TOTAL.store(0, Relaxed); // done: progress() reports nothing more
     release_writer();
+    complete
 }
 
 /// Drives the content index from live file-change events (see [`crate::infrastructure::ntfs::usn::ChangeEvent`]).
@@ -706,6 +826,104 @@ fn is_own(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Read-only, elevated: for each path in `MOSAIC_PATHS` (`|`-separated), whether it's indexed, skip-listed, and
+    /// what the filters make of it.
+    #[test]
+    #[ignore]
+    fn bench_why() {
+        skip_load();
+        for p in std::env::var("MOSAIC_PATHS").unwrap().split('|') {
+            let m = std::fs::metadata(p).unwrap();
+            let mtime = m.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let text = crate::extract::local_text(p);
+            println!(
+                "BENCH {p}\n  indexed={:?} now=({mtime}, {}) skipped={} local_text={:?} binary={:?} minified={:?} kept={:?}",
+                engine().unwrap().get(p),
+                m.len(),
+                skipped(p, mtime, m.len() as i64),
+                text.as_ref().map(|t| t.len()),
+                text.as_deref().map(binary),
+                text.as_deref().map(minified),
+                text.as_deref().map(|t| worth_indexing(p, t).map(str::len)),
+            );
+        }
+    }
+
+    #[test]
+    fn machine_data_is_not_indexed_and_long_text_is_cut() {
+        let prose = "Le café coûte 3 €, l’addition s’il vous plaît.\n".repeat(2000);
+        assert_eq!(worth_indexing(r"C:\a.txt", &prose), Some(prose.trim()));
+        assert_eq!(worth_indexing(r"C:\a.txt", "  \n "), None);
+        let db: String = (0..5000u32).map(|i| char::from_u32(i % 64).unwrap()).collect();
+        assert_eq!(worth_indexing(r"C:\000004.log", &db), None);
+        let bundle = "var a=1;function b(){return a}".repeat(5000);
+        assert_eq!(worth_indexing(r"C:\vendor.js", &bundle), None);
+        assert!(worth_indexing(r"C:\report.docx", &bundle).is_some()); // Office text: long paragraphs are fine
+        let book = "word ".repeat(MAX_WORDS + 50);
+        assert_eq!(first_words(&book).split_whitespace().count(), MAX_WORDS);
+    }
+
+    /// Read-only: what checking phrases by reading files (instead of stored positions) would cost. Per phrase: the
+    /// files holding all its words (the candidates), how many really hold the phrase, and the wall time to read every
+    /// candidate in parallel (installed `mosaic-content.exe` for IFilter types). Run elevated, like the one below.
+    #[test]
+    #[ignore]
+    fn bench_phrase_check() {
+        use rayon::prelude::*;
+        use tantivy::collector::{Count, DocSetCollector};
+        use tantivy::query::{BooleanQuery, PhraseQuery};
+        use tantivy::tokenizer::TokenStream;
+        let (schema, f) = schema();
+        let index = open_index(&dir(), schema).unwrap();
+        let searcher = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into().map(|r: IndexReader| r.searcher()).unwrap();
+        let mut tok = index.tokenizer_for_field(f.body).unwrap();
+        let exe = r"C:\Program Files\Mosaic\mosaic-content.exe";
+        let phrases = ["kestrel invoice", "error message", "thank you", "the project", "public static void", "merci beaucoup", "la facture", "of the"];
+        for phrase in phrases {
+            let mut words = Vec::new();
+            let mut ts = tok.token_stream(phrase);
+            while let Some(t) = ts.next() {
+                words.push(t.text.clone());
+            }
+            let terms: Vec<Term> = words.iter().map(|w| Term::from_field_text(f.body, w)).collect();
+            let loose = BooleanQuery::new(terms.iter().map(|t| (tantivy::query::Occur::Must, Box::new(TermQuery::new(t.clone(), IndexRecordOption::Basic)) as Box<dyn tantivy::query::Query>)).collect());
+            let exact = searcher.search(&PhraseQuery::new(terms), &Count).unwrap();
+            let docs = searcher.search(&loose, &DocSetCollector).unwrap();
+            let paths: Vec<String> = docs
+                .iter()
+                .filter_map(|&a| match searcher.doc::<TantivyDocument>(a).ok()?.get_first(f.path) {
+                    Some(OwnedValue::Str(p)) => Some(p.clone()),
+                    _ => None,
+                })
+                .collect();
+            let t = std::time::Instant::now();
+            let (n_ifilter, n_local, n_all) = paths
+                .par_iter()
+                .map(|p| {
+                    let (text, ifilter) = match crate::extract::local_text(p) {
+                        Some(s) => (Some(s), false),
+                        None if crate::extract::has_ifilter(p) => {
+                            let mut cmd = std::process::Command::new(exe);
+                            cmd.arg("--extract").arg(p);
+                            (run_capped(cmd, EXTRACT_TIMEOUT, EXTRACT_MAX).map(|b| String::from_utf8_lossy(&b).into_owned()), true)
+                        }
+                        None => (None, false),
+                    };
+                    let all = text.is_some_and(|s| {
+                        let l = s.to_lowercase();
+                        words.iter().all(|w| l.contains(w.as_str()))
+                    });
+                    (ifilter as usize, !ifilter as usize, all as usize)
+                })
+                .reduce(|| (0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2));
+            println!(
+                "BENCH phrase={phrase:22} any_word={} candidates~={n_all} exact={exact} read_ms={} (ifilter={n_ifilter} local={n_local})",
+                paths.len(),
+                t.elapsed().as_millis()
+            );
+        }
+    }
+
     /// Read-only: documents, words and stored path bytes per top folder of the live index (run elevated, the
     /// service's files are SYSTEM's). Words stand in for each folder's share of the postings on disk.
     #[test]
@@ -715,6 +933,7 @@ mod tests {
         let index = open_index(&dir(), schema).unwrap();
         let searcher = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into().map(|r: IndexReader| r.searcher()).unwrap();
         let mut groups: std::collections::BTreeMap<&str, (u64, u64, u64)> = Default::default();
+        let (mut over, mut big) = ([0u64; 3], Vec::new());
         for sr in searcher.segment_readers() {
             let norms = sr.get_fieldnorms_reader(f.body).unwrap();
             let store = sr.get_store_reader(0).unwrap();
@@ -728,12 +947,25 @@ mod tests {
                     _ if l.contains(r"\appdata\") => "AppData",
                     _ => "everything else",
                 };
+                let w = norms.fieldnorm(d) as u64;
                 let e = groups.entry(g).or_default();
-                *e = (e.0 + 1, e.1 + norms.fieldnorm(d) as u64, e.2 + p.len() as u64);
+                *e = (e.0 + 1, e.1 + w, e.2 + p.len() as u64);
+                // words past each cap, over all files
+                for (k, cap) in [10_000u64, 100_000, 1_000_000].into_iter().enumerate() {
+                    over[k] += w.saturating_sub(cap);
+                }
+                if w > 1_000_000 {
+                    big.push((w, p.clone()));
+                }
             }
         }
         for (g, (docs, words, path)) in groups {
             println!("BENCH {g:16} docs={docs} words={words} path_bytes={path}");
+        }
+        println!("BENCH words_past_cap 10k={} 100k={} 1M={}", over[0], over[1], over[2]);
+        big.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for (w, p) in big.iter().take(25) {
+            println!("BENCH big words={w} {p}");
         }
     }
 

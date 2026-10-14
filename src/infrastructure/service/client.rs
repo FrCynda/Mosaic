@@ -103,6 +103,20 @@ mod tests {
             let page = med(&|| { c.search(&o(q, 300)); });
             println!("BENCH svc_q {q:<16} cold_ms={cold:7.2} page_ms={page:6.2}");
         }
+        // what changed lately: the most recently modified entries, folders by count
+        if std::env::var_os("MOSAIC_BENCH_RECENT").is_some() {
+            let r = c.search(&SearchOptions { query: "dm:today".into(), limit: 2000, sort: crate::application::search::SortKey::Modified, ascending: false, ..SearchOptions::default() });
+            let mut dirs: std::collections::HashMap<String, usize> = Default::default();
+            for h in &r.hits {
+                *dirs.entry(h.path.rsplit_once('\\').map_or(h.path.clone(), |(d, _)| d.to_string())).or_default() += 1;
+            }
+            let mut dirs: Vec<_> = dirs.into_iter().collect();
+            dirs.sort_by(|a, b| b.1.cmp(&a.1));
+            println!("BENCH recent total_today={}", r.total);
+            for (d, n) in dirs.iter().take(15) {
+                println!("BENCH recent {n:5} {d}");
+            }
+        }
         // the first search after the service sat idle (its working set trimmed meanwhile)
         if std::env::var_os("MOSAIC_BENCH_IDLE").is_some() {
             std::thread::sleep(std::time::Duration::from_secs(65));
