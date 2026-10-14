@@ -55,6 +55,7 @@ const T_POLL: usize = 2;
 const T_FLASH: usize = 3;
 const T_THUMB: usize = 4;
 const T_PREVIEW: usize = 5;
+const T_RENAME: usize = 7; // a second, slow click on a selected item's name: rename it, unless a double-click follows
 const G: i32 = 6; // grid: gutter between a cell's edge and its clickable box
 const SB: i32 = 12; // width kept free for the scrollbar at the list's right edge
 const GLIDE: f64 = 0.11; // seconds a wheel notch takes to scroll
@@ -366,6 +367,57 @@ fn load_settings() -> HashMap<String, String> {
         }
     }
     std::fs::read_to_string(legacy_settings_path()).unwrap_or_default().lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+/// F11: the window over its whole screen, no frame; again: back as it was.
+unsafe fn fullscreen(h: HWND) {
+    let style = GetWindowLongW(h, GWL_STYLE) as u32;
+    if let Some(wp) = FULL.take() {
+        SetWindowLongW(h, GWL_STYLE, (style | WS_OVERLAPPEDWINDOW) as i32);
+        SetWindowPlacement(h, &wp);
+        SetWindowPos(h, null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        return;
+    }
+    let mut wp: WINDOWPLACEMENT = zeroed();
+    wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+    let mut mi: MONITORINFO = zeroed();
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    if GetWindowPlacement(h, &mut wp) == 0 || GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+        return;
+    }
+    FULL.set(Some(wp));
+    SetWindowLongW(h, GWL_STYLE, (style & !WS_OVERLAPPEDWINDOW) as i32);
+    let m = mi.rcMonitor;
+    SetWindowPos(h, HWND_TOP, m.left, m.top, m.right - m.left, m.bottom - m.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+}
+thread_local!(static FULL: std::cell::Cell<Option<WINDOWPLACEMENT>> = const { std::cell::Cell::new(None) });
+
+/// The window's place for the settings: "left,top,right,bottom,maximized" of its normal (restored) size. While
+/// full screen, the place it had before.
+unsafe fn place_of(h: HWND) -> String {
+    let mut wp: WINDOWPLACEMENT = zeroed();
+    wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+    if let Some(f) = FULL.get() {
+        wp = f;
+    } else if GetWindowPlacement(h, &mut wp) == 0 {
+        return String::new();
+    }
+    let r = wp.rcNormalPosition;
+    format!("{},{},{},{},{}", r.left, r.top, r.right, r.bottom, (wp.showCmd == SW_SHOWMAXIMIZED as u32) as u8)
+}
+
+/// [`place_of`]'s text back into a placement.
+fn placement(s: &str) -> Option<WINDOWPLACEMENT> {
+    let v: Vec<i32> = s.split(',').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let [left, top, right, bottom, max] = v[..] else { return None };
+    if right - left < 200 || bottom - top < 150 {
+        return None;
+    }
+    let mut wp: WINDOWPLACEMENT = unsafe { zeroed() };
+    wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+    wp.showCmd = if max != 0 { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL } as u32;
+    wp.rcNormalPosition = RECT { left, top, right, bottom };
+    Some(wp)
 }
 
 fn w(s: &str) -> Vec<u16> {
@@ -724,16 +776,32 @@ struct Zone {
     cap: (i32, i32),
 }
 
+/// The lists Mosaic makes itself rather than reading a folder: (search, name's key, Explorer's own place for it).
+const LISTS: [(&str, &str, &str); 6] = [
+    ("home:", "side.home", "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}"),
+    ("recent:", "side.recent_files", "shell:recent"),
+    ("recent-dirs:", "side.recent_folders", "shell:::{22877a6d-37a1-461a-91b0-dbda5aaebc99}"),
+    ("pc:", "side.this_pc", "shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"),
+    ("net:", "side.network", "shell:::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}"),
+    ("linux:", "side.linux", "shell:::{B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6}"),
+];
+fn list_of(q: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    LISTS.iter().find(|l| l.0 == q.trim())
+}
+
 /// What a tab is called: the folder it lists (and any words narrowing it), All, Home, or its search.
 fn place_name(q: &str) -> String {
     let q = q.trim();
     match q {
         "" => return t("side.all").into(),
-        "home:" => return t("side.home").into(),
         _ => {}
     }
+    if let Some(l) = list_of(q) {
+        return t(l.1).into();
+    }
     let Some(d) = listed_dir(q) else { return q.into() };
-    let name = std::path::Path::new(&d).file_name().map_or(d.clone(), |n| n.to_string_lossy().into_owned());
+    // a share's top (`\\wsl.localhost\Ubuntu`) has no file name to Rust: its last part, as for any folder
+    let name = std::path::Path::new(&d).file_name().map_or_else(|| d.trim_end_matches('\\').rsplit('\\').next().unwrap_or(&d).to_string(), |n| n.to_string_lossy().into_owned());
     match q.splitn(3, '"').nth(2).map(str::trim).filter(|r| !r.is_empty()) {
         Some(rest) => format!("{name} › {rest}"),
         None => name,
@@ -741,7 +809,7 @@ fn place_name(q: &str) -> String {
 }
 
 enum Press {
-    Item { i: usize, defer: bool, x: i32, y: i32 },
+    Item { i: usize, defer: bool, x: i32, y: i32, again: bool }, // `again`: on the name of the only selected item
     Band { x: i32, y: f64, cx: i32, cy: i32, xor: bool, base: Sel, shown: bool },
 }
 
@@ -812,6 +880,8 @@ struct Ui {
     cm: Canvas, // main window
     cl: Canvas, // list
     edit_font: HFONT,
+    naming: Option<usize>,                          // the tab whose title is being typed over (see `TA::Rename`)
+    name_slot: std::cell::Cell<Option<(RECT, u32)>>, // where its title was last drawn, and on what
     backend: SearchBackend,
     jobs: mpsc::Sender<Job>,
     args: SearchArgs,  // what the controls say
@@ -1369,6 +1439,8 @@ pub fn run() {
             cl: Canvas::new(list, &gfx),
             gfx,
             edit_font: edit_font(scale),
+            naming: None,
+            name_slot: std::cell::Cell::new(None),
             backend,
             jobs: worker(main),
             shown: args.clone(),
@@ -1516,7 +1588,16 @@ pub fn run() {
         with(|u| u.restore());
         with(|u| u.layout());
         SetTimer(main, T_POLL, 500, None);
-        ShowWindow(main, SW_SHOW);
+        // where and how big it was when last closed (not a window torn off another: that one opens at the cursor)
+        let wp = st.get("place").filter(|_| with(|u| !u.secondary) == Some(true)).and_then(|s| placement(s));
+        match wp {
+            Some(wp) => {
+                SetWindowPlacement(main, &wp); // shows it, maximized or not; moved onto a screen if its own is gone
+            }
+            None => {
+                ShowWindow(main, SW_SHOW);
+            }
+        }
         SetFocus(edit);
         pump();
     }
@@ -1570,7 +1651,7 @@ fn open_item(p: &str) {
         Some(t) if std::fs::metadata(t).is_ok_and(|m| m.is_dir()) => t.as_str(),
         _ => p,
     };
-    if with(|u| u.browse > 0).unwrap_or(false) && std::fs::metadata(p).is_ok_and(|m| m.is_dir()) {
+    if with(|u| u.browse > 0).unwrap_or(false) && (std::fs::metadata(p).is_ok_and(|m| m.is_dir()) || crate::direct::server(p)) {
         with(|u| u.go_dir(p));
     } else {
         shell::open(p);
@@ -1668,7 +1749,21 @@ unsafe fn dispatch(msg: &MSG) {
         }
     }
     TranslateMessage(msg);
+    if msg.message == WM_KEYDOWN && msg.wParam == VK_BACK as usize && key_down(VK_CONTROL) && is_edit(msg.hwnd) {
+        // the WM_CHAR it would make (0x7F) is dropped below: the search box, menus' find fields, any edit box
+        delete_word(msg.hwnd);
+        let mut m: MSG = zeroed();
+        PeekMessageW(&mut m, msg.hwnd, WM_CHAR, WM_CHAR, PM_REMOVE);
+        return;
+    }
     DispatchMessageW(msg);
+}
+
+/// A Windows EDIT control (the search box, a rename or find field).
+unsafe fn is_edit(h: HWND) -> bool {
+    let mut b = [0u16; 8];
+    let n = GetClassNameW(h, b.as_mut_ptr(), 8);
+    String::from_utf16_lossy(&b[..n.max(0) as usize]).eq_ignore_ascii_case("edit")
 }
 
 /// The preview pane on / off (status bar button, Alt+P). Off stops playback and lets go of the file.
@@ -1693,11 +1788,11 @@ fn go_place(target: &str, mosaic: bool) {
             return;
         }
     }
-    if target == "home:" {
-        if with(|u| (u.browse > 0).then(|| u.browse_home())) == Some(Some(())) {
+    if let Some(l) = list_of(target) {
+        if with(|u| (u.browse > 0).then(|| u.browse_list(target))) == Some(Some(())) {
             return;
         }
-        return shell::open_special("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}");
+        return shell::open_special(l.2);
     }
     if with(|u| (mosaic && u.browse > 0).then(|| u.go_dir(target))) == Some(Some(())) {
         return;
@@ -1713,7 +1808,7 @@ fn go_place(target: &str, mosaic: bool) {
 /// anything else as a click.
 fn go_place_tab(target: &str, mosaic: bool) {
     let q = match target {
-        "home:" => "home:".to_string(),
+        _ if list_of(target).is_some() => target.to_string(),
         t if std::path::Path::new(t).is_dir() => match with(|u| u.browse_q(t)) {
             Some(q) => q,
             None => return,
@@ -1762,9 +1857,13 @@ fn worker(main: HWND) -> mpsc::Sender<Job> {
 // ---- helpers -------------------------------------------------------------------------------------------------
 /// The search box is a real EDIT control (caret, IME, undo, clipboard for free), so it keeps a GDI font.
 unsafe fn edit_font(s: f64) -> HFONT {
+    gdi_font(12.0 * s, 400)
+}
+/// Segoe UI, `px` tall, for an edit box.
+pub(super) unsafe fn gdi_font(px: f64, weight: i32) -> HFONT {
     let mut lf: LOGFONTW = zeroed();
-    lf.lfHeight = -((12.0 * s).round() as i32);
-    lf.lfWeight = 400;
+    lf.lfHeight = -(px.round() as i32);
+    lf.lfWeight = weight;
     lf.lfQuality = 5 as _; // CLEARTYPE_QUALITY
     for (d, c) in lf.lfFaceName.iter_mut().zip("Segoe UI".encode_utf16()) {
         *d = c;
@@ -2115,7 +2214,8 @@ impl Ui {
         unsafe { SetWindowTextW(self.edit, wz(&q).as_ptr()) };
     }
     fn browse_q(&self, dir: &str) -> String {
-        format!("{}:\"{}\"", if self.browse == 2 { "descendant" } else { "child" }, dir.trim_end_matches('\\'))
+        let deep = self.browse == 2 && !crate::direct::outside(dir); // a share is read a folder at a time
+        format!("{}:\"{}\"", if deep { "descendant" } else { "child" }, dir.trim_end_matches('\\'))
     }
 
     // -- panes
@@ -3045,10 +3145,10 @@ impl Ui {
         unsafe { SetWindowTextW(self.edit, wz("").as_ptr()) };
     }
 
-    /// Home: the Quick access folders (the search box gets `home:`).
-    fn browse_home(&self) {
-        self.visit("home:");
-        unsafe { SetWindowTextW(self.edit, wz("home:").as_ptr()) };
+    /// One of Mosaic's own lists (see [`LISTS`]): Home, Recent, This PC… The search box gets its word.
+    fn browse_list(&self, q: &str) {
+        self.visit(q);
+        unsafe { SetWindowTextW(self.edit, wz(q).as_ptr()) };
     }
 
     /// Remember `q` as the newest place (dropping any "forward" ones), after the one we are leaving.
@@ -3150,19 +3250,20 @@ impl Ui {
         }
     }
 
-    /// The box over item `i`'s name that its rename field takes.
+    /// Where item `i`'s name is drawn (as `paint` puts it), which its rename field covers.
     fn name_box(&self, i: usize) -> RECT {
         let (x, top) = self.spot(i);
-        let (x, top) = (x as i32, top as i32);
-        let h = self.gfx.f.lh + self.px(8);
+        let (x, top) = (x as i32, top.round() as i32);
+        let lh = self.gfx.f.lh;
         if self.grid {
             let left = x + self.px(G + 5);
-            let top = top + self.px(G + 5) + self.tile() + self.px(4);
-            RECT { left, top, right: left + self.tile(), bottom: top + h }
+            let top = top + self.px(G + 5) + self.tile() + self.px(6);
+            RECT { left, top, right: left + self.tile(), bottom: top + 2 * lh }
         } else {
             let c = self.cols(self.cw())[0];
-            let top = top + (self.rh() - h) / 2;
-            let icon = self.px(22); // the name starts beside the icon, at the column's near edge
+            let top = top + self.px(2) + (self.rh() - self.px(4) - lh) / 2;
+            let h = lh;
+            let icon = self.px(26); // the name starts beside the icon, at the column's near edge
             let (left, right) = if self.rtl { (c.0, c.1 - icon) } else { (c.0 + icon, c.1) };
             RECT { left, top, right, bottom: top + h }
         }
@@ -3424,8 +3525,12 @@ impl Ui {
     fn row(&mut self, h: crate::application::index::Hit) -> Row {
         let ext = if h.is_dir { None } else { ext_of(&h.name) };
         // Home lists Quick access folders: each gets its own shell icon (Desktop, Downloads... as in Explorer)
-        let own = matches!(ext.as_deref(), Some("exe" | "lnk" | "ico" | "msi" | "scr")) || (h.is_dir && (self.args.q.trim().eq_ignore_ascii_case("home:") || self.special.contains(&h.path.to_lowercase())));
-        let (dir, name) = h.path.rsplit_once('\\').unwrap_or(("", &h.path));
+        let own = matches!(ext.as_deref(), Some("exe" | "lnk" | "ico" | "msi" | "scr")) || (h.is_dir && (list_of(&self.args.q).is_some() || self.special.contains(&h.path.to_lowercase())));
+        let (dir, name) = match h.path.rsplit_once('\\') {
+            Some((_, "")) => ("", h.name.as_str()), // a drive (This PC): "Local Disk (C:)"
+            Some(p) => p,
+            None => ("", h.path.as_str()),
+        };
         Row {
             name: w(name),
             dir: w(dir),
@@ -3582,7 +3687,7 @@ impl Ui {
     /// The path whose shell icon a row wears: its own, or the Windows folder matching what the folder holds.
     fn icon_key(&self, path: &str, is_dir: bool) -> String {
         // Home keeps each folder's own shell icon (Documents stays grey whatever it holds)
-        if is_dir && !self.args.q.trim().eq_ignore_ascii_case("home:") && !self.special.contains(&path.to_lowercase()) {
+        if is_dir && list_of(&self.args.q).is_none() && !self.special.contains(&path.to_lowercase()) {
             if let Some(Some(d)) = self.kinds.get(path).and_then(|&(k, _)| self.kind_dirs.get(k as usize)) {
                 return d.clone();
             }
@@ -4152,6 +4257,7 @@ impl Ui {
             }
             VK_F2 if !in_search && self.sel.count() > 0 => return Some(Some(Act::Rename)),
             VK_F5 => return Some(Some(Act::Refresh)),
+            VK_F11 => unsafe { fullscreen(self.main) },
             VK_BACK if !in_search => {
                 self.browse_up(); // as in Explorer
             }
@@ -4605,8 +4711,12 @@ impl Ui {
             ("theme", theme_name()),
             ("lang", crate::i18n::lang()),
             ("tabs", serde_json::to_string(&self.tp).unwrap_or_default()),
+            ("place", if self.secondary { load_settings().remove("place").unwrap_or_default() } else { unsafe { place_of(self.main) } }),
         ]);
-        let _ = std::fs::write(p, serde_json::to_string(&m).unwrap_or_default());
+        let new = serde_json::to_string(&m).unwrap_or_default();
+        if std::fs::read_to_string(&p).ok().as_deref() != Some(new.as_str()) {
+            let _ = std::fs::write(p, new);
+        }
     }
 
     /// UI language, live: text updates immediately (`t()` reads the active table on every call), and
@@ -5004,7 +5114,7 @@ impl Ui {
         // a folder holding only one kind of file (all pictures, all videos...) wears that Windows folder's icon
         let todo: Vec<(String, Option<(u8, u64)>)> = (i0..i1)
             .filter_map(|i| self.get(i))
-            .filter(|r| r.is_dir && !self.args.q.trim().eq_ignore_ascii_case("home:") && !self.kind_checked.contains(&r.path))
+            .filter(|r| r.is_dir && list_of(&self.args.q).is_none() && !self.kind_checked.contains(&r.path))
             .map(|r| (r.path.clone(), self.kinds.get(&r.path).copied()))
             .collect();
         if !todo.is_empty() {
@@ -5251,6 +5361,7 @@ impl Ui {
         match self.item_at(x, y) {
             Some(i) => {
                 let mut defer = false;
+                let again = !ctrl && !shift && self.sel.count() == 1 && self.sel.has(i) && inside(&self.name_box(i), x, y);
                 if ctrl || shift {
                     self.click(i, ctrl, shift);
                 } else if !self.sel.has(i) {
@@ -5258,7 +5369,7 @@ impl Ui {
                 } else {
                     defer = true; // part of a multi-selection: keep it for dragging, collapse on a plain click
                 }
-                self.press = Some(Press::Item { i, defer, x, y });
+                self.press = Some(Press::Item { i, defer, x, y, again });
             }
             None => {
                 let base = if ctrl || shift { self.sel.clone() } else { Sel::default() };
@@ -5328,6 +5439,10 @@ impl Ui {
             return;
         }
         match self.press.take() {
+            // as in Explorer: a click on the selected item's name renames it, once a double-click is ruled out
+            Some(Press::Item { again: true, .. }) => unsafe {
+                SetTimer(self.main, T_RENAME, GetDoubleClickTime(), None);
+            },
             Some(Press::Item { i, defer: true, .. }) => self.set_sel(Sel::one(i), Some(i), Some(Some(i))),
             Some(Press::Band { shown: false, base, .. }) if base.0.is_empty() && !key_down(VK_CONTROL) && !key_down(VK_SHIFT) => {
                 self.set_sel(Sel::default(), None, Some(None)) // click on empty space clears
@@ -5885,19 +6000,43 @@ thread_local! {
     static LISTED: RefCell<Option<(String, bool, Instant)>> = const { RefCell::new(None) };
     /// What Ctrl+Z takes back, newest last.
     static UNDO: RefCell<Vec<Undo>> = const { RefCell::new(Vec::new()) };
-    /// The text field open now (one at a time): its padding, narrowest width, text height, whether it names a file.
-    static FIELD: std::cell::Cell<(i32, i32, i32, bool)> = const { std::cell::Cell::new((0, 0, 0, false)) };
+    /// The text field open now (one at a time).
+    static FIELD: std::cell::Cell<Fld> = const { std::cell::Cell::new(Fld { e: null_mut(), look: Look::Box, pad: 0, padv: 0, min_w: 0, th: 0, file: false }) };
 }
 
 /// What Windows refuses in a file's name.
 const BAD_NAME: &str = "\\/:*?\"<>|";
 
-/// A text field over `r` (`parent`'s coordinates) for naming anything: the theme's background inside a rounded accent
-/// border, the text padded, centred and where it was, the box widening as it's typed into. `text` starts with its
-/// first `sel` UTF-16 units selected (-1: all), `hint` shows while it's empty, and `file` refuses what a file name
-/// can't have. Ctrl+A selects all, Ctrl+Backspace deletes a word.
-pub(super) unsafe fn field(parent: HWND, r: RECT, text: &str, sel: isize, hint: &str, file: bool) -> HWND {
+/// How a text field looks.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Look {
+    /// A box of its own: padded, in a rounded accent border, at least 150 px wide.
+    Box,
+    /// Right over a name drawn in `r` (a list row's): the same font, the text where it was, a thin border hugging it.
+    Name,
+    /// The same for a name drawn on up to two centred lines (a grid tile's): it wraps, and grows down as it's typed into.
+    Wrap,
+    /// No box at all: the text where it was drawn, in this font, on this background (a tab's title).
+    Bare(HFONT, u32),
+}
+
+#[derive(Clone, Copy)]
+struct Fld {
+    e: HWND,
+    look: Look,
+    pad: i32,  // across: the frame each side of the text
+    padv: i32, // down: above and below it
+    min_w: i32,
+    th: i32, // a line's height
+    file: bool,
+}
+
+/// A text field over `r` (`parent`'s coordinates) for naming anything, widening as it's typed into (see [`Look`]).
+/// `text` starts with its first `sel` UTF-16 units selected (-1: all), `hint` shows while it's empty, and `file`
+/// refuses what a file name can't have. Ctrl+A selects all, Ctrl+Backspace deletes a word.
+pub(super) unsafe fn field(parent: HWND, r: RECT, text: &str, sel: isize, hint: &str, file: bool, look: Look) -> HWND {
     let Some((font, scale)) = with(|u| (u.edit_font, u.scale)) else { return null_mut() };
+    let font = if let Look::Bare(f, _) = look { f } else { font };
     let p = |v: f64| (v * scale).round() as i32;
     let dc = GetDC(parent);
     let old = SelectObject(dc, font);
@@ -5905,15 +6044,36 @@ pub(super) unsafe fn field(parent: HWND, r: RECT, text: &str, sel: isize, hint: 
     GetTextMetricsW(dc, &mut tm);
     SelectObject(dc, old);
     ReleaseDC(parent, dc);
-    let (pad, h) = (p(8.0), (tm.tmHeight + p(10.0)).max(r.bottom - r.top));
-    FIELD.set((pad, p(150.0), tm.tmHeight, file));
-    let e = CreateWindowExW(0, wz("EDIT").as_ptr(), null(), WS_CHILD | ES_AUTOHSCROLL as u32, (r.left - pad).max(0), (r.top + r.bottom - h) / 2, p(150.0), h, parent, null_mut(), GetModuleHandleW(null()), null());
+    let th = tm.tmHeight;
+    let (rw, rh) = (r.right - r.left, r.bottom - r.top);
+    let fld = |pad, padv, min_w| Fld { e: null_mut(), look, pad, padv, min_w, th, file };
+    let (style, f, x, y, h) = match look {
+        Look::Box => {
+            let (pad, h) = (p(8.0), (th + p(10.0)).max(rh));
+            (ES_AUTOHSCROLL, fld(pad, 0, p(150.0)), r.left - pad, (r.top + r.bottom - h) / 2, h)
+        }
+        Look::Name => {
+            let (pad, padv) = (p(4.0), p(2.0));
+            (ES_AUTOHSCROLL, fld(pad, padv, p(28.0)), r.left - pad, r.top - padv, rh + 2 * padv)
+        }
+        Look::Wrap => {
+            let (pad, padv) = (p(4.0), p(2.0));
+            (ES_MULTILINE | ES_CENTER | ES_AUTOVSCROLL, fld(pad, padv, rw + 2 * pad), r.left - pad, r.top - padv, th + 2 * padv)
+        }
+        Look::Bare(..) => (ES_AUTOHSCROLL, fld(0, 0, rw), r.left, r.top, rh),
+    };
+    FIELD.set(f); // before the window: its first WM_NCCALCSIZE reads it
+    let e = CreateWindowExW(0, wz("EDIT").as_ptr(), null(), WS_CHILD | style as u32, x.max(0), y, f.min_w, h, parent, null_mut(), GetModuleHandleW(null()), null());
     if e.is_null() {
         return e;
     }
+    FIELD.set(Fld { e, ..f });
     windows_sys::Win32::UI::Shell::SetWindowSubclass(e, Some(field_proc), 1, 0);
     SetWindowTheme(e, wz("DarkMode_CFD").as_ptr(), null());
     SendMessageW(e, WM_SETFONT, font as usize, 0);
+    if look != Look::Box {
+        SendMessageW(e, 0x00D3, 3, 0); // EM_SETMARGINS, none: the text lands exactly where it was drawn
+    }
     SetWindowTextW(e, wz(text).as_ptr());
     let hint = wz(hint);
     SendMessageW(e, 0x1501, 1, hint.as_ptr() as isize); // EM_SETCUEBANNER, shown while focused too
@@ -5924,28 +6084,47 @@ pub(super) unsafe fn field(parent: HWND, r: RECT, text: &str, sel: isize, hint: 
     e
 }
 
-/// Widens (or narrows back) field `e` to its text, within its parent, and rounds its corners.
+/// The background field `e` is drawn on (its parent's WM_CTLCOLOREDIT asks).
+unsafe fn field_bg(e: HWND) -> u32 {
+    match FIELD.get() {
+        Fld { e: f, look: Look::Bare(_, bg), .. } if f == e => bg,
+        _ => theme().bg,
+    }
+}
+
+/// Widens (or narrows back) field `e` to its text, within its parent, and rounds its corners. A wrapping one keeps
+/// its width and grows down instead, up to five lines.
 unsafe fn fit(e: HWND, force: bool) {
-    let (pad, min_w, ..) = FIELD.get();
-    let n = GetWindowTextLengthW(e);
-    let mut b = vec![0u16; n as usize + 1];
-    GetWindowTextW(e, b.as_mut_ptr(), n + 1);
-    let dc = GetDC(e);
-    let old = SelectObject(dc, SendMessageW(e, WM_GETFONT, 0, 0) as HGDIOBJ);
-    let mut sz: SIZE = zeroed();
-    GetTextExtentPoint32W(dc, b.as_ptr(), n, &mut sz);
-    SelectObject(dc, old);
-    ReleaseDC(e, dc);
+    let Fld { pad, padv, min_w, th, look, .. } = FIELD.get();
     let (mut wr, mut pr): (RECT, RECT) = (zeroed(), zeroed());
     GetWindowRect(e, &mut wr);
     MapWindowPoints(null_mut(), GetParent(e), &mut wr as *mut RECT as *mut POINT, 2);
     GetClientRect(GetParent(e), &mut pr);
-    let (w, h) = ((sz.cx + 4 * pad).min(pr.right - wr.left - 2).max(min_w), wr.bottom - wr.top);
-    if !force && w == wr.right - wr.left {
+    let (w, h) = match look {
+        Look::Bare(..) => (min_w, wr.bottom - wr.top),
+        Look::Wrap => (min_w, SendMessageW(e, 0x00BA, 0, 0).clamp(1, 5) as i32 * th + 2 * padv), // EM_GETLINECOUNT
+        _ => {
+            let n = GetWindowTextLengthW(e);
+            let mut b = vec![0u16; n as usize + 1];
+            GetWindowTextW(e, b.as_mut_ptr(), n + 1);
+            let dc = GetDC(e);
+            let old = SelectObject(dc, SendMessageW(e, WM_GETFONT, 0, 0) as HGDIOBJ);
+            let mut sz: SIZE = zeroed();
+            GetTextExtentPoint32W(dc, b.as_ptr(), n, &mut sz);
+            SelectObject(dc, old);
+            ReleaseDC(e, dc);
+            let room = if look == Look::Box { 4 * pad } else { 2 * pad + th / 3 }; // a name's box hugs it, the caret aside
+            ((sz.cx + room).min(pr.right - wr.left - 2).max(min_w), wr.bottom - wr.top)
+        }
+    };
+    if !force && w == wr.right - wr.left && h == wr.bottom - wr.top {
         return;
     }
     SetWindowPos(e, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    SetWindowRgn(e, CreateRoundRectRgn(0, 0, w + 1, h + 1, pad, pad), 1);
+    if !matches!(look, Look::Bare(..)) {
+        let rad = if look == Look::Box { pad } else { 2 * pad };
+        SetWindowRgn(e, CreateRoundRectRgn(0, 0, w + 1, h + 1, rad, rad), 1);
+    }
     // scrolled while it was narrower: back to the start, then to the caret
     let (mut a, mut z) = (0u32, 0u32);
     SendMessageW(e, 0x00B0, &mut a as *mut u32 as usize, &mut z as *mut u32 as isize); // EM_GETSEL
@@ -5953,14 +6132,32 @@ unsafe fn fit(e: HWND, force: bool) {
     SendMessageW(e, 0x00B1, a as usize, z as isize);
 }
 
+/// Ctrl+Backspace in an edit box: the word before the caret (and the spaces after it), or the selection. A plain
+/// EDIT control would type a box character instead.
+unsafe fn delete_word(h: HWND) {
+    let (mut a, mut z) = (0u32, 0u32);
+    SendMessageW(h, 0x00B0, &mut a as *mut u32 as usize, &mut z as *mut u32 as isize);
+    if a == z {
+        let n = GetWindowTextLengthW(h);
+        let mut b = vec![0u16; n as usize + 1];
+        GetWindowTextW(h, b.as_mut_ptr(), n + 1);
+        let s = String::from_utf16_lossy(&b[..a as usize]);
+        let t = s.trim_end();
+        let w = t.trim_end_matches(char::is_alphanumeric);
+        let k = if w.len() < t.len() { w.len() } else { t.len() - t.chars().last().map_or(0, char::len_utf8) }; // a lone mark: just it
+        SendMessageW(h, 0x00B1, s[..k].encode_utf16().count(), a as isize);
+    }
+    SendMessageW(h, 0x00C2, 1, wz("").as_ptr() as isize); // EM_REPLACESEL, undoable
+}
+
 unsafe extern "system" fn field_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM, _: usize, _: usize) -> LRESULT {
-    let (pad, _, th, file) = FIELD.get();
+    let Fld { pad, padv, th, file, look, .. } = FIELD.get();
     match m {
         WM_NCCALCSIZE => {
             // the padding is the frame, so the text is centred and the caret never touches the border
             let r = &mut *(l as *mut RECT);
-            let v = ((r.bottom - r.top - th) / 2).max(0);
-            *r = RECT { left: r.left + pad, top: r.top + v, right: (r.right - pad).max(r.left + pad), bottom: r.bottom - v };
+            let v = if look == Look::Wrap { padv } else { ((r.bottom - r.top - th) / 2).max(0) };
+            *r = RECT { left: r.left + pad, top: r.top + v, right: (r.right - pad).max(r.left + pad), bottom: (r.bottom - v).max(r.top + v) };
             return 0;
         }
         WM_NCPAINT => {
@@ -5973,15 +6170,18 @@ unsafe extern "system" fn field_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM, _: 
             let (ox, oy) = (o.x - wr.left, o.y - wr.top);
             ExcludeClipRect(dc, ox, oy, ox + cr.right, oy + cr.bottom);
             let (w, hh) = (wr.right - wr.left, wr.bottom - wr.top);
-            let bg = CreateSolidBrush(gdi(theme().bg));
+            let bg = CreateSolidBrush(gdi(field_bg(h)));
             FillRect(dc, &RECT { left: 0, top: 0, right: w, bottom: hh }, bg);
             DeleteObject(bg);
-            let pen = CreatePen(PS_INSIDEFRAME, (pad / 8).max(1), gdi(theme().accent));
-            let (op, ob) = (SelectObject(dc, pen), SelectObject(dc, GetStockObject(NULL_BRUSH)));
-            RoundRect(dc, 0, 0, w, hh, pad, pad);
-            SelectObject(dc, op);
-            SelectObject(dc, ob);
-            DeleteObject(pen);
+            if !matches!(look, Look::Bare(..)) {
+                let (wd, rad) = if look == Look::Box { ((pad / 8).max(1), pad) } else { (1, 2 * pad) };
+                let pen = CreatePen(PS_INSIDEFRAME, wd, gdi(theme().accent));
+                let (op, ob) = (SelectObject(dc, pen), SelectObject(dc, GetStockObject(NULL_BRUSH)));
+                RoundRect(dc, 0, 0, w, hh, rad, rad);
+                SelectObject(dc, op);
+                SelectObject(dc, ob);
+                DeleteObject(pen);
+            }
             ReleaseDC(h, dc);
             return 0;
         }
@@ -5990,22 +6190,10 @@ unsafe extern "system" fn field_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM, _: 
             return 0;
         }
         WM_CHAR if wp == 0x7F => {
-            // Ctrl+Backspace: the word before the caret (and the spaces after it)
-            let (mut a, mut z) = (0u32, 0u32);
-            SendMessageW(h, 0x00B0, &mut a as *mut u32 as usize, &mut z as *mut u32 as isize);
-            if a == z {
-                let n = GetWindowTextLengthW(h);
-                let mut b = vec![0u16; n as usize + 1];
-                GetWindowTextW(h, b.as_mut_ptr(), n + 1);
-                let s = String::from_utf16_lossy(&b[..a as usize]);
-                let t = s.trim_end();
-                let w = t.trim_end_matches(char::is_alphanumeric);
-                let k = if w.len() < t.len() { w.len() } else { t.len() - t.chars().last().map_or(0, char::len_utf8) }; // a lone mark: just it
-                SendMessageW(h, 0x00B1, s[..k].encode_utf16().count(), a as isize);
-            }
-            SendMessageW(h, 0x00C2, 1, wz("").as_ptr() as isize); // EM_REPLACESEL, undoable
+            delete_word(h);
             return 0;
         }
+        WM_CHAR if look == Look::Wrap && matches!(wp, 9 | 10 | 13) => return 0, // a name is one line, however it wraps
         WM_CHAR if file && char::from_u32(wp as u32).is_some_and(|c| BAD_NAME.contains(c)) => {
             bad_name_tip(h);
             return 0;
@@ -6169,7 +6357,8 @@ unsafe fn start_rename() {
     UpdateWindow(list);
     let name = std::path::Path::new(&path).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let stem = if is_dir { name.len() } else { name.rfind('.').filter(|&k| k > 0).unwrap_or(name.len()) };
-    let edit = field(list, r, &name, name[..stem].encode_utf16().count() as isize, "", true);
+    let look = if with(|u| u.grid) == Some(true) { Look::Wrap } else { Look::Name };
+    let edit = field(list, r, &name, name[..stem].encode_utf16().count() as isize, "", true, look);
     if !edit.is_null() {
         RENAMING.set(Some((edit, path)));
     }
@@ -6640,11 +6829,12 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             with(|u| u.layout());
             return 0;
         }
+        WM_DEVICECHANGE if matches!(wp, 0x8000 | 0x8004) => side::relabel(), // DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE: a drive came or went
         WM_CTLCOLOREDIT => {
             // Cached by color, not just created once: `theme()` changes at runtime (the Theme dropdown),
             // and a brush made for the old theme would otherwise paint every edit box the wrong shade forever.
             static BRUSH: std::sync::Mutex<Option<(u32, isize)>> = std::sync::Mutex::new(None);
-            let bg = gdi(theme().bg);
+            let bg = gdi(field_bg(l as HWND));
             SetTextColor(wp as HDC, gdi(theme().text));
             SetBkColor(wp as HDC, bg);
             let mut b = BRUSH.lock().unwrap();
@@ -6685,6 +6875,12 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 T_POLL => {
                     if with(|u| u.poll()) == Some(true) {
                         offer_install(h);
+                    }
+                }
+                T_RENAME => {
+                    KillTimer(h, T_RENAME);
+                    if with(|u| u.sel.count() == 1 && u.press.is_none() && GetFocus() == u.list) == Some(true) {
+                        start_rename();
                     }
                 }
                 T_FLASH => {
@@ -7059,6 +7255,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_DESTROY => {
             with(|u| {
+                u.save_settings(); // the window's place
                 u.save_kinds();
                 u.autosave(true);
             });
@@ -7114,6 +7311,9 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_LBUTTONDBLCLK => {
             let (x, y) = xy(l);
+            if let Some(main) = with(|u| u.main) {
+                KillTimer(main, T_RENAME); // a double-click opens, never renames
+            }
             if withp(h, |u| u.on_sb(x)) == Some(true) {
                 withp(h, |u| u.ldown(x, y)); // a second press on the scrollbar pages again
                 return 0;

@@ -222,7 +222,7 @@ impl Catalog {
 }
 
 /// Re-rank merged hits from multiple volumes by the requested column.
-fn sort_hits(hits: &mut [Hit], opts: &SearchOptions) {
+pub fn sort_hits(hits: &mut [Hit], opts: &SearchOptions) {
     if opts.folders_first {
         let asc = opts.ascending;
         let sort = opts.sort;
