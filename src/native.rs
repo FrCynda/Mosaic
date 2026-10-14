@@ -3322,6 +3322,9 @@ impl Ui {
             self.busy = Some(Instant::now());
         }
         self.terms = terms(&self.args.q);
+        if self.tabs.get(self.cur).is_some_and(|t| t.focus == self.id) {
+            side::current(&self.args.q); // the place marked at once, not at the next poll
+        }
         let mut args = self.args.clone();
         args.q = self.scoped(&args.q);
         let _ = self.jobs.send(Job { seq: self.seq, who: self.id, args, h: self.backend.handle() });
