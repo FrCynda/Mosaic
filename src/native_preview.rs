@@ -12,9 +12,11 @@ use std::time::{Duration, Instant};
 
 use windows::core::{Interface, BSTR, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{BOOL, COLORREF, HWND as WinHwnd, RECT as WinRect};
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{D3D11CreateDevice, ID3D11Multithread, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION};
 use windows::Win32::Media::MediaFoundation::{
-    IMFMediaEngine, IMFMediaEngineClassFactory, IMFMediaEngineEx, IMFMediaEngineNotify, MFCreateAttributes, MFStartup, CLSID_MFMediaEngineClassFactory, MF_MEDIA_ENGINE_CALLBACK,
-    MF_MEDIA_ENGINE_PLAYBACK_HWND,
+    IMFDXGIDeviceManager, IMFMediaEngine, IMFMediaEngineClassFactory, IMFMediaEngineEx, IMFMediaEngineNotify, MFCreateAttributes, MFCreateDXGIDeviceManager, MFStartup,
+    CLSID_MFMediaEngineClassFactory, MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_DXGI_MANAGER, MF_MEDIA_ENGINE_PLAYBACK_HWND,
 };
 use windows::Win32::System::Com::{CLSIDFromString, CoCreateInstance, IStream, CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER};
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
@@ -176,6 +178,30 @@ static NOTIFY_VTBL: NotifyVtbl = NotifyVtbl { query: notify_query, add_ref: noti
 static NOTIFY: EngineNotify = EngineNotify(&NOTIFY_VTBL);
 
 thread_local!(static PV: RefCell<Option<Preview>> = const { RefCell::new(None) });
+
+/// One D3D11 device for every media engine. Left to itself, each engine makes its own and the GPU driver never lets
+/// go of it (measured: ~13 driver threads and ~30 MB kept per video previewed).
+fn dxgi() -> Option<IMFDXGIDeviceManager> {
+    thread_local!(static M: std::cell::OnceCell<Option<IMFDXGIDeviceManager>> = const { std::cell::OnceCell::new() });
+    M.with(|m| {
+        m.get_or_init(|| unsafe {
+            let mut dev = None;
+            let flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, flags, None, D3D11_SDK_VERSION, Some(&mut dev), None, None).ok()?;
+            let dev = dev?;
+            // the engine's threads share it
+            if let Ok(mt) = dev.cast::<ID3D11Multithread>() {
+                let _ = mt.SetMultithreadProtected(true);
+            }
+            let (mut token, mut mgr) = (0, None);
+            MFCreateDXGIDeviceManager(&mut token, &mut mgr).ok()?;
+            let mgr = mgr?;
+            mgr.ResetDevice(&dev, token).ok()?;
+            Some(mgr)
+        })
+        .clone()
+    })
+}
 
 /// Run `f` on the pane. `None` while it is busy further up the stack: a preview handler's cross-process call
 /// pumps messages, so our window procedures can run inside it.
@@ -702,6 +728,9 @@ impl Preview {
                 let notify = IMFMediaEngineNotify::from_raw(&NOTIFY as *const EngineNotify as *mut std::ffi::c_void);
                 at.SetUnknown(&MF_MEDIA_ENGINE_CALLBACK, &notify)?;
                 at.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, self.video as usize as u64)?;
+                if let Some(m) = dxgi() {
+                    at.SetUnknown(&MF_MEDIA_ENGINE_DXGI_MANAGER, &m)?;
+                }
                 let factory: IMFMediaEngineClassFactory = CoCreateInstance(&CLSID_MFMediaEngineClassFactory, None, CLSCTX_INPROC_SERVER)?;
                 let engine = factory.CreateInstance(0, &at)?;
                 engine.SetSource(&BSTR::from(path))?;
