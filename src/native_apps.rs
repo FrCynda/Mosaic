@@ -401,6 +401,7 @@ impl Dlg {
             cv.rrect_a(&geo.done, rad(6.0), Some(ink(th.accent)), None, 0.12);
         }
         put_mid(g, cv, t("apps.done"), &g.f.semi, &geo.done, mid_y(&geo.done), ink(th.accent));
+        super::frame(cv, self.hwnd, self.scale);
         self.cv.end();
     }
 }
@@ -437,6 +438,7 @@ pub fn open(owner: HWND) {
         DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const std::ffi::c_void, 4);
         let dark: BOOL = theme().dark as i32;
         DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const std::ffi::c_void, 4);
+        super::outline(hwnd);
         let mut d = Dlg { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, progs: list(), png: HashMap::new(), bmp: HashMap::new(), asked: HashSet::new(), scroll: 0, hot: None, press: None, tracking: false };
         d.ask_icons();
         DLG.with(|c| *c.borrow_mut() = Some(d));

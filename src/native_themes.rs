@@ -64,7 +64,7 @@ fn cell(i: usize) -> (i32, i32) {
 }
 
 /// Text that reads on `c`: near-black on a light colour, white on a dark one.
-fn ink(c: u32) -> u32 {
+pub(super) fn ink(c: u32) -> u32 {
     let ch = |s: u32| ((c >> s) & 0xff) as f64 / 255.0;
     if 0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0) > 0.55 { 0x101216 } else { 0xffffff }
 }
@@ -193,6 +193,7 @@ impl Picker {
             cv.rrect_a(&apply, rad(6.0), Some(ink(th.accent)), None, 0.12);
         }
         put_mid(g, cv, t("theme.apply"), &g.f.semi, &apply, ty(&apply), ink(th.accent));
+        super::frame(cv, self.hwnd, s);
         self.cv.end();
     }
 }
@@ -291,6 +292,7 @@ pub fn open(owner: HWND) {
         DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const std::ffi::c_void, 4);
         let dark: BOOL = theme().dark as i32;
         DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const std::ffi::c_void, 4);
+        super::outline(hwnd);
         let sel = THEMES.iter().position(|t| t.0 == theme_name()).unwrap_or(0);
         let mut p = Picker { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, was: theme_name(), sel, ring: [0.0; 4], vel: [0.0; 4], hot: None, press: None, tracking: false, born: Instant::now(), tick: Instant::now() };
         p.ring = p.ring_to();
@@ -299,6 +301,11 @@ pub fn open(owner: HWND) {
         ShowWindow(hwnd, SW_SHOW);
         SetFocus(hwnd);
     }
+}
+
+/// Closed by a click outside it: the theme picked (already showing) kept.
+pub fn dismiss() {
+    close(true);
 }
 
 /// Close the dialog: keeping the theme picked, or going back to the one before.
@@ -431,6 +438,10 @@ unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESU
                 VK_DOWN => _ = with(|p| p.nudge(0, 1)),
                 _ => {}
             }
+            return 0;
+        }
+        WM_ACTIVATE if wp & 0xffff == WA_INACTIVE as usize && !super::owns(h, l as HWND) => {
+            close(true); // a click outside (another window, another app): gone, as a menu, the theme picked kept
             return 0;
         }
         WM_CLOSE => {

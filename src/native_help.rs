@@ -446,6 +446,7 @@ impl Dlg {
         } else {
             self.paint_help(on);
         }
+        super::frame(&self.cv, self.hwnd, self.scale);
         self.cv.end();
     }
 
@@ -733,6 +734,7 @@ pub fn open(owner: HWND, what: Hit, at: RECT) {
         DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const std::ffi::c_void, 4);
         let dark: BOOL = theme().dark as i32;
         DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const std::ffi::c_void, 4);
+        super::outline(hwnd);
         DLG.with(|c| *c.borrow_mut() = Some(d));
         EnableWindow(owner, 0);
         ShowWindow(hwnd, SW_SHOW);

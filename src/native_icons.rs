@@ -268,6 +268,7 @@ impl Dlg {
             cv.rrect_a(&done, rad(6.0), Some(ink(th.accent)), None, 0.12);
         }
         put_mid(g, cv, t("apps.done"), &g.f.semi, &done, mid_y(&done), ink(th.accent));
+        super::frame(cv, self.hwnd, s);
         self.cv.end();
     }
 }
@@ -305,6 +306,7 @@ pub fn open(owner: HWND) {
         DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const std::ffi::c_void, 4);
         let dark: BOOL = theme().dark as i32;
         DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const std::ffi::c_void, 4);
+        super::outline(hwnd);
         let d = Dlg { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, vals, arrows: (0, Vec::new()), previews: None, shown: (0, Vec::new()), size, sliding: false, hot: None, press: None, tracking: false };
         DLG.with(|c| *c.borrow_mut() = Some(d));
         previews(hwnd, (PREVIEW as f64 * scale).round() as i32);

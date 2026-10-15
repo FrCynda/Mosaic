@@ -2283,6 +2283,26 @@ fn fold_in(folder: &Px, inner: &[u8], icon: bool) -> Option<Px> {
     Some((out, folder.1, folder.2))
 }
 
+/// A dialog's shape: rounded as Windows 11 rounds a window, by its own region as a menu is (the compositor's
+/// rounding isn't always applied to a popup). Call once it has its size.
+unsafe fn outline(h: HWND) {
+    let mut c: RECT = zeroed();
+    GetClientRect(h, &mut c);
+    let d = 2 * dialog_radius(GetDpiForWindow(h) as f64 / 96.0);
+    SetWindowRgn(h, CreateRoundRectRgn(0, 0, c.right + 1, c.bottom + 1, d, d), 0);
+}
+
+fn dialog_radius(scale: f64) -> i32 {
+    (8.0 * scale).round() as i32
+}
+
+/// A dialog's outline, along its rounded edge (as a menu's): drawn last, over everything.
+fn frame(cv: &Canvas, h: HWND, scale: f64) {
+    let mut c: RECT = unsafe { zeroed() };
+    unsafe { GetClientRect(h, &mut c) };
+    cv.rrect(&c, dialog_radius(scale) as f32, None, Some(mix(theme().line, theme().muted, 0.35)));
+}
+
 /// Whether `w` is `h` or a window owned by it (its own Open window, a message box...).
 unsafe fn owns(h: HWND, mut w: HWND) -> bool {
     while !w.is_null() {
@@ -5991,7 +6011,109 @@ struct Menu {
     gfx: Gfx,
     scale: f64,
     owner: HWND,
-    find: Option<(String, Vec<MItem>)>, // a searchable menu's search text, and all its entries
+    find: Option<(Field, Vec<MItem>)>, // a searchable menu's search box, and all its entries
+}
+
+/// A one-line text box drawn by hand (a searchable menu's): its text, the caret, and where a selection started
+/// (byte offsets); edited with Windows' keys.
+#[derive(Default)]
+struct Field {
+    q: String,
+    caret: usize,
+    anchor: usize,
+}
+
+/// What a key did to a [`Field`] that reaches outside it.
+#[derive(PartialEq, Debug)]
+enum Clip {
+    Copy(String),
+    Paste,
+}
+
+impl Field {
+    fn sel(&self) -> (usize, usize) {
+        (self.caret.min(self.anchor), self.caret.max(self.anchor))
+    }
+    fn cut(&mut self) -> String {
+        let (a, b) = self.sel();
+        let s = self.q[a..b].to_string();
+        self.q.replace_range(a..b, "");
+        (self.caret, self.anchor) = (a, a);
+        s
+    }
+    fn insert(&mut self, s: &str) {
+        self.cut();
+        self.q.insert_str(self.caret, s);
+        self.caret += s.len();
+        self.anchor = self.caret;
+    }
+    /// The caret's place one character, or one word (Ctrl), to the left of `i`: a word's start, as Windows'.
+    fn back(&self, i: usize, word: bool) -> usize {
+        let mut it = self.q[..i].char_indices().rev().peekable();
+        if !word {
+            return it.next().map_or(0, |c| c.0);
+        }
+        while it.next_if(|c| c.1.is_whitespace()).is_some() {}
+        let alnum = it.peek().is_some_and(|c| c.1.is_alphanumeric());
+        let mut at = it.peek().map_or(0, |c| c.0);
+        while let Some(c) = it.next_if(|c| !c.1.is_whitespace() && (c.1.is_alphanumeric() == alnum)) {
+            at = c.0;
+        }
+        at
+    }
+    /// … to the right: the next word's start.
+    fn fwd(&self, i: usize, word: bool) -> usize {
+        let mut it = self.q[i..].char_indices().map(|(k, c)| (k + i, c)).peekable();
+        if !word {
+            return it.nth(1).map_or(self.q.len(), |c| c.0);
+        }
+        let alnum = it.peek().is_some_and(|c| c.1.is_alphanumeric());
+        while it.next_if(|c| !c.1.is_whitespace() && (c.1.is_alphanumeric() == alnum)).is_some() {}
+        while it.next_if(|c| c.1.is_whitespace()).is_some() {}
+        it.peek().map_or(self.q.len(), |c| c.0)
+    }
+    /// Key `vk` with Ctrl and Shift as held: true when it was the field's (the caller then redraws, and copies or
+    /// pastes what `clip` says).
+    fn key(&mut self, vk: u16, ctrl: bool, shift: bool, clip: &mut Option<Clip>) -> bool {
+        let to = |f: &mut Field, at: usize| {
+            f.caret = at;
+            if !shift {
+                f.anchor = at;
+            }
+        };
+        let (a, b) = self.sel();
+        match vk {
+            VK_LEFT if !shift && !ctrl && a != b => to(self, a),
+            VK_RIGHT if !shift && !ctrl && a != b => to(self, b),
+            VK_LEFT => to(self, self.back(self.caret, ctrl)),
+            VK_RIGHT => to(self, self.fwd(self.caret, ctrl)),
+            VK_HOME => to(self, 0),
+            VK_END => to(self, self.q.len()),
+            VK_BACK | VK_DELETE if a != b => {
+                let s = self.cut();
+                if vk == VK_DELETE && shift {
+                    *clip = Some(Clip::Copy(s)); // Shift+Delete: cut
+                }
+            }
+            VK_BACK => {
+                self.anchor = self.back(self.caret, ctrl);
+                self.cut();
+            }
+            VK_DELETE => {
+                self.anchor = self.fwd(self.caret, ctrl);
+                self.cut();
+            }
+            0x41 if ctrl => (self.anchor, self.caret) = (0, self.q.len()), // Ctrl+A
+            0x43 if ctrl && a != b => *clip = Some(Clip::Copy(self.q[a..b].to_string())), // Ctrl+C
+            VK_INSERT if ctrl && a != b => *clip = Some(Clip::Copy(self.q[a..b].to_string())),
+            0x58 if ctrl && a != b => *clip = Some(Clip::Copy(self.cut())), // Ctrl+X
+            0x56 if ctrl => *clip = Some(Clip::Paste), // Ctrl+V
+            VK_INSERT if shift => *clip = Some(Clip::Paste),
+            0x41 | 0x43 | 0x58 | VK_INSERT if ctrl || shift => {}
+            _ => return false,
+        }
+        true
+    }
 }
 thread_local!(static POPUP: RefCell<Option<Menu>> = const { RefCell::new(None) });
 // While a menu-bar menu is open, the other menu-bar buttons (screen rects): hovering one switches to its menu
@@ -6023,7 +6145,7 @@ unsafe fn cascade(owner: HWND, x: i32, y: i32, above: i32, min_w: i32, checks: b
     let scale = GetDpiForWindow(owner) as f64 / 96.0;
     let gfx = Gfx::new(scale, crate::i18n::rtl()).ok()?;
     let hover = items.iter().position(|i| i.on);
-    let find = find.then(|| (String::new(), items.clone()));
+    let find = find.then(|| (Field::default(), items.clone()));
     let mut m = Menu { levels: Vec::new(), done: None, aim: None, gfx, scale, owner, find };
     let h0 = open_level(&mut m, items, (x, y, above), min_w, checks, None);
     if h0.is_null() {
@@ -6215,18 +6337,22 @@ unsafe fn menu_scroll(d: isize) {
 /// A typed character: into a searchable menu's search box.
 unsafe fn menu_char(c: u32) {
     let Some(c) = char::from_u32(c).filter(|c| !c.is_control()) else { return };
-    search(|q| q.push(c));
+    search(|f| f.insert(c.encode_utf8(&mut [0; 4])));
 }
 
 /// Change a searchable menu's search text, and show only the entries that match it, the first one lit.
-unsafe fn search(edit: impl FnOnce(&mut String)) {
+unsafe fn search(edit: impl FnOnce(&mut Field)) {
     let h = POPUP.with(|p| {
         let mut g = p.borrow_mut();
         let m = g.as_mut()?;
-        let (q, all) = m.find.as_mut()?;
-        edit(q);
-        let q = q.to_lowercase();
+        let (f, all) = m.find.as_mut()?;
+        let was = f.q.clone();
+        edit(f);
         let l = &mut m.levels[0];
+        if f.q == was {
+            return Some(l.hwnd); // the caret moved, or a selection: the same list
+        }
+        let q = f.q.to_lowercase();
         l.items = all.iter().filter(|i| i.label.to_lowercase().contains(&q) || i.keys.to_lowercase().contains(&q)).cloned().collect();
         l.icons = None;
         l.first = 0;
@@ -6343,12 +6469,26 @@ unsafe fn menu_key(vk: u16) {
         Close,
     }
     // a searchable menu: Space types, Backspace erases, Esc clears what was typed before it closes the menu
-    match (POPUP.with(|p| p.borrow().as_ref().and_then(|m| m.find.as_ref().map(|f| f.0.is_empty()))), vk) {
+    // … and a text box's keys: the caret, selecting, Ctrl+Backspace a word, Ctrl+A/C/X/V
+    match (POPUP.with(|p| p.borrow().as_ref().and_then(|m| m.find.as_ref().map(|f| f.0.q.is_empty()))), vk) {
         (Some(_), VK_SPACE) => return,
-        (Some(_), VK_BACK) => return search(|q| {
-            q.pop();
-        }),
-        (Some(false), VK_ESCAPE) => return search(String::clear),
+        (Some(false), VK_ESCAPE) => return search(|f| *f = Field::default()),
+        (Some(_), _) => {
+            let (mut clip, mut mine) = (None, false);
+            search(|f| mine = f.key(vk, key_down(VK_CONTROL), key_down(VK_SHIFT), &mut clip));
+            match clip {
+                Some(Clip::Copy(s)) => _ = clip_text(GetActiveWindow(), &s),
+                Some(Clip::Paste) => {
+                    let s = clip_read().unwrap_or_default();
+                    let line = s.lines().next().unwrap_or("").to_string();
+                    search(|f| f.insert(&line));
+                }
+                None => {}
+            }
+            if mine {
+                return;
+            }
+        }
         _ => {}
     }
     let then = POPUP.with(|p| {
@@ -6450,16 +6590,21 @@ fn paint_menu(m: &mut Menu, h: HWND) {
     let edge = RECT { left: 0, top: 0, right: l.rect.right - l.rect.left, bottom: l.rect.bottom - l.rect.top };
     cv.rrect(&edge, menu_radius(s) as f32, None, Some(mix(theme().line, theme().muted, 0.35)));
     // a searchable menu's search box (only the language list's: hence its placeholder), with a caret after the text
-    if let (Some((a, _)), Some((q, _))) = (l.list, m.find.as_ref()) {
+    if let (Some((a, _)), Some((f, _))) = (l.list, m.find.as_ref()) {
         let b = RECT { left: a.left, top: a.top - px(32), right: a.right, bottom: a.top - px(6) };
         cv.rrect(&b, (4.0 * s) as f32, Some(theme().bg), Some(mix(theme().line, theme().accent, 0.5)));
         let (x, ty) = (b.left + px(8), b.top + (b.bottom - b.top - g.f.lh) / 2);
-        let w = if q.is_empty() {
+        let at = |i: usize| x + g.width(&f.q[..i], &g.f.reg);
+        let (sa, sb) = f.sel();
+        if sa != sb {
+            cv.fill(&RECT { left: at(sa), top: ty, right: at(sb), bottom: ty + g.f.lh }, theme().accent, 0.35);
+        }
+        if f.q.is_empty() {
             put(g, cv, t("lang.search"), &g.f.reg, x + px(2), ty, theme().muted);
-            0
         } else {
-            put(g, cv, q, &g.f.reg, x, ty, theme().text)
-        };
+            put(g, cv, &f.q, &g.f.reg, x, ty, theme().text);
+        }
+        let w = at(f.caret) - x;
         cv.fill(&RECT { left: x + w, top: ty, right: x + w + 1.max(px(1)), bottom: ty + g.f.lh }, theme().accent, 1.0);
     }
     let sz = px(16);
@@ -7013,6 +7158,26 @@ unsafe fn act(a: Act) {
         _ => return, // the ones above, with no selection needed
     };
     with(|u| u.flash(msg));
+}
+
+/// The clipboard's text, if it holds some.
+unsafe fn clip_read() -> Option<String> {
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    if OpenClipboard(null_mut()) == 0 {
+        return None;
+    }
+    let h = GetClipboardData(13); // CF_UNICODETEXT
+    let p = if h.is_null() { null_mut() } else { GlobalLock(h as _) as *const u16 };
+    let s = (!p.is_null()).then(|| {
+        let n = (0..).take_while(|&i| *p.add(i) != 0).count();
+        String::from_utf16_lossy(std::slice::from_raw_parts(p, n))
+    });
+    if !p.is_null() {
+        GlobalUnlock(h as _);
+    }
+    CloseClipboard();
+    s
 }
 
 unsafe fn clip_text(owner: HWND, s: &str) -> bool {
@@ -8043,6 +8208,36 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_box_edits_as_windows_does() {
+        use super::{Clip, Field};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_BACK, VK_END, VK_HOME, VK_LEFT, VK_RIGHT};
+        let mut f = Field::default();
+        let mut c = None;
+        f.insert("français (Canada)");
+        // Ctrl+Backspace: a word at a time, a run of punctuation counting as one
+        for want in ["français (Canada", "français (", "français ", ""] {
+            f.key(VK_BACK, true, false, &mut c);
+            assert_eq!(f.q, want);
+        }
+        f.insert("ab cd ef");
+        f.key(VK_LEFT, true, false, &mut c);
+        assert_eq!(f.caret, 6);
+        f.key(VK_LEFT, true, true, &mut c); // Ctrl+Shift+Left: "cd " selected
+        assert_eq!(f.sel(), (3, 6));
+        f.key(0x58, true, false, &mut c); // Ctrl+X
+        assert_eq!((f.q.as_str(), c.take()), ("ab ef", Some(Clip::Copy("cd ".into()))));
+        f.key(VK_HOME, false, false, &mut c);
+        f.key(VK_RIGHT, true, false, &mut c);
+        assert_eq!(f.caret, 3);
+        f.key(VK_END, false, true, &mut c);
+        f.insert("é");
+        assert_eq!((f.q.as_str(), f.caret), ("ab é", 5));
+        f.key(VK_LEFT, false, false, &mut c);
+        assert_eq!(f.caret, 3); // a character back, not a byte
+        assert!(!f.key(0x7B, false, false, &mut c)); // F12: not the box's
+    }
 
     #[test]
     fn the_folder_preview_is_the_newest_file_of_its_kind() {
