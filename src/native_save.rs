@@ -445,6 +445,21 @@ unsafe extern "system" fn foreground(_: HWINEVENTHOOK, _: u32, h: HWND, _: i32, 
     }
 }
 
+/// Shown maximized (room for the list, nothing behind it to click by mistake) on the screen of the app's window;
+/// un-maximized, it is centred there at 80 %.
+pub(super) unsafe fn show(main: HWND) {
+    if let Some(dlg) = pick(|p| p.dlg) {
+        let mut mi: MONITORINFO = zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(MonitorFromWindow(GetWindow(dlg, GW_OWNER), MONITOR_DEFAULTTONEAREST), &mut mi) != 0 {
+            let a = mi.rcWork;
+            let (w, h) = ((a.right - a.left) * 4 / 5, (a.bottom - a.top) * 4 / 5);
+            SetWindowPos(main, null_mut(), a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    ShowWindow(main, SW_SHOWMAXIMIZED);
+}
+
 /// On screen (its first frame drawn): in front. Windows refuses that to a window still cloaked.
 pub(super) unsafe fn on_screen() {
     if let Some(main) = pick(|p| p.main) {

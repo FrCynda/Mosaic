@@ -1626,6 +1626,7 @@ pub fn run() {
             Some(wp) => {
                 SetWindowPlacement(main, &wp); // shows it, maximized or not; moved onto a screen if its own is gone
             }
+            None if save::active() => save::show(main),
             None => {
                 ShowWindow(main, SW_SHOW);
             }
