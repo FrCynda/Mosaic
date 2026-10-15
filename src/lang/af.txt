@@ -185,6 +185,7 @@ help.pick=Kies ’n dag, ’n maand of ’n tydperk
 help.pick_range=Kies die eerste en laaste dag
 tip.grid_view=Wys resultate as duimnaels in 'n rooster
 tip.list_view=Wys resultate as 'n lys met sorteerbare kolomme
+tip.windows_view=Elke vouer hou sy eie aansig en sortering, soos in Windows
 tip.dir=Keer die huidige sorteervolgorde om (stygend/dalend)
 tip.tag=Filter tans volgens hierdie lêertipe — dubbelklik om die filter te verwyder
 tip.col=Sorteer volgens {col}

@@ -185,6 +185,7 @@ help.pick=Veldu dag, mánuð eða tímabil
 help.pick_range=Veldu fyrsta og síðasta dag
 tip.grid_view=Sýna niðurstöður sem smámyndir í hnitaneti
 tip.list_view=Sýna niðurstöður sem lista með raðanlegum dálkum
+tip.windows_view=Hver mappa heldur sinni eigin sýn og röðun, eins og í Windows
 tip.dir=Snúa við núverandi röðun (hækkandi/lækkandi)
 tip.tag=Síað eftir þessari skráargerð — tvísmelltu til að hreinsa síuna
 tip.col=Raða eftir {col}

@@ -98,6 +98,7 @@ help.pick=Zaɓi rana, wata ko lokaci
 help.pick_range=Zaɓi rana ta farko da ta ƙarshe
 tip.grid_view=Nuna sakamako a matsayin ƙananan hotuna a gridi
 tip.list_view=Nuna sakamako a matsayin jeri da ginshiƙan da za a iya jerawa
+tip.windows_view=Kowane babban fayil yana riƙe kallonsa da tsarinsa, kamar a Windows
 tip.dir=Juya tsarin da ake amfani da shi (hawa/sauka)
 tip.tag=Ana tacewa da wannan nau'in fayil a yanzu — danna sau biyu don share tacewa
 tip.col=Jera bisa {col}

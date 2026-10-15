@@ -185,6 +185,7 @@ help.pick=Gün, ay və ya dövr seçin
 help.pick_range=İlk və son günü seçin
 tip.grid_view=Nəticələri şəbəkədə miniatürlər kimi göstərin
 tip.list_view=Nəticələri sıralana bilən sütunlu siyahı kimi göstərin
+tip.windows_view=Hər qovluq Windows-dakı kimi öz görünüşünü və sıralamasını saxlayır
 tip.dir=Cari sıralama qaydasını tərsinə çevirin (artan/azalan)
 tip.tag=Hazırda bu fayl növü üzrə filtrlənir — filtri silmək üçün iki dəfə klikləyin
 tip.col={col} üzrə sırala

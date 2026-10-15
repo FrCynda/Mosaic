@@ -185,6 +185,7 @@ help.pick=Scegli un giorno, un mese o un periodo
 help.pick_range=Scegli il primo e l’ultimo giorno
 tip.grid_view=Mostra i risultati come miniature in una griglia
 tip.list_view=Mostra i risultati come elenco con colonne ordinabili
+tip.windows_view=Ogni cartella mantiene la propria visualizzazione e ordinamento, come in Windows
 tip.dir=Inverti l'ordinamento attuale (crescente/decrescente)
 tip.tag=Filtro attivo su questo tipo di file — doppio clic per rimuoverlo
 tip.col=Ordina per {col}

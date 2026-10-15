@@ -185,6 +185,7 @@ help.pick=Tria un dia, un mes o un període
 help.pick_range=Tria el primer i l’últim dia
 tip.grid_view=Mostra els resultats com a miniatures en una quadrícula
 tip.list_view=Mostra els resultats com una llista amb columnes ordenables
+tip.windows_view=Cada carpeta conserva la seva visualització i ordenació, com a Windows
 tip.dir=Inverteix l'ordre actual (ascendent/descendent)
 tip.tag=Ara es filtra per aquest tipus de fitxer — fes doble clic per treure el filtre
 tip.col=Ordena per {col}

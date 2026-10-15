@@ -186,6 +186,7 @@ help.pick=Pasirinkite dieną, mėnesį ar laikotarpį
 help.pick_range=Pasirinkite pirmą ir paskutinę dieną
 tip.grid_view=Rodyti rezultatus kaip miniatiūras tinklelyje
 tip.list_view=Rodyti rezultatus kaip sąrašą su rikiuojamais stulpeliais
+tip.windows_view=Kiekvienas aplankas išlaiko savo rodinį ir rikiavimą, kaip „Windows“
 tip.dir=Apversti dabartinę rikiavimo tvarką (didėjimo/mažėjimo)
 tip.tag=Šiuo metu filtruojama pagal šį failų tipą — dukart spustelėkite, kad išvalytumėte filtrą
 tip.col=Rikiuoti pagal: {col}

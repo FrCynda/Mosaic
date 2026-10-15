@@ -185,6 +185,7 @@ help.pick=Válasszon napot, hónapot vagy időszakot
 help.pick_range=Válassza ki az első és az utolsó napot
 tip.grid_view=Az eredmények megjelenítése miniatűrökként rácsban
 tip.list_view=Az eredmények megjelenítése listaként, rendezhető oszlopokkal
+tip.windows_view=Minden mappa megőrzi a saját nézetét és rendezését, mint a Windowsban
 tip.dir=A jelenlegi rendezési sorrend megfordítása (növekvő/csökkenő)
 tip.tag=Jelenleg erre a fájltípusra szűrve — dupla kattintással törölhető a szűrő
 tip.col=Rendezés: {col}

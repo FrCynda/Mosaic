@@ -98,6 +98,7 @@ help.pick=Khetha usuku, inyanga noma isikhathi
 help.pick_range=Khetha usuku lokuqala nolokugcina
 tip.grid_view=Bonisa imiphumela njengamaayikhoni amancane egridini
 tip.list_view=Bonisa imiphumela njengohlu olunamakholomu angahlunywa
+tip.windows_view=Ifolda ngayinye igcina ukubuka nokuhlunga kwayo, njengaku-Windows
 tip.dir=Guqula ukuhlelwa kwamanje (kwenyuka/kwehla)
 tip.tag=Kuhlungwa manje ngalolu hlobo lwefayela — chofoza kabili ukususa ukuhlunga
 tip.col=Hlunga nge-{col}

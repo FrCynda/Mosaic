@@ -187,6 +187,7 @@ help.pick=Izberite dan, mesec ali obdobje
 help.pick_range=Izberite prvi in zadnji dan
 tip.grid_view=Pokaži rezultate kot sličice v mreži
 tip.list_view=Pokaži rezultate kot seznam z razvrstljivimi stolpci
+tip.windows_view=Vsaka mapa ohrani svoj pogled in razvrščanje, kot v sistemu Windows
 tip.dir=Obrni trenutni vrstni red (naraščajoče/padajoče)
 tip.tag=Trenutno filtrirano po tej vrsti datotek — dvokliknite, da počistite filter
 tip.col=Razvrsti po: {col}

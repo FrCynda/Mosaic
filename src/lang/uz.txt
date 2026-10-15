@@ -185,6 +185,7 @@ help.pick=Kun, oy yoki davrni tanlang
 help.pick_range=Birinchi va oxirgi kunni tanlang
 tip.grid_view=Natijalarni toʻrda eskizlar sifatida koʻrsatish
 tip.list_view=Natijalarni saralanadigan ustunli roʻyxat sifatida koʻrsatish
+tip.windows_view=Har bir jild Windows’dagidek o‘z ko‘rinishi va saralanishini saqlaydi
 tip.dir=Joriy saralash tartibini teskari qilish (oʻsish/kamayish)
 tip.tag=Hozir shu fayl turi boʻyicha filtrlanmoqda — filtrni olib tashlash uchun ikki marta bosing
 tip.col={col} boʻyicha saralash

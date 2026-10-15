@@ -98,6 +98,7 @@ help.pick=Guyyaa, ji’a ykn yeroo filadhu
 help.pick_range=Guyyaa jalqabaa fi dhumaa filadhu
 tip.grid_view=Bu'aa akka suuraa xixiqqaa giriidii keessatti argisiisi
 tip.list_view=Bu'aa akka tarree qeenxee tartiiffamuu danda'u qabuutti argisiisi
+tip.windows_view=Kuusaan hundi akkuma Windows keessatti mul'ataa fi tartiiba mataa isaa qabata
 tip.dir=Tartiiba ammaa gara duubaatti deebisi (ol/gad)
 tip.tag=Ammatti gosa faayilii kanaan calalamaa jira — filtera haquuf lama tuqi
 tip.col={col} tiin tartiibi

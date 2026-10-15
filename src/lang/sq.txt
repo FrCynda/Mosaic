@@ -185,6 +185,7 @@ help.pick=Zgjidhni një ditë, muaj ose periudhë
 help.pick_range=Zgjidhni ditën e parë dhe të fundit
 tip.grid_view=Shfaq rezultatet si miniatura në rrjetë
 tip.list_view=Shfaq rezultatet si listë me kolona të renditshme
+tip.windows_view=Çdo dosje ruan pamjen dhe renditjen e vet, si në Windows
 tip.dir=Përmbys renditjen aktuale (në rritje/në zbritje)
 tip.tag=Aktualisht po filtrohet sipas këtij lloji skedari — kliko dy herë për ta hequr filtrin
 tip.col=Rendit sipas {col}

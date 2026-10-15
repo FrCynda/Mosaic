@@ -185,6 +185,7 @@ help.pick=Välj en dag, en månad eller en period
 help.pick_range=Välj första och sista dagen
 tip.grid_view=Visa resultaten som miniatyrer i ett rutnät
 tip.list_view=Visa resultaten som en lista med sorterbara kolumner
+tip.windows_view=Varje mapp behåller sin egen vy och sortering, som i Windows
 tip.dir=Vänd den aktuella sorteringsordningen (stigande/fallande)
 tip.tag=Filtrerar just nu på den här filtypen — dubbelklicka för att ta bort filtret
 tip.col=Sortera efter {col}

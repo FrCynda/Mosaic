@@ -97,6 +97,7 @@ help.pick=选择一天、一个月或一个时段
 help.pick_range=选择第一天和最后一天
 tip.grid_view=以网格缩略图图标显示结果
 tip.list_view=以可排序列的列表显示结果
+tip.windows_view=每个文件夹各自记住视图和排序，就像 Windows
 tip.dir=反转当前排序顺序（升序/降序）
 tip.tag=当前按此文件类型筛选——双击可清除筛选
 tip.col=按 {col} 排序

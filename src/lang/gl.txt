@@ -185,6 +185,7 @@ help.pick=Escolle un día, un mes ou un período
 help.pick_range=Escolle o primeiro e o último día
 tip.grid_view=Amosa os resultados como miniaturas nunha grade
 tip.list_view=Amosa os resultados como unha lista con columnas ordenables
+tip.windows_view=Cada cartafol conserva a súa vista e orde, como en Windows
 tip.dir=Inverte a orde actual (ascendente/descendente)
 tip.tag=Filtrando por este tipo de ficheiro — dobre clic para quitar o filtro
 tip.col=Ordenar por {col}

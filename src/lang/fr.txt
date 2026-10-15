@@ -161,6 +161,7 @@ help.pick=Choisissez un jour, un mois ou une période
 help.pick_range=Choisissez le premier et le dernier jour
 tip.grid_view=Affiche les résultats sous forme de vignettes dans une grille
 tip.list_view=Affiche les résultats sous forme de liste avec colonnes triables
+tip.windows_view=Chaque dossier garde son propre affichage et son tri, comme dans Windows
 tip.dir=Inverse l'ordre de tri actuel (croissant/décroissant)
 tip.tag=Filtre actuellement sur ce type de fichier — double-cliquez pour retirer le filtre
 tip.col=Trier par {col}

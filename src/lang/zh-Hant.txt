@@ -184,6 +184,7 @@ help.pick=選擇一天、一個月或一段期間
 help.pick_range=選擇第一天和最後一天
 tip.grid_view=以格狀縮圖顯示結果
 tip.list_view=以可排序欄位的清單顯示結果
+tip.windows_view=每個資料夾各自記住檢視和排序，就像 Windows
 tip.dir=反轉目前的排序順序（遞增/遞減）
 tip.tag=目前依此檔案類型篩選 — 按兩下可清除篩選
 tip.col=依 {col} 排序

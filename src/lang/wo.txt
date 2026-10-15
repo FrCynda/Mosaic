@@ -97,6 +97,7 @@ help.pick=Tànnal benn bés, benn weer walla benn diir
 help.pick_range=Tànnal bés bu jëkk ak bu mujj
 tip.grid_view=Won tukkee yi ni ay nataal yu tuuti ci gride
 tip.list_view=Won tukkee yi ni lëkkalekaay yu am kolonn yu man a tëral
+tip.windows_view=Kaart bu nekk dina denc xoolam ak tolluwaayam, ni ci Windows
 tip.dir=Wecciku tëral bi léegi (yéeg/wàcc)
 tip.tag=Fii mu ne di filtar ak xeetu fisye bii — dobbal ñaari yoon ngir sett filtar bi
 tip.col=Tëral ak {col}

@@ -97,6 +97,7 @@ help.pick=Họrọ ụbọchị, ọnwa ma ọ bụ oge
 help.pick_range=Họrọ ụbọchị mbụ na nke ikpeazụ
 tip.grid_view=Gosi nsonaazụ dịka obere onyonyo na gridi
 tip.list_view=Gosi nsonaazụ dịka ndepụta nwere kọlụm enwere ike ịhazi
+tip.windows_view=Folda ọ bụla na-edebe nlele na usoro nke ya, dịka na Windows
 tip.dir=Tụgharịa usoro ndozi ugbu a (rịgoro/rịdatara)
 tip.tag=Na-ezere ihe ugbu a site n'ụdị faịlụ a — pịa okpokolo abụọ iji kpochapụ ya
 tip.col=Hazie site na {col}

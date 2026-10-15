@@ -186,6 +186,7 @@ help.pick=Alegeți o zi, o lună sau o perioadă
 help.pick_range=Alegeți prima și ultima zi
 tip.grid_view=Afișează rezultatele ca miniaturi într-o grilă
 tip.list_view=Afișează rezultatele ca listă cu coloane sortabile
+tip.windows_view=Fiecare folder își păstrează vizualizarea și sortarea, ca în Windows
 tip.dir=Inversează ordinea de sortare curentă (crescător/descrescător)
 tip.tag=Se filtrează acum după acest tip de fișier — dublu clic pentru a elimina filtrul
 tip.col=Sortează după {col}

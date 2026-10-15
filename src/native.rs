@@ -81,6 +81,7 @@ const T_FLASH: usize = 3;
 const T_THUMB: usize = 4;
 const T_PREVIEW: usize = 5;
 const T_UNCLOAK: usize = 8; // the window shown even if its first frame never came
+const T_VIEWS: usize = 9; // the folders' views written, a second after the last change (a Ctrl+wheel zoom is many)
 const T_RENAME: usize = 7; // a second, slow click on a selected item's name: rename it, unless a double-click follows
 const G: i32 = 6; // grid: gutter between a cell's edge and its clickable box
 const SB: i32 = 12; // width kept free for the scrollbar at the list's right edge
@@ -296,7 +297,7 @@ fn item_extras(dir: bool, acts: &mut Vec<Act>) -> Vec<MItem> {
 fn bg_extras(u: &Ui, acts: &mut Vec<Act>) -> Vec<MItem> {
     // the View size nearest the tiles' own (Ctrl+wheel sizes them in between)
     let near = VIEWS.iter().filter(|v| v.1 > 0).min_by_key(|v| (v.1 - u.size).abs()).map_or(0, |v| v.1);
-    let view = VIEWS.iter().map(|&(k, s)| entry(t(k), if u.grid { s == near } else { s == 0 }, Act::View(s), acts)).collect();
+    let view: Vec<MItem> = VIEWS.iter().map(|&(k, s)| entry(t(k), if u.grid { s == near } else { s == 0 }, Act::View(s), acts)).collect();
     let mut sort: Vec<MItem> = col_defs().into_iter().map(|(l, k)| entry(l, u.args.sort == k, Act::Sort(k), acts)).collect();
     sort.push(MItem::default());
     sort.push(entry(t("menu.ascending"), u.args.dir != "desc", Act::Desc(false), acts));
@@ -383,6 +384,68 @@ fn mtime_secs(p: &str) -> u64 {
 fn settings_path() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("native.json")
 }
+/// Each folder's own view and sort, as last set there. In `views.txt`
+/// beside the settings, the 1000 set last; read once, written only after a change.
+/// A folder's own view: grid, tile size, sorted by, descending; and when it was set.
+#[derive(Clone, PartialEq, Debug)]
+struct FolderView {
+    grid: bool,
+    size: i32,
+    sort: String,
+    desc: bool,
+    n: u64,
+}
+type Views = HashMap<String, FolderView>; // by lowercased path
+static FOLDER_VIEWS: std::sync::Mutex<Option<(Views, bool)>> = std::sync::Mutex::new(None); // … and changed since written
+const MAX_VIEWS: usize = 1000;
+
+fn views_path() -> std::path::PathBuf {
+    settings_path().with_file_name("views.txt")
+}
+fn parse_views(s: &str) -> Views {
+    s.lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(6, '\t');
+            let (v, size, sort, dir) = (it.next()?, it.next()?.parse().ok()?, it.next()?, it.next()?);
+            let (n, p) = (it.next()?.parse().ok()?, it.next()?);
+            Some((p.to_string(), FolderView { grid: v == "grid", size, sort: sort.into(), desc: dir == "desc", n }))
+        })
+        .collect()
+}
+fn folder_views<R>(f: impl FnOnce(&mut Views, &mut bool) -> R) -> R {
+    let mut g = FOLDER_VIEWS.lock().unwrap_or_else(|e| e.into_inner());
+    let (m, dirty) = g.get_or_insert_with(|| (parse_views(&std::fs::read_to_string(views_path()).unwrap_or_default()), false));
+    f(m, dirty)
+}
+/// `dir`'s view set to `v`; written a second later.
+fn set_folder_view(main: HWND, dir: &str, v: FolderView) {
+    folder_views(|m, dirty| {
+        let n = m.values().map(|v| v.n).max().unwrap_or(0) + 1;
+        m.insert(dir.trim_end_matches('\\').to_lowercase(), FolderView { n, ..v });
+        if m.len() > MAX_VIEWS {
+            // ponytail: O(n) scan per overflow; fine at 1000
+            if let Some(old) = m.iter().min_by_key(|v| v.1.n).map(|v| v.0.clone()) {
+                m.remove(&old);
+            }
+        }
+        *dirty = true;
+    });
+    unsafe { SetTimer(main, T_VIEWS, 1000, None) };
+}
+fn write_views() {
+    folder_views(|m, dirty| {
+        if std::mem::take(dirty) {
+            let mut v: Vec<_> = m.iter().collect();
+            v.sort_by_key(|e| e.1.n);
+            let s: String = v
+                .iter()
+                .map(|(p, f)| format!("{}\t{}\t{}\t{}\t{}\t{p}\n", if f.grid { "grid" } else { "list" }, f.size, f.sort, if f.desc { "desc" } else { "asc" }, f.n))
+                .collect();
+            let _ = std::fs::write(views_path(), s);
+        }
+    });
+}
+
 fn legacy_settings_path() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Mosaic").join("native.txt")
 }
@@ -1030,6 +1093,8 @@ struct Ui {
     col_gen: u32, // bumped as `colw` changes: the rows' laid-out text is stale
     grid: bool,
     size: i32,  // grid: tile size (CSS px), the zoom level
+    def_view: (bool, i32), // (grid, size) of a folder with none of its own, and of a search
+    windows: bool, // [Windows|List|Grid]: each folder its own view and sort, as Explorer's; else List or Grid everywhere
     per: usize, // grid: tiles per row, as many as fit
     zoom_acc: i32, // Ctrl+wheel delta not yet a whole notch (precision touchpads)
     step_acc: i32, // likewise, for wheel steps with smooth scrolling off
@@ -1604,6 +1669,8 @@ pub fn run() {
             col_gen: 0,
             grid: get("view") == "grid",
             size: get("size").parse().unwrap_or(128).clamp(MIN_SIZE, MAX_SIZE),
+            def_view: (get("view") == "grid", get("size").parse().unwrap_or(128).clamp(MIN_SIZE, MAX_SIZE)),
+            windows: get("windows_view") != "0",
             per: 1, // set by layout
             zoom_acc: 0,
             step_acc: 0,
@@ -3700,6 +3767,13 @@ impl Ui {
             self.busy = Some(Instant::now());
         }
         self.terms = terms(&self.args.q);
+        if !keep && self.windows {
+            let (g, s) = self.view_for(&self.args.q);
+            self.shape(g, s);
+            if let Some((by, desc)) = self.sort_for(&self.args.q) {
+                (self.args.sort, self.args.dir) = (by, if desc { "desc" } else { "asc" }.into());
+            }
+        }
         if self.tabs.get(self.cur).is_some_and(|t| t.focus == self.id) {
             side::current(&self.args.q); // the place marked at once, not at the next poll
         }
@@ -4334,6 +4408,7 @@ impl Ui {
             Hit::Diacritics => t("tip.diacritics").into(),
             Hit::Timestamps => t("tip.timestamps").into(),
             Hit::View(1) => t("tip.grid_view").into(),
+            Hit::View(2) => t("tip.windows_view").into(),
             Hit::View(_) => t("tip.list_view").into(),
             Hit::Dir => t("tip.dir").into(),
             Hit::Tag => t("tip.tag").into(),
@@ -5064,8 +5139,9 @@ impl Ui {
             let seg = |s: &str| g.width(s, &g.f.reg) + px(20);
             push(ctl_h, Hit::Fold, px(6));
             if !self.folded {
-                push(seg(t("toolbar.grid")), Hit::View(1), -1); // the two segments share a border
-                push(seg(t("toolbar.list")), Hit::View(0), px(10));
+                push(seg(t("toolbar.grid")), Hit::View(1), -1); // the segments share their borders
+                push(seg(t("toolbar.list")), Hit::View(0), -1);
+                push(seg("Windows"), Hit::View(2), px(10));
                 push(seg(t("toolbar.preview")), Hit::Preview, px(6));
                 push(seg(t("toolbar.smooth")), Hit::Smooth, px(6));
                 push(seg(t("toolbar.subfolders")), Hit::Browse(2), -1); // like List | Grid, but either can be switched off again
@@ -5210,8 +5286,9 @@ impl Ui {
             (here(), keep("save_place"))
         };
         let m: HashMap<&str, String> = HashMap::from([
-            ("view", (if self.grid { "grid" } else { "list" }).to_string()),
-            ("size", self.size.to_string()),
+            ("view", (if self.def_view.0 { "grid" } else { "list" }).to_string()),
+            ("size", self.def_view.1.to_string()),
+            ("windows_view", (self.windows as u8).to_string()),
             ("preview", (self.show_pv as u8).to_string()),
             ("pvw", self.pv_w.to_string()),
             ("cols", { let (f, [s, t, m]) = self.colw; format!("{f:.4},{s},{t},{m}") }),
@@ -5282,8 +5359,56 @@ impl Ui {
         (self.y / self.rh() as f64) as usize * self.ncols()
     }
 
-    /// Switch view or tile size, keeping the first visible item in view.
+    /// The user's switch of view or tile size: kept as the folder's own (Windows), else as List or Grid's.
     fn reshape(&mut self, grid: bool, size: i32) {
+        if grid == self.grid && size == self.size {
+            return;
+        }
+        self.shape(grid, size);
+        match listed_dir(&self.args.q).filter(|_| self.windows) {
+            Some(_) => self.remember(),
+            None => {
+                self.def_view = (grid, size);
+                self.save_settings();
+            }
+        }
+    }
+    /// The folder listed keeps its view and sort as they are now.
+    fn remember(&self) {
+        if let Some(d) = listed_dir(&self.args.q).filter(|_| self.windows) {
+            set_folder_view(self.main, &d, FolderView { grid: self.grid, size: self.size, sort: self.args.sort.clone(), desc: self.args.dir == "desc", n: 0 });
+        }
+    }
+    /// The user's sort: kept as the folder's own, and listed again.
+    fn resort(&mut self) {
+        self.remember();
+        self.run(false);
+    }
+    /// The sort a listing opens in: its folder's own, else by name as Explorer's. A search keeps the one it has.
+    fn sort_for(&self, q: &str) -> Option<(String, bool)> {
+        let k = listed_dir(q)?.trim_end_matches('\\').to_lowercase();
+        Some(folder_views(|m, _| m.get(&k).map(|v| (v.sort.clone(), v.desc))).unwrap_or_else(|| ("name".into(), false)))
+    }
+    /// The view a listing opens in: its folder's own, else large icons in Pictures and Videos, else the default.
+    fn view_for(&self, q: &str) -> (bool, i32) {
+        let Some(d) = listed_dir(q) else { return self.def_view };
+        let k = d.trim_end_matches('\\').to_lowercase();
+        if let Some(v) = folder_views(|m, _| m.get(&k).map(|v| (v.grid, v.size))) {
+            return v;
+        }
+        let under = |p: &Option<String>| {
+            p.as_ref().is_some_and(|p| {
+                let p = p.trim_end_matches('\\').to_lowercase();
+                k == p || k.starts_with(&format!("{p}\\"))
+            })
+        };
+        if self.kind_dirs.iter().skip(1).take(2).any(under) {
+            return (true, 160);
+        }
+        self.def_view
+    }
+    /// Switch view or tile size, keeping the first visible item in view.
+    fn shape(&mut self, grid: bool, size: i32) {
         if grid == self.grid && size == self.size {
             return;
         }
@@ -5297,7 +5422,6 @@ impl Ui {
         self.target = self.y;
         self.scrolled();
         self.set_tip();
-        self.save_settings();
         self.invalidate();
     }
 
@@ -5389,7 +5513,7 @@ impl Ui {
             }
             Hit::Dir => {
                 self.args.dir = if self.args.dir == "desc" { "asc" } else { "desc" }.into();
-                self.run(false);
+                self.resort();
             }
             Hit::Smooth => {
                 self.smooth = !self.smooth;
@@ -5400,7 +5524,19 @@ impl Ui {
                 self.save_settings();
                 self.layout();
             }
-            Hit::View(k) => self.reshape(k == 1, self.size),
+            Hit::View(2) => {
+                if !self.windows {
+                    self.windows = true;
+                    self.save_settings();
+                    self.run(false); // this folder's own view and sort
+                }
+            }
+            Hit::View(k) => {
+                self.windows = false;
+                self.shape(k == 1, self.size);
+                self.def_view = (self.grid, self.size);
+                self.save_settings();
+            }
             Hit::Browse(k) => self.set_browse(if self.browse == k { 0 } else { k }),
             Hit::Col(id, k) => {
                 self.activate(id);
@@ -5408,7 +5544,7 @@ impl Ui {
                 let desc = if self.args.sort == s { self.args.dir != "desc" } else { s == "size" || s == "mtime" };
                 self.args.sort = s.into();
                 self.args.dir = if desc { "desc" } else { "asc" }.into();
-                self.run(false);
+                self.resort();
             }
         }
         self.invalidate();
@@ -5528,18 +5664,27 @@ impl Ui {
                 put_mid(g, cv, if k == 1 { t("toolbar.browse") } else { t("toolbar.subfolders") }, &g.f.reg, &r, ty, if on { theme().accent } else if hot(h) { theme().text } else { theme().muted });
             }
         }
-        // List | Grid: the "off" segment first, so the accent border of the "on" one wins the shared edge
+        // Windows | List | Grid: the "off" segments first, so the accent border of the "on" one wins the shared edge
         let segs: Vec<(RECT, usize)> = self.hits.iter().filter_map(|&(r, h)| if let Hit::View(k) = h { Some((r, k)) } else { None }).collect();
         for pass in [false, true] {
             for &(r, k) in &segs {
-                let on = self.grid == (k == 1);
+                let on = if k == 2 { self.windows } else { !self.windows && self.grid == (k == 1) };
                 if on != pass {
                     continue;
                 }
-                let radii = if k == 0 { [rad(4.0), 0.0, 0.0, rad(4.0)] } else { [0.0, rad(4.0), rad(4.0), 0.0] };
+                let radii = match k {
+                    2 => [rad(4.0), 0.0, 0.0, rad(4.0)],
+                    1 => [0.0, rad(4.0), rad(4.0), 0.0],
+                    _ => [0.0; 4],
+                };
                 cv.corners(&r, radii, if on { theme().hl } else { theme().card }, if on { theme().accent } else { theme().line });
                 let ty = r.top + (r.bottom - r.top - lh) / 2;
-                put_mid(g, cv, if k == 1 { t("toolbar.grid") } else { t("toolbar.list") }, &g.f.reg, &r, ty, if on { theme().accent } else if hot(Hit::View(k)) { theme().text } else { theme().muted });
+                let label = match k {
+                    2 => "Windows",
+                    1 => t("toolbar.grid"),
+                    _ => t("toolbar.list"),
+                };
+                put_mid(g, cv, label, &g.f.reg, &r, ty, if on { theme().accent } else if hot(Hit::View(k)) { theme().text } else { theme().muted });
             }
         }
         // status text: left of the status bar's controls, cut with "…" where they begin
@@ -7098,7 +7243,7 @@ unsafe fn act(a: Act) {
                     Act::Sort(k) => u.args.sort = k.into(),
                     _ => u.args.dir = if matches!(a, Act::Desc(true)) { "desc" } else { "asc" }.into(),
                 }
-                u.run(false);
+                u.resort();
                 u.invalidate();
             });
             return;
@@ -7300,7 +7445,10 @@ unsafe fn drop_menu(main: HWND, hit: Hit) {
                     u.layout(); // the status bar shows the filter
                 }
                 Hit::Lang => return u.set_lang(v),
-                _ => u.args.sort = v.into(),
+                _ => {
+                    u.args.sort = v.into();
+                    u.remember();
+                }
             }
             u.run(false);
             u.invalidate();
@@ -7627,6 +7775,10 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                             u.want_kinds();
                         })
                     });
+                }
+                T_VIEWS => {
+                    KillTimer(h, T_VIEWS);
+                    write_views();
                 }
                 T_CARD => {
                     with(|u| u.card_due());
@@ -8029,6 +8181,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 u.autosave(true);
             });
             crate::recent::save();
+            write_views();
             PostQuitMessage(0);
             return 0;
         }
@@ -8243,6 +8396,15 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_views_read_back_as_written() {
+        let m = parse_views("grid\t160\tmtime\tdesc\t3\tc:\\users\\me\\pictures\nlist\t128\tname\tasc\t4\td:\\a\tb\ngrid\t160\t3\tc:\\old\n");
+        let v = |grid, size, sort: &str, desc, n| Some(FolderView { grid, size, sort: sort.into(), desc, n });
+        assert_eq!(m.get("c:\\users\\me\\pictures").cloned(), v(true, 160, "mtime", true, 3));
+        assert_eq!(m.get("d:\\a\tb").cloned(), v(false, 128, "name", false, 4)); // a tab in a name: the path is the rest
+        assert_eq!(m.len(), 2); // a line of the old kind, dropped
+    }
 
     #[test]
     fn a_search_box_edits_as_windows_does() {

@@ -184,6 +184,7 @@ help.pick=Pilih hari, bulan atau tempoh
 help.pick_range=Pilih hari pertama dan terakhir
 tip.grid_view=Tunjukkan hasil sebagai ikon lakaran kecil dalam grid
 tip.list_view=Tunjukkan hasil sebagai senarai dengan lajur boleh diisih
+tip.windows_view=Setiap folder menyimpan paparan dan isihannya sendiri, seperti dalam Windows
 tip.dir=Terbalikkan susunan isihan semasa (menaik/menurun)
 tip.tag=Sedang menapis mengikut jenis fail ini — dwiklik untuk mengosongkan penapis
 tip.col=Isih mengikut {col}

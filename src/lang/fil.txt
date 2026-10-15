@@ -184,6 +184,7 @@ help.pick=Pumili ng araw, buwan o panahon
 help.pick_range=Piliin ang una at huling araw
 tip.grid_view=Ipakita ang mga resulta bilang mga thumbnail sa isang grid
 tip.list_view=Ipakita ang mga resulta bilang listahan na may mga column na mapagbubukud-bukod
+tip.windows_view=Bawat folder ay may sariling view at pagkakaayos, gaya sa Windows
 tip.dir=Baligtarin ang kasalukuyang pagkakasunod-sunod (pataas/pababa)
 tip.tag=Kasalukuyang sinasala ayon sa uri ng file na ito — i-double click para alisin ang filter
 tip.col=Pagbukud-bukurin ayon sa {col}

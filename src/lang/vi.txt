@@ -184,6 +184,7 @@ help.pick=Chọn một ngày, một tháng hoặc một khoảng
 help.pick_range=Chọn ngày đầu và ngày cuối
 tip.grid_view=Hiển thị kết quả dạng hình thu nhỏ trong lưới
 tip.list_view=Hiển thị kết quả dạng danh sách có cột sắp xếp được
+tip.windows_view=Mỗi thư mục giữ chế độ xem và cách sắp xếp riêng, như trong Windows
 tip.dir=Đảo ngược thứ tự sắp xếp hiện tại (tăng dần/giảm dần)
 tip.tag=Đang lọc theo loại tệp này — nhấp đúp để bỏ bộ lọc
 tip.col=Sắp xếp theo {col}

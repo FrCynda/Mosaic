@@ -186,6 +186,7 @@ help.pick=Izaberite dan, mesec ili period
 help.pick_range=Izaberite prvi i poslednji dan
 tip.grid_view=Prikaži rezultate kao sličice u mreži
 tip.list_view=Prikaži rezultate kao listu sa kolonama koje se mogu sortirati
+tip.windows_view=Svaka fascikla pamti svoj prikaz i redosled, kao u Windowsu
 tip.dir=Obrni trenutni redosled sortiranja (rastuće/opadajuće)
 tip.tag=Trenutno se filtrira po ovom tipu datoteka — dvaput kliknite da biste uklonili filter
 tip.col=Sortiraj po: {col}

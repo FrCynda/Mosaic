@@ -97,6 +97,7 @@ help.pick=Yan ọjọ́, oṣù tàbí àkókò kan
 help.pick_range=Yan ọjọ́ àkọ́kọ́ àti ti ìkẹyìn
 tip.grid_view=Fi àbájáde hàn gẹ́gẹ́ bí àwòrán kékeré nínú gírídì
 tip.list_view=Fi àbájáde hàn gẹ́gẹ́ bí àtòjọ pẹ̀lú àwọn kọ́lọ́mù tí a lè ṣètò
+tip.windows_view=Fódà kọ̀ọ̀kan ń pa ìwò àti ètò tirẹ̀ mọ́, bí i ti Windows
 tip.dir=Yí ìṣètò lọ́wọ́lọ́wọ́ padà (gòkè/sọ̀kalẹ̀)
 tip.tag=Ń ṣàyẹ̀wò irúfẹ́ fáìlì yìí lọ́wọ́lọ́wọ́ — tẹ ìlọ́po méjì láti yọ ìṣàyẹ̀wò kúrò
 tip.col=Ṣètò nípasẹ̀ {col}

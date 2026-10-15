@@ -185,6 +185,7 @@ help.pick=Wählen Sie einen Tag, Monat oder Zeitraum
 help.pick_range=Wählen Sie den ersten und letzten Tag
 tip.grid_view=Ergebnisse als Miniaturansichten in einem Raster anzeigen
 tip.list_view=Ergebnisse als Liste mit sortierbaren Spalten anzeigen
+tip.windows_view=Jeder Ordner behält seine eigene Ansicht und Sortierung, wie in Windows
 tip.dir=Die aktuelle Sortierreihenfolge umkehren (aufsteigend/absteigend)
 tip.tag=Aktuell nach diesem Dateityp gefiltert — Doppelklick hebt den Filter auf
 tip.col=Nach {col} sortieren

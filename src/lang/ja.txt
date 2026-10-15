@@ -184,6 +184,7 @@ help.pick=日、月、または期間を選択
 help.pick_range=最初の日と最後の日を選択
 tip.grid_view=結果をグリッドのサムネイルで表示します
 tip.list_view=結果を並べ替え可能な列のある一覧で表示します
+tip.windows_view=Windows と同じく、フォルダーごとに表示と並べ替えを記憶
 tip.dir=現在の並べ替え順を逆にします (昇順/降順)
 tip.tag=現在このファイルの種類で絞り込み中 — ダブルクリックで解除
 tip.col={col} で並べ替え

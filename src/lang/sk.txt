@@ -186,6 +186,7 @@ help.pick=Vyberte deň, mesiac alebo obdobie
 help.pick_range=Vyberte prvý a posledný deň
 tip.grid_view=Zobraziť výsledky ako miniatúry v mriežke
 tip.list_view=Zobraziť výsledky ako zoznam so zoraditeľnými stĺpcami
+tip.windows_view=Každý priečinok si pamätá vlastné zobrazenie a zoradenie, ako vo Windows
 tip.dir=Obrátiť aktuálne poradie zoradenia (vzostupne/zostupne)
 tip.tag=Práve sa filtruje podľa tohto typu súborov — dvojitým kliknutím filter zrušíte
 tip.col=Zoradiť podľa: {col}

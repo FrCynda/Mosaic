@@ -184,6 +184,7 @@ help.pick=Pilih hari, bulan, atau periode
 help.pick_range=Pilih hari pertama dan terakhir
 tip.grid_view=Tampilkan hasil sebagai ikon gambar mini dalam kisi
 tip.list_view=Tampilkan hasil sebagai daftar dengan kolom yang dapat diurutkan
+tip.windows_view=Setiap folder menyimpan tampilan dan urutannya sendiri, seperti di Windows
 tip.dir=Balik urutan saat ini (naik/turun)
 tip.tag=Sedang memfilter menurut jenis berkas ini — klik dua kali untuk menghapus filter
 tip.col=Urutkan menurut {col}

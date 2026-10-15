@@ -98,6 +98,7 @@ help.pick=Dooro maalin, bil ama muddo
 help.pick_range=Dooro maalinta koowaad iyo tan u dambeysa
 tip.grid_view=Natiijooyinka u muuji sawirro yaryar oo shabaq ah
 tip.list_view=Natiijooyinka u muuji liis leh tiirar la kala saari karo
+tip.windows_view=Gal kastaa wuxuu hayaa muuqaalkiisa iyo kala horreyntiisa, sida Windows
 tip.dir=Rogooto kala saarista hadda (kor/hoos)
 tip.tag=Hadda waxaa lagu shaandheynayaa noocan faylka — laba jeer riix si aad u tirtirto shaandhaynta
 tip.col=Ku kala saar {col}

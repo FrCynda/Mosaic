@@ -185,6 +185,7 @@ help.pick=Bir gün, ay veya dönem seçin
 help.pick_range=İlk ve son günü seçin
 tip.grid_view=Sonuçları ızgarada küçük resimler olarak gösterir
 tip.list_view=Sonuçları sıralanabilir sütunlu bir liste olarak gösterir
+tip.windows_view=Her klasör, Windows'taki gibi kendi görünümünü ve sıralamasını korur
 tip.dir=Geçerli sıralama düzenini tersine çevirir (artan/azalan)
 tip.tag=Şu anda bu dosya türüne göre filtreleniyor — filtreyi kaldırmak için çift tıklayın
 tip.col={col} ölçütüne göre sırala

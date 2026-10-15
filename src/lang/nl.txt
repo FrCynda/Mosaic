@@ -185,6 +185,7 @@ help.pick=Kies een dag, een maand of een periode
 help.pick_range=Kies de eerste en de laatste dag
 tip.grid_view=Resultaten tonen als miniaturen in een raster
 tip.list_view=Resultaten tonen als lijst met sorteerbare kolommen
+tip.windows_view=Elke map houdt zijn eigen weergave en sortering, zoals in Windows
 tip.dir=De huidige sorteervolgorde omkeren (oplopend/aflopend)
 tip.tag=Er wordt nu op dit bestandstype gefilterd — dubbelklik om het filter te wissen
 tip.col=Sorteren op {col}

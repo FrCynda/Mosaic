@@ -185,6 +185,7 @@ help.pick=Aukeratu egun, hilabete edo aldi bat
 help.pick_range=Aukeratu lehen eta azken eguna
 tip.grid_view=Erakutsi emaitzak koadro txiki gisa sareta batean
 tip.list_view=Erakutsi emaitzak zerrenda gisa, zutabe ordenagarriekin
+tip.windows_view=Karpeta bakoitzak bere ikuspegia eta ordena gordetzen ditu, Windows-en bezala
 tip.dir=Alderantzikatu uneko ordena (gorantz/beherantz)
 tip.tag=Fitxategi mota honen arabera iragazten — egin klik bikoitza iragazkia kentzeko
 tip.col=Ordenatu honen arabera: {col}

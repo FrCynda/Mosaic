@@ -185,6 +185,7 @@ help.pick=Valitse päivä, kuukausi tai jakso
 help.pick_range=Valitse ensimmäinen ja viimeinen päivä
 tip.grid_view=Näytä tulokset pikkukuvina ruudukossa
 tip.list_view=Näytä tulokset luettelona, jonka sarakkeet voi lajitella
+tip.windows_view=Jokainen kansio säilyttää oman näkymänsä ja lajittelunsa, kuten Windowsissa
 tip.dir=Käännä nykyinen lajittelujärjestys (nouseva/laskeva)
 tip.tag=Suodatetaan tällä tiedostotyypillä — poista suodatin kaksoisnapsauttamalla
 tip.col=Lajittele: {col}

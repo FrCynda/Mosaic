@@ -189,6 +189,7 @@ help.pick=Pick a day, a month or a period
 help.pick_range=Pick the first and the last day
 tip.grid_view=Show results as thumbnail icons in a grid
 tip.list_view=Show results as a list with sortable columns
+tip.windows_view=Each folder keeps its own view and sort order, as in Windows
 tip.dir=Reverse the current sort order (ascending/descending)
 tip.tag=Currently filtering by this file type — double-click to clear the filter
 tip.col=Sort by {col}

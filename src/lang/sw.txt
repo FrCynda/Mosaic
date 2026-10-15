@@ -98,6 +98,7 @@ help.pick=Chagua siku, mwezi au kipindi
 help.pick_range=Chagua siku ya kwanza na ya mwisho
 tip.grid_view=Onyesha matokeo kama aikoni ndogo kwenye gridi
 tip.list_view=Onyesha matokeo kama orodha yenye safu wima zinazopangika
+tip.windows_view=Kila folda hushika mwonekano na mpangilio wake, kama katika Windows
 tip.dir=Geuza mpangilio wa sasa (panda/shuka)
 tip.tag=Inachuja kwa aina hii ya faili kwa sasa — bofya mara mbili kuondoa kichujio
 tip.col=Panga kwa {col}

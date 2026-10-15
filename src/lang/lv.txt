@@ -186,6 +186,7 @@ help.pick=Izvēlieties dienu, mēnesi vai periodu
 help.pick_range=Izvēlieties pirmo un pēdējo dienu
 tip.grid_view=Rādīt rezultātus kā sīktēlus režģī
 tip.list_view=Rādīt rezultātus kā sarakstu ar kārtojamām kolonnām
+tip.windows_view=Katra mape saglabā savu skatu un kārtojumu, kā Windows
 tip.dir=Apgriezt pašreizējo kārtošanas secību (augošā/dilstošā)
 tip.tag=Pašlaik filtrē pēc šī faila tipa — veiciet dubultklikšķi, lai notīrītu filtru
 tip.col=Kārtot pēc: {col}

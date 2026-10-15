@@ -144,6 +144,7 @@ help.pick=Elige un día, un mes o un periodo
 help.pick_range=Elige el primer y el último día
 tip.grid_view=Muestra los resultados como iconos en miniatura en una cuadrícula
 tip.list_view=Muestra los resultados como una lista con columnas ordenables
+tip.windows_view=Cada carpeta conserva su vista y su orden, como en Windows
 tip.dir=Invierte el orden actual (ascendente/descendente)
 tip.tag=Filtrando actualmente por este tipo de archivo — doble clic para quitar el filtro
 tip.col=Ordenar por {col}

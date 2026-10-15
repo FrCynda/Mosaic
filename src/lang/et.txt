@@ -185,6 +185,7 @@ help.pick=Vali päev, kuu või periood
 help.pick_range=Vali esimene ja viimane päev
 tip.grid_view=Kuva tulemused pisipiltidena ruudustikus
 tip.list_view=Kuva tulemused sorditavate veergudega loendina
+tip.windows_view=Iga kaust jätab meelde oma vaate ja sortimise, nagu Windowsis
 tip.dir=Pööra praegune sortimisjärjestus ümber (kasvav/kahanev)
 tip.tag=Praegu filtreeritakse selle failitüübi järgi — filtri eemaldamiseks topeltklõpsa
 tip.col=Sordi: {col}
