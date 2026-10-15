@@ -72,6 +72,7 @@ const WM_INSTALLED: u32 = WM_APP + 3;
 const WM_THUMB: u32 = WM_APP + 4;
 const WM_PREVIEW: u32 = WM_APP + 5;
 const WM_KIND: u32 = WM_APP + 20;
+const WM_TAB_ICON: u32 = WM_APP + 6; // lParam: a boxed (icon source, its PNG)
 const WM_RENAME: u32 = WM_APP + 30; // to the list: rename the focused item in place (Explorer's menu asked, or a new item showed up)
 const WM_RENAME_END: u32 = WM_APP + 31; // … the field (wParam) lost the focus: keep what was typed
 const T_TYPE: usize = 1;
@@ -936,6 +937,8 @@ struct Ui {
     scale: f64,
     gfx: Gfx,
     cm: Canvas, // main window
+    tab_png: HashMap<String, Option<Vec<u8>>>, // tabs' places' shell icons by source (None: asked, or none)
+    tab_bmp: HashMap<String, (Bitmap, u32)>,    // … made on `cm` (its `gen`)
     cl: Canvas, // list
     edit_font: HFONT,
     naming: Option<usize>,                          // the tab whose title is being typed over (see `TA::Rename`)
@@ -1507,6 +1510,8 @@ pub fn run() {
             born: HashSet::new(),
             scale,
             cm: Canvas::new(main, &gfx),
+            tab_png: HashMap::new(),
+            tab_bmp: HashMap::new(),
             cl: Canvas::new(list, &gfx),
             gfx,
             edit_font: edit_font(scale),
@@ -5399,6 +5404,7 @@ impl Ui {
 
     // -- painting
     fn paint_main(&mut self) {
+        self.tab_icons();
         if !self.cm.begin() {
             return;
         }
@@ -7640,6 +7646,13 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 }
                 Some(None) => drop(Box::from_raw(p)),
                 Some(Some(())) => {}
+            }
+            return 0;
+        }
+        WM_TAB_ICON => {
+            let p = l as *mut (String, Option<Vec<u8>>);
+            if with(|u| u.got_tab_icon(*Box::from_raw(p))).is_none() {
+                PostMessageW(h, m, wp, l);
             }
             return 0;
         }

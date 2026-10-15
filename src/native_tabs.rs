@@ -264,6 +264,14 @@ pub(super) fn rule_color(rules: &[(String, u32)], dir: &str) -> Option<u32> {
     };
     rules.iter().filter(|(p, _)| hit(p)).max_by_key(|(p, _)| p.len()).map(|r| r.1)
 }
+/// Where a tab's place takes its icon from, as the sidebar's: Explorer's own place, or the folder. A search: none.
+fn icon_src(q: &str) -> Option<String> {
+    match q.trim() {
+        "" => Some("shell:::{031E4825-7B94-4dc3-B131-E946B44C8DD5}".into()),
+        "home:" => Some("shell:::{F874310E-B6B7-47DC-BC84-B9E6B38F5903}".into()),
+        q => list_of(q).map(|l| l.2.to_string()).or_else(|| listed_dir(q)),
+    }
+}
 fn kind_icon(q: &str) -> &'static str {
     match q.trim() {
         "" => "🗂️",
@@ -386,6 +394,7 @@ pub(super) struct Face {
     pub(super) root: Node,
     pub(super) color: Option<u32>,
     pub(super) icon: Option<String>,
+    pub(super) pic: Option<String>, // its place's shell icon (a source in `tab_bmp`), over `icon` once made
     pub(super) pinned: bool,
     pub(super) asleep: bool,
     pub(super) dot: bool,
@@ -1007,6 +1016,47 @@ impl Ui {
         }
     }
     /// What tab `k`'s focused pane lists.
+    /// Tab `k`'s place's shell icon source: none when its icon is the user's own, or icons are off.
+    fn tab_pic(&self, k: usize) -> Option<String> {
+        (self.tabs[k].o.icon.is_none() && self.tp.icons).then(|| icon_src(&self.focus_q(k))).flatten()
+    }
+    /// Make the tabs' icons for this canvas, asking the shell helper for those not had yet.
+    pub(super) fn tab_icons(&mut self) {
+        if self.tab_png.len() > 300 {
+            (self.tab_png, self.tab_bmp) = (HashMap::new(), HashMap::new());
+        }
+        let (gen, s) = (self.cm.gen, self.px(16));
+        for k in 0..self.tabs.len() {
+            let Some(src) = self.tab_pic(k) else { continue };
+            if self.tab_bmp.get(&src).is_some_and(|b| b.1 == gen) {
+                continue;
+            }
+            match self.tab_png.get(&src) {
+                Some(Some(png)) => {
+                    if let Some(bm) = png_pixels(png, s).and_then(|(px, w, h)| self.cm.make_bitmap(&px, w, h)) {
+                        self.tab_bmp.insert(src, (bm, gen));
+                    }
+                }
+                Some(None) => {}
+                None => {
+                    let (hw, size, key) = (self.main as isize, self.px(48), src.clone()); // 3x, box-filtered down: sharper
+                    self.tab_png.insert(src, None);
+                    shell::shell_spawn(Box::new(move |dropped| {
+                        let png = if dropped { None } else { shell::thumbnail(&key, size, true) };
+                        let b: Box<(String, Option<Vec<u8>>)> = Box::new((key, png));
+                        unsafe { PostMessageW(hw as HWND, WM_TAB_ICON, 0, Box::into_raw(b) as isize) };
+                    }));
+                }
+            }
+        }
+    }
+    pub(super) fn got_tab_icon(&mut self, (src, png): (String, Option<Vec<u8>>)) {
+        if png.is_some() {
+            self.tab_bmp.remove(&src);
+            self.tab_png.insert(src, png);
+            unsafe { InvalidateRect(self.main, null(), 0) };
+        }
+    }
     pub(super) fn focus_q(&self, k: usize) -> String {
         let t = &self.tabs[k];
         match &t.o.asleep {
@@ -1061,6 +1111,7 @@ impl Ui {
             root,
             color: self.tab_color(k),
             icon: t.o.icon.clone().or_else(|| self.tp.icons.then(|| kind_icon(&self.focus_q(k)).to_string())),
+            pic: self.tab_pic(k),
             pinned: t.o.pinned,
             asleep: !awake,
             dot: self.tp.dots && t.o.dot,
@@ -1548,6 +1599,13 @@ impl Ui {
             }).collect();
             cv.lines(&pts, theme().accent, (1.6 * self.scale) as f32);
             tx += px(20);
+        } else if let Some((bm, _)) = fc.pic.as_ref().and_then(|s| self.tab_bmp.get(s)).filter(|b| b.1 == cv.gen) {
+            let s = px(16);
+            if fc.pinned {
+                tx = r.left + (full.right - full.left - s) / 2;
+            }
+            cv.bitmap(bm, &RECT { left: tx, top: cy - s / 2, right: tx + s, bottom: cy - s / 2 + s }, ta);
+            tx += s + px(6);
         } else if let Some(ic) = &fc.icon {
             let iw = self.gfx.width(ic, fr);
             if fc.pinned {
