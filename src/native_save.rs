@@ -768,8 +768,9 @@ unsafe fn get_text(h: HWND) -> String {
     String::from_utf16_lossy(&b[..n as usize])
 }
 
+/// Something in the way: with Windows' own warning sound (the user's sound scheme, nothing of ours).
 unsafe fn say(main: HWND, s: &str) {
-    MessageBoxW(main, wz(s).as_ptr(), wz("Mosaic").as_ptr(), MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(main, wz(s).as_ptr(), wz("Mosaic").as_ptr(), MB_OK | MB_ICONWARNING);
 }
 
 /// The type dropdown: another type puts its extension on the name.
@@ -939,7 +940,8 @@ unsafe fn commit_save(main: HWND, dlg: HWND, e: HWND, typed: &str, dir: Option<S
     match std::fs::metadata(&path) {
         Ok(m) if m.is_dir() => return say(main, &t("save.is_folder").replace("{name}", &name)),
         Ok(_) => {
-            if !confirm(main, &t("save.replace").replace("{name}", &name)) {
+            let ask = wz(&t("save.replace").replace("{name}", &name));
+            if MessageBoxW(main, ask.as_ptr(), wz("Mosaic").as_ptr(), MB_OKCANCEL | MB_ICONWARNING) != IDOK {
                 return;
             }
             // the old one to the Recycle Bin first: the dialog then has nothing to ask

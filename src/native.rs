@@ -7377,6 +7377,11 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             SetCursor(LoadCursorW(null_mut(), if vert { IDC_SIZEWE } else { IDC_SIZENS }));
             return 1;
         }
+        // the name box's edge around its text field: a text box too, not a button
+        WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|u| u.hot == Some(Hit::SaveName)) == Some(true) => {
+            SetCursor(LoadCursorW(null_mut(), IDC_IBEAM));
+            return 1;
+        }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT => {
             if with(|u| u.hot.is_some_and(|h| !matches!(h, Hit::Filter | Hit::Sort | Hit::Tag | Hit::Menu(_) | Hit::Tab(_) | Hit::Pane(_) | Hit::Gutter(_)))) == Some(true) {
                 SetCursor(LoadCursorW(null_mut(), IDC_HAND));
