@@ -458,6 +458,11 @@ fn close() {
     }
 }
 
+/// Closed by a click outside it.
+pub fn dismiss() {
+    close();
+}
+
 pub fn hwnd() -> Option<HWND> {
     with(|p| p.hwnd)
 }
@@ -569,6 +574,10 @@ unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESU
             if matches!(wp as u16, VK_ESCAPE | VK_RETURN) {
                 close();
             }
+            return 0;
+        }
+        WM_ACTIVATE if wp & 0xffff == WA_INACTIVE as usize && !super::owns(h, l as HWND) => {
+            close(); // a click outside (another window, another app): gone, as a menu
             return 0;
         }
         WM_CLOSE => {

@@ -18,6 +18,8 @@ mod dnd;
 pub mod save;
 #[path = "native_apps.rs"]
 mod apps;
+#[path = "native_icons.rs"]
+mod icons;
 use tabs::*;
 
 use std::cell::RefCell;
@@ -410,6 +412,9 @@ unsafe fn cloak(h: HWND, on: bool) {
         save::on_screen();
         if std::env::args().any(|a| a == "--file-windows") && apps::hwnd().is_none() {
             apps::open(h); // over the window, once that is drawn
+        }
+        if std::env::args().any(|a| a == "--icons") && icons::hwnd().is_none() {
+            icons::open(h);
         }
     }
 }
@@ -956,6 +961,8 @@ struct Ui {
     wheel_lines: f64,
     smooth: bool, // glide on wheel / scrollbar paging, else jump
     folder_color: bool, // folder names in the accent colour (off: plain text, like files)
+    folder_icons: u8,   // View > Icons…: a tile of a folder of one kind of file shows 0 that kind's folder, 1 what's inside, 2 both
+    link_icons: u8,     // and a shortcut's tile 0 its own icon, 1 what it opens, 2 what it opens with the arrow
     hist: std::cell::RefCell<(Vec<String>, usize)>, // folders / searches visited (browse_to) and where we are in them
     tabs: Vec<Tab>,
     ghosts: Vec<Ghost>, // tabs just closed, folding away
@@ -1525,6 +1532,8 @@ pub fn run() {
             wheel_lines: lines.max(1) as f64,
             smooth: get("smooth") != "0",
             folder_color: get("folder_color") == "1",
+            folder_icons: get("folder_icons").parse().map_or(2, |v: u8| v.min(2)),
+            link_icons: get("link_icons").parse().map_or(2, |v: u8| v.min(2)),
             hist: Default::default(),
             tabs: vec![Tab::new(0)],
             ghosts: Vec::new(),
@@ -1626,8 +1635,9 @@ pub fn run() {
         ui.run(false);
         UI.with(|u| *u.borrow_mut() = Some(ui));
         with(|u| u.restore());
-        // `--file-windows`: Tools > File windows… on its own, its window gone with it (the session left alone)
-        let file_windows = std::env::args().any(|a| a == "--file-windows");
+        // `--file-windows` / `--icons`: Tools > File windows… or View > Icons… on its own, its window gone with it
+        // (the session left alone)
+        let file_windows = std::env::args().any(|a| a == "--file-windows" || a == "--icons");
         if file_windows {
             with(|u| u.secondary = true);
         }
@@ -1717,7 +1727,7 @@ fn open_item(p: &str) {
 }
 
 unsafe fn dispatch(msg: &MSG) {
-    if themes::hwnd().or(apps::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
+    if themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
         // the theme or file windows dialog: the window behind waits, its shortcuts with it
         TranslateMessage(msg);
         DispatchMessageW(msg);
@@ -2023,6 +2033,250 @@ fn pixels(px: &[u8], sw: usize, sh: usize, size: usize) -> (Vec<u8>, i32, i32) {
 
 /// Premultiplied BGRA pixels, width, height.
 type Px = (Vec<u8>, i32, i32);
+
+/// A thumbnail key for View > Icons… Both: this, then the folder's path.
+const BOTH: &str = "\0both:";
+
+/// The first file directly in `dir` (by name) that is of `kind` (see [`crate::kind_of`]).
+fn first_of_kind(dir: &str, kind: u8) -> Option<std::path::PathBuf> {
+    let name = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| crate::kind_of(n) == kind)
+        .min_by_key(|n| n.to_lowercase())?;
+    Some(std::path::Path::new(dir).join(name))
+}
+
+/// View > Icons… Both: the kind's Windows folder (Videos purple, Pictures blue...) holding a preview of a file
+/// inside, laid out as Windows lays out a plain folder holding pictures (measured at 256 px): the front panel moved
+/// down 66/256 with its tab shape, the preview cropped to fill the folder's width less 7/224 a side, its top just
+/// under the back's top edge. The kind's symbol is kept, shrunk onto the shorter front. Colours are read off `folder`
+/// itself, so whatever Windows' icons look like. `folder` is premultiplied BGRA; `inner` the preview's PNG, `icon`
+/// when it is the file's icon (no preview). None when `folder` doesn't look like a folder.
+fn fold_in(folder: &Px, inner: &[u8], icon: bool) -> Option<Px> {
+    let (src, w, h) = (&folder.0, folder.1 as usize, folder.2 as usize);
+    if w < 16 || h < 16 {
+        return None;
+    }
+    let at = |x: usize, y: usize| -> [f32; 4] {
+        let i = (y.min(h - 1) * w + x.min(w - 1)) * 4;
+        [src[i] as f32, src[i + 1] as f32, src[i + 2] as f32, src[i + 3] as f32]
+    };
+    let un = |c: [f32; 4]| if c[3] > 0.0 { [c[0] * 255.0 / c[3], c[1] * 255.0 / c[3], c[2] * 255.0 / c[3], 255.0] } else { c };
+    let dist = |a: [f32; 4], b: [f32; 4]| (0..3).map(|k| (a[k] - b[k]).abs()).sum::<f32>();
+    // the folder: its sides across its body, its bottom down its middle
+    let row = h * 6 / 10;
+    let left = (0..w).find(|&x| at(x, row)[3] > 128.0)?;
+    let right = (0..w).rev().find(|&x| at(x, row)[3] > 128.0)? + 1;
+    let bottom = (0..h).rev().find(|&y| at(w / 2, y)[3] > 128.0)? + 1;
+    // each column's front edge: the first step in colour down from the folder's top (the tab's dip included, below
+    // the rest); the outline's half-covered columns and the back's rounded corner take their neighbour's
+    let edge_at = |x: usize| {
+        let top = (0..bottom).find(|&y| at(x, y)[3] > 200.0)?;
+        (top + 1..bottom).find(|&y| at(x, y)[3] > 200.0 && dist(at(x, y), at(x, y - 1)) > 40.0)
+    };
+    let mid = edge_at(w * 7 / 10)?;
+    let found: Vec<Option<usize>> = (0..w).map(|x| edge_at(x).filter(|&e| e + h / 128 >= mid && e < mid + h / 8)).collect();
+    let mut last = found.iter().flatten().next().copied()?;
+    let edge: Vec<usize> = found.iter().map(|e| { last = e.unwrap_or(last); last }).collect();
+    let d = h * 66 / 256; // how far down Windows moves the front
+    let band = (h * 8 / 256).max(1); // the front's top edge (clear of the symbol): moved as it is
+    let rim = bottom - (h / 90).max(1); // the folder's bottom rim: kept as it is
+    if mid + d + 3 * band >= rim {
+        return None;
+    }
+    let mut out = src.clone();
+    let put = |out: &mut [u8], x: usize, y: usize, c: [f32; 4], a: f32| {
+        // premultiplied `c` over the pixel, at coverage `a`
+        let i = (y * w + x) * 4;
+        let k = 1.0 - c[3] / 255.0 * a;
+        for j in 0..4 {
+            out[i + j] = (c[j] * a + out[i + j] as f32 * k).round().clamp(0.0, 255.0) as u8;
+        }
+    };
+    // the back, where the front was: each column the back's colour just above its edge, inside the outline (the
+    // back is narrower than the front: its last column's colour on out, as Windows draws it)
+    let mut last = [0f32; 4];
+    let back: Vec<[f32; 4]> = (0..w)
+        .map(|x| {
+            let c = at(x, edge[x].saturating_sub(band / 2 + 1));
+            if c[3] > 250.0 || last[3] == 0.0 {
+                last = un(c);
+            }
+            last
+        })
+        .collect();
+    let first = back.iter().position(|c| c[3] > 0.0).unwrap_or(0);
+    let back = |x: usize| back[x.max(first)];
+    for x in left..right {
+        let c = back(x);
+        for y in edge[x].saturating_sub(3)..(edge[x] + d + band).min(rim) {
+            let i = (y * w + x) * 4;
+            let a = src[i + 3] as f32 / 255.0;
+            for j in 0..4 {
+                out[i + j] = (c[j] * a).round() as u8;
+            }
+        }
+    }
+    // the preview, cropped to fill its card (centred), down under the front; one with see-through parts (an icon,
+    // a logo) whole on a white card instead, in the card's open part
+    let inset = ((right - left) * 7 / 224).max(1);
+    let (x0, y0) = (left + inset, mid + (h / 64).max(1));
+    let (cw, ch) = (right - left - 2 * inset, edge[left..right].iter().max()? + d + band - y0);
+    // (as Windows: a picture with see-through parts, or an icon, on a pale card, the back's colour lightened; an icon
+    // at half the folder's size, centred, its top 4/256 under the card's)
+    let pic = png_pixels(inner, if icon { (h / 2) as i32 } else { i32::MAX })?;
+    let pale = icon || pic.0.chunks_exact(4).filter(|p| p[3] < 250).count() * 50 > pic.0.len() / 4; // over 2% see-through
+    // a picture fills the box Windows crops to: the card down to 13/256 above the folder's bottom (more than shows)
+    let bh = (bottom - h * 13 / 256).saturating_sub(y0).max(ch) as f32;
+    let fill = (cw as f32 / pic.1 as f32).max(bh / pic.2 as f32);
+    let pic = if !icon && fill < 1.0 { png_pixels(inner, (pic.1.max(pic.2) as f32 * fill).ceil() as i32)? } else { pic };
+    let (pw, ph) = (pic.1 as usize, pic.2 as usize);
+    let k = if icon { 1.0 } else { (cw as f32 / pw as f32).max(bh / ph as f32) };
+    let (ox, oy) = if icon {
+        (((pw as f32 - cw as f32) / 2.0).floor(), -((h * 4 / 256) as f32))
+    } else {
+        ((pw as f32 * k - cw as f32) / 2.0, (ph as f32 * k - bh) / 2.0)
+    };
+    let sample = |sx: f32, sy: f32| -> [f32; 4] {
+        // bilinear, premultiplied
+        if sx < 0.0 || sy < 0.0 || sx >= pw as f32 || sy >= ph as f32 {
+            return [0.0; 4]; // beside an icon
+        }
+        let (sx, sy) = ((sx - 0.5).clamp(0.0, (pw - 1) as f32), (sy - 0.5).clamp(0.0, (ph - 1) as f32));
+        let (ax, ay) = (sx as usize, sy as usize);
+        let (bx, by, tx, ty) = ((ax + 1).min(pw - 1), (ay + 1).min(ph - 1), sx.fract(), sy.fract());
+        let p = |x: usize, y: usize, j: usize| pic.0[(y * pw + x) * 4 + j] as f32;
+        std::array::from_fn(|j| (p(ax, ay, j) * (1.0 - tx) + p(bx, ay, j) * tx) * (1.0 - ty) + (p(ax, by, j) * (1.0 - tx) + p(bx, by, j) * tx) * ty)
+    };
+    let r = (h as f32 * 3.0 / 256.0).max(1.0);
+    for y in 0..ch.min(h - y0) {
+        for x in 0..cw {
+            let (dx, dy) = ((r - x as f32 - 0.5).max(x as f32 + 0.5 - (cw as f32 - r)).max(0.0), (r - y as f32 - 0.5).max(0.0));
+            let a = (r - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0); // rounded top corners
+            if pale {
+                let b = back(x0 + x);
+                put(&mut out, x0 + x, y0 + y, std::array::from_fn(|j| b[j] * 0.45 + 255.0 * 0.55), a);
+            }
+            put(&mut out, x0 + x, y0 + y, sample((x as f32 + 0.5 + ox) / k, (y as f32 + 0.5 + oy) / k), a);
+        }
+    }
+    // the shadow the front casts on the preview
+    let sh = (h * 12 / 256).max(2);
+    for x in x0..x0 + cw {
+        let low = edge[x] + d;
+        for y in low.saturating_sub(sh)..low {
+            let t = 1.0 - (low - y) as f32 / (sh + 1) as f32;
+            put(&mut out, x, y, [0.0, 0.0, 0.0, 255.0], 0.08 * t * t);
+        }
+    }
+    // the front: its top edge moved down as it is; below it the icon's own shading (each column's top colour down to
+    // its bottom corners'), with the symbol drawn smaller on it; the rim the icon's own
+    let (yb, xl, xr) = (rim - 1 - h / 40, left + w * 3 / 100, right - 1 - w * 3 / 100);
+    let (bl, br) = (un(at(xl, yb)), un(at(xr, yb)));
+    let shade = |x: usize, y: f32, top: f32| -> [f32; 4] {
+        // the front's shading at (x, y), its top `top` (the original's or the moved one)
+        let (u, v) = ((x - left) as f32 / (right - left) as f32, ((y - top) / (yb as f32 - top)).clamp(0.0, 1.0));
+        let t = un(at(x, edge[x] + band));
+        std::array::from_fn(|j| t[j] * (1.0 - v) + (bl[j] * (1.0 - u) + br[j] * u) * v)
+    };
+    let (to, tn) = ((mid + band) as f32, (mid + d + band) as f32); // the body's top, before and after
+    let f = (rim as f32 - tn) / (rim as f32 - to); // how much smaller the symbol gets
+    let cx = (left + right) as f32 / 2.0;
+    for x in left..right {
+        let low = edge[x] + d;
+        // the front's top edge, moved: each pixel as much front as it was (the curve's soft pixels, mixed with the
+        // back, are unmixed: the front's own colour laid over the preview at that much)
+        let (b, solid) = (back(x), un(at(x, edge[x] + band)));
+        for y in edge[x].saturating_sub(3)..edge[x] + band {
+            let (ny, p) = (y + d, at(x, y));
+            if ny >= rim {
+                break;
+            }
+            let i = (ny * w + x) * 4;
+            if p[3] < 250.0 {
+                // the outline's edge (as see-through there as here), or the front's corner beyond the back
+                if p[3] >= src[i + 3] as f32 {
+                    out[i..i + 4].copy_from_slice(&src[(y * w + x) * 4..][..4]);
+                } else {
+                    put(&mut out, x, ny, p, 1.0);
+                }
+                continue;
+            }
+            let cov = if y > edge[x] { 1.0 } else { (dist(p, b) / dist(solid, b).max(1.0)).clamp(0.0, 1.0) };
+            if cov < 0.1 {
+                continue;
+            }
+            let c: [f32; 4] = if cov > 0.25 { std::array::from_fn(|j| ((p[j] - b[j] * (1.0 - cov)) / cov).clamp(0.0, 255.0)) } else { solid };
+            put(&mut out, x, ny, [c[0], c[1], c[2], 255.0], cov * src[i + 3] as f32 / 255.0);
+        }
+        for y in low + band..bottom {
+            let i = (y * w + x) * 4;
+            if y >= rim {
+                out[i..i + 4].copy_from_slice(&src[i..i + 4]);
+                continue;
+            }
+            let mut c = shade(x, y as f32, (low + band) as f32);
+            // the symbol: what the original front holds over its shading, sampled 3x3 over the shrunk footprint
+            let mut sym = [0f32; 3];
+            let mut n = 0.0;
+            for sy in 0..3 {
+                for sx in 0..3 {
+                    let px = cx + (x as f32 + (sx as f32 + 0.5) / 3.0 - cx) / f;
+                    let py = to + (y as f32 + (sy as f32 + 0.5) / 3.0 - tn) / f;
+                    if px < xl as f32 || px > xr as f32 || py >= yb as f32 { // the front's own edge shading left out
+                        continue;
+                    }
+                    let (qx, qy) = (px as usize, py as usize);
+                    let p = at(qx, qy);
+                    if p[3] < 250.0 || qy < edge[qx] + band {
+                        continue;
+                    }
+                    let g = shade(qx, py, (edge[qx] + band) as f32);
+                    for j in 0..3 {
+                        sym[j] += un(p)[j] - g[j];
+                    }
+                    n += 1.0;
+                }
+            }
+            if n > 0.0 {
+                let m = sym.iter().map(|s| (s / n).abs()).sum::<f32>();
+                let keep = ((m - 24.0) / 24.0).clamp(0.0, 1.0); // the shading's own small drift left out
+                for j in 0..3 {
+                    c[j] += sym[j] / n * keep;
+                }
+            }
+            put(&mut out, x, y, c, src[i + 3] as f32 / 255.0);
+        }
+    }
+    Some((out, folder.1, folder.2))
+}
+
+/// Whether `w` is `h` or a window owned by it (its own Open window, a message box...).
+unsafe fn owns(h: HWND, mut w: HWND) -> bool {
+    while !w.is_null() {
+        if w == h {
+            return true;
+        }
+        w = GetWindow(w, GW_OWNER);
+    }
+    false
+}
+
+/// Premultiplied BGRA made at most `size` px, as [`pixels`] makes a PNG's.
+fn shrink((px, w, h): Px, size: i32) -> Px {
+    let rgba: Vec<u8> = px
+        .chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3] as u32;
+            let un = |c: u8| if a == 0 { 0 } else { (c as u32 * 255 / a).min(255) as u8 };
+            [un(p[2]), un(p[1]), un(p[0]), p[3]]
+        })
+        .collect();
+    pixels(&rgba, w as usize, h as usize, size.max(1) as usize)
+}
 
 /// A shell helper's PNG as premultiplied BGRA of at most `size` px.
 fn png_pixels(png: &[u8], size: i32) -> Option<Px> {
@@ -3795,15 +4049,41 @@ impl Ui {
         pic
     }
 
-    /// The path whose shell icon a row wears: its own, or the Windows folder matching what the folder holds.
-    fn icon_key(&self, path: &str, is_dir: bool) -> String {
+    /// The Windows folder (Videos, Pictures...) matching what a folder holds, when it holds one kind of file.
+    fn kind_icon(&self, path: &str, is_dir: bool) -> Option<String> {
         // Home keeps each folder's own shell icon (Documents stays grey whatever it holds)
-        if is_dir && list_of(&self.args.q).is_none() && !self.special.contains(&path.to_lowercase()) {
-            if let Some(Some(d)) = self.kinds.get(path).and_then(|&(k, _)| self.kind_dirs.get(k as usize)) {
-                return d.clone();
-            }
+        if !is_dir || list_of(&self.args.q).is_some() || self.special.contains(&path.to_lowercase()) {
+            return None;
         }
-        path.to_string()
+        self.kinds.get(path).and_then(|&(k, _)| self.kind_dirs.get(k as usize)).cloned().flatten()
+    }
+
+    /// The path whose shell icon a row wears: its own, or the Windows folder matching what the folder holds (a
+    /// tile shows what's inside instead, or both, as View > Icons… says; a row is too small to tell).
+    fn icon_key(&self, path: &str, is_dir: bool) -> String {
+        if self.both(path, is_dir).is_some() {
+            return format!("{BOTH}{path}");
+        }
+        let kind = if self.grid { self.folder_icons == 0 } else { self.folder_icons != 1 };
+        kind.then(|| self.kind_icon(path, is_dir)).flatten().unwrap_or_else(|| path.to_string())
+    }
+
+    /// Both, on a tile: the kind's Windows folder and its kind, for [`fold_in`].
+    fn both(&self, path: &str, is_dir: bool) -> Option<(String, u8)> {
+        if !self.grid || self.folder_icons != 2 {
+            return None;
+        }
+        Some((self.kind_icon(path, is_dir)?, self.kinds.get(path)?.0))
+    }
+
+    /// View > Icons… changed: every pane's pictures made again.
+    fn icons_changed(&mut self) {
+        self.forget_pics();
+        for v in self.panes.iter_mut().flatten() {
+            v.pics_gen = u32::MAX; // forgotten when next shown (`canvas_ready`)
+        }
+        self.save_settings();
+        self.invalidate_all();
     }
 
     /// Where the shortcut badge goes: a fifth of the icon, in its bottom-left corner.
@@ -3862,20 +4142,45 @@ impl Ui {
         let (tile, ts, hw, lw) = (self.tile(), self.tsize(), self.main as isize, self.list as usize);
         // folders only in Home (`own`): their shell icon (Documents, Downloads...), not a preview of their contents
         let mut seen = HashSet::new();
-        let want: Vec<(String, bool)> = (r0 * self.per..((r1 + 1) * self.per).min(self.matches))
+        // (key, path, icon only, a shortcut shown as what it opens, Both's kind folder and kind)
+        let want: Vec<(String, String, bool, bool, Option<(String, u8)>)> = (r0 * self.per..((r1 + 1) * self.per).min(self.matches))
             .filter_map(|i| self.get(i))
             .filter_map(|r| {
                 let key = self.icon_key(&r.path, r.is_dir);
-                let icon = !r.is_dir || r.own || key != r.path;
-                (icon && r.tkey != "svg" && !self.thumb_pending.contains(&key) && self.thumbs.get(&key).is_none_or(|t| t.1 != tile) && seen.insert(key.clone())).then(|| (key, r.is_dir))
+                // a plain folder: what's inside (View > Icons…), else the type's jumbo folder
+                let shown = r.tkey != "svg" && (!r.is_dir || r.own || key != r.path || self.folder_icons != 0);
+                let icon_only = r.is_dir && (r.own || key != r.path) || r.link && self.link_icons == 0;
+                let follow = r.link && self.link_icons != 0 && r.tkey == "lnk";
+                // fetched: the kind's Windows folder (Type), else the item itself
+                let get = if key.starts_with(BOTH) { r.path.clone() } else { key.clone() };
+                shown.then(|| (key, get, icon_only, follow, self.both(&r.path, r.is_dir)))
             })
+            .filter(|(key, ..)| !self.thumb_pending.contains(key) && self.thumbs.get(key).is_none_or(|t| t.1 != tile) && seen.insert(key.clone()))
             .collect();
         // shell_spawn runs the newest job first: queue bottom-up so the top-left tile comes first
-        for (p, icon_only) in want.into_iter().rev() {
-            self.thumb_pending.insert(p.clone());
+        for (key, p, icon_only, follow, both) in want.into_iter().rev() {
+            self.thumb_pending.insert(key.clone());
             shell::shell_spawn(Box::new(move |dropped| {
+                let src = if follow { shell::link_target(&p).unwrap_or_else(|| p.clone()) } else { p.clone() };
                 // decoded and resampled here, on the helper's thread: the UI thread only uploads the pixels
-                let px = if dropped { None } else { shell::thumbnail(&p, ts, icon_only).and_then(|b| png_pixels(&b, tile)) };
+                let px = if dropped {
+                    None
+                } else if let Some((dir, kind)) = both {
+                    // the kind's folder holding a preview of its first such file (that folder alone when there's none);
+                    // drawn at full size, then made tile-sized as a whole, so its edges come out smooth
+                    let icon = shell::thumbnail(&dir, ts, true).and_then(|b| png_pixels(&b, ts));
+                    let inner = first_of_kind(&p, kind).and_then(|f| {
+                        let f = f.to_string_lossy();
+                        // no preview (Windows answers with the icon itself): drawn as Windows draws an icon there
+                        let b = shell::thumbnail(&f, ts, false)?;
+                        let icon = shell::thumbnail(&f, ts, true).is_some_and(|i| i == b);
+                        Some((b, icon))
+                    });
+                    icon.map(|i| shrink(inner.and_then(|(b, ic)| fold_in(&i, &b, ic)).unwrap_or(i), tile))
+                } else {
+                    shell::thumbnail(&src, ts, icon_only).and_then(|b| png_pixels(&b, tile))
+                };
+                let p = key;
                 let b: Box<(String, Option<Px>, bool, i32)> = Box::new((p, px, dropped, tile));
                 unsafe { PostMessageW(hw as HWND, WM_THUMB, lw, Box::into_raw(b) as isize) };
             }));
@@ -4833,6 +5138,8 @@ impl Ui {
             ("cols", { let (f, [s, t, m]) = self.colw; format!("{f:.4},{s},{t},{m}") }),
             ("smooth", (self.smooth as u8).to_string()),
             ("folder_color", (self.folder_color as u8).to_string()),
+            ("folder_icons", self.folder_icons.to_string()),
+            ("link_icons", self.link_icons.to_string()),
             ("browse", self.browse.to_string()),
             ("side", (self.show_side as u8).to_string()),
             ("tags", (self.args.tags as u8).to_string()),
@@ -5375,7 +5682,7 @@ impl Ui {
         for i in i0..i1.max(i0) {
             let texts = self.item_texts(i);
             let Some((is_dir, sys, own, path, tkey, hidden, link)) = self.get(i).map(|r| (r.is_dir, r.sys, r.own, r.path.clone(), r.tkey.clone(), r.hidden, r.link)) else { continue };
-            let arrow = if link { self.link_overlay() } else { None };
+            let arrow = if link && self.link_icons != 1 { self.link_overlay() } else { None };
             let fade = if hidden { 0.5 } else { 1.0 };
             let color = if is_dir && self.folder_color { theme().accent } else { theme().text };
             let (dx, dy) = self.lag(&path); // sliding to its new place after a live refresh
@@ -6829,6 +7136,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
                 (t("menu.zoom_out").into(), "Ctrl+-".into(), false),
                 sep(),
                 (format!("{}…", t("menu.theme")), String::new(), false),
+                (format!("{}…", t("icons.title")), String::new(), false),
                 sep(),
                 (t("menu.show_hidden").into(), String::new(), u.args.hidden),
                 (t("menu.folder_color").into(), String::new(), u.folder_color),
@@ -6880,21 +7188,21 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
         (2, 7 | 8) => {
             with(|u| u.zoom(k == 7));
         }
-        (2, 12) => {
+        (2, 13) => {
             with(|u| {
                 u.args.hidden = !u.args.hidden;
                 u.save_settings();
                 u.run(false);
             });
         }
-        (2, 14) => {
+        (2, 15) => {
             with(|u| {
                 u.args.system = !u.args.system;
                 u.save_settings();
                 u.run(false);
             });
         }
-        (2, 13) => {
+        (2, 14) => {
             with(|u| {
                 u.folder_color = !u.folder_color;
                 u.save_settings();
@@ -6902,6 +7210,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             });
         }
         (2, 10) => themes::open(main),
+        (2, 11) => icons::open(main),
         (3, 0..=3) => {
             with(|u| {
                 match k {
@@ -7362,6 +7671,17 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
             return 0;
         }
+        // a click on this window while a dialog (Theme, Icons, File windows) holds it disabled: the dialog closes, as a
+        // menu does, and the click goes no further (no beep)
+        WM_SETCURSOR if (l & 0xffff) as u16 == HTERROR as u16
+            && matches!((l >> 16) as u32 & 0xffff, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
+            && themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).is_some() =>
+        {
+            themes::dismiss();
+            apps::dismiss();
+            icons::dismiss();
+            return 1;
+        }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|u| {
             let mut p = POINT { x: 0, y: 0 };
             GetCursorPos(&mut p);
@@ -7649,6 +7969,30 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_puts_the_preview_in_the_kind_folder() {
+        // a 64 px folder: dark back from row 10, light front from row 20 (BGRA, opaque)
+        let (back, front) = ([90u8, 60, 120, 255], [230u8, 180, 250, 255]);
+        let mut px = vec![0u8; 64 * 64 * 4];
+        for y in 10..54 {
+            for x in 4..60 {
+                px[(y * 64 + x) * 4..][..4].copy_from_slice(if y < 20 { &back } else { &front });
+            }
+        }
+        // a red picture
+        let mut png = Vec::new();
+        let mut e = png::Encoder::new(&mut png, 8, 8);
+        e.set_color(png::ColorType::Rgba);
+        e.write_header().unwrap().write_image_data(&[255, 0, 0, 255].repeat(64)).unwrap();
+        let (out, ..) = fold_in(&(px, 64, 64), &png, false).unwrap();
+        let at = |x: usize, y: usize| out[(y * 64 + x) * 4..][..4].to_vec();
+        // Windows' layout: the front down 66/256 (16 px), the picture from just under the back's edge, 1 px in
+        assert_eq!(at(32, 25), [0, 0, 255, 255]); // the picture, over the back
+        assert_eq!(at(32, 50), front); // the front, over the picture's bottom
+        assert_eq!(at(4, 30), back); // where the front was, beside the picture: the back now
+        assert_eq!(at(2, 30)[3], 0); // outside the folder: still nothing
+    }
 
     #[test]
     fn selection_ranges_merge_split_and_toggle() {

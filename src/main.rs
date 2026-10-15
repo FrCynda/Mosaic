@@ -308,16 +308,20 @@ fn home_refresh() -> String {
     q
 }
 
-/// What every file directly inside `path` is: 1 pictures, 2 videos, 3 music, 4 documents; 0 when mixed, unknown or empty.
-/// Samples the first 400 entries, so a huge folder costs no more than a small one.
-fn folder_kind(h: &backend::SearchHandle, path: &str) -> u8 {
-    let kind_of = |name: &str| match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).as_deref() {
+/// What a file is by its name: 1 picture, 2 video, 3 music, 4 document; 0 anything else.
+pub(crate) fn kind_of(name: &str) -> u8 {
+    match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).as_deref() {
         Some("jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "heic" | "tif" | "tiff" | "svg" | "ico") => 1,
         Some("mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "flv" | "m4v" | "mpg" | "mpeg") => 2,
         Some("mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "wma" | "opus") => 3,
         Some("txt" | "md" | "rtf" | "doc" | "docx" | "odt" | "ppt" | "pptx" | "odp" | "xls" | "xlsx" | "ods" | "pdf" | "csv") => 4,
         _ => 0,
-    };
+    }
+}
+
+/// What every file directly inside `path` is: 1 pictures, 2 videos, 3 music, 4 documents; 0 when mixed, unknown or empty.
+/// Samples the first 400 entries, so a huge folder costs no more than a small one.
+fn folder_kind(h: &backend::SearchHandle, path: &str) -> u8 {
     let r = h.search(&SearchOptions { query: format!("child:\"{path}\""), limit: 400, ..SearchOptions::default() });
     let mut kind = 0;
     for hit in r.hits.iter().filter(|x| !x.is_dir && !x.name.eq_ignore_ascii_case("desktop.ini") && !x.name.eq_ignore_ascii_case("thumbs.db")) {

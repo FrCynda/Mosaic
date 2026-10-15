@@ -262,11 +262,12 @@ unsafe extern "system" fn created(_: HWINEVENTHOOK, _: u32, h: HWND, obj: i32, c
     if !wanted && programs().iter().any(|p| exe_name(p) == exe) {
         return;
     }
-    let hid = wanted && hide(h);
     let h = h as isize;
+    // hide() sends the app's window messages and waits for them: on a thread of its own, so an app that hangs
+    // stalls only its own dialog, never this hook (it used to, and every file window after it went untaken)
     std::thread::spawn(move || unsafe {
         let h = h as HWND;
-        if hid {
+        if wanted && hide(h) {
             take(h, &path);
         } else if item(h) {
             add_program(&path); // a program that opens file windows: listed, to be switched on
