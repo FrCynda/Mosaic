@@ -1,4 +1,4 @@
-; Mosaic installer. Build everything with ..\build.ps1 (it runs cargo, then ISCC on this file).
+﻿; Mosaic installer. Build everything with ..\build.ps1 (it runs cargo, then ISCC on this file).
 ; One UAC prompt at install: the app goes to Program Files and the background index service is installed and
 ; started by the installer itself, so nothing is left for the user to set up.
 #define Version "2.0.0"
@@ -27,6 +27,10 @@ CloseApplications=no
 ; the unstamped base; the first [Run] step turns it into the four named exes (native::dist) with the chosen icons, then it is deleted
 Source: "..\dist\mosaic-base.exe"; DestDir: "{app}"; Flags: ignoreversion deleteafterinstall
 Source: "..\dist\prev\*.bmp"; DestDir: "{tmp}"; Flags: dontcopy
+
+[Registry]
+; Tools > File windows… starts mosaic-dialogs.exe with Windows; gone with the app
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Mosaic Save window"; ValueType: none; Flags: uninsdeletevalue dontcreatekey
 
 [Icons]
 Name: "{autoprograms}\Mosaic"; Filename: "{app}\mosaic.exe"
@@ -59,6 +63,7 @@ Type: files; Name: "{app}\mosaic-index.exe"
 Type: files; Name: "{app}\mosaic.exe"
 Type: files; Name: "{app}\mosaic-content.exe"
 Type: files; Name: "{app}\mosaic-thumbs.exe"
+Type: files; Name: "{app}\mosaic-dialogs.exe"
 Type: files; Name: "{app}\icons.txt"
 Type: dirifempty; Name: "{app}"
 
@@ -76,6 +81,7 @@ begin
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop AllTheThingsSvc', '', SW_HIDE, ewWaitUntilTerminated, R);
   Kill('mosaic.exe');
   Kill('mosaic-thumbs.exe');
+  Kill('mosaic-dialogs.exe');
   Kill('mosaic-content.exe');
   Kill('mosaic-index.exe');
   Sleep(1000);

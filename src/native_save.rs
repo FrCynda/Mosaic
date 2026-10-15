@@ -1,5 +1,6 @@
-//! Mosaic in place of Firefox's file windows: Save, Open (upload) and Select folder. `mosaic-dialogs.exe --dialogs`
-//! waits for Windows' file dialog to be created in Firefox, makes it invisible at once and opens a Mosaic window
+//! Mosaic in place of programs' file windows: Save, Open (upload) and Select folder. `mosaic-dialogs.exe --dialogs`
+//! waits for Windows' file dialog to be created in a program the rules allow (Tools > File windows…, see
+//! native_apps.rs), makes it invisible at once and opens a Mosaic window
 //! (`--save <dialog>`) with a bar along the bottom: name, type, Save/Open/Select folder, Cancel. The answer is typed
 //! into the hidden dialog as full paths and its own button pressed, so Firefox sees an ordinary pick. Whatever goes
 //! wrong, the real dialog is shown again.
@@ -14,8 +15,6 @@ use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 
 use super::*;
 
-/// The window class, as the apps' processes are named, that the Save window is taken over for.
-const APPS: [&str; 1] = ["firefox.exe"];
 /// Set while the watcher runs (it creates it); setting it stops the watcher.
 const STOP: &str = "Local\\MosaicSaveDialogsStop";
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -64,7 +63,7 @@ unsafe fn find(parent: HWND, f: &dyn Fn(HWND) -> bool) -> HWND {
     s.1
 }
 
-/// The program file name (`firefox.exe`) of the process that owns `h`.
+/// The program file (full path) of the process that owns `h`.
 unsafe fn exe_of(h: HWND) -> String {
     let mut pid = 0;
     GetWindowThreadProcessId(h, &mut pid);
@@ -79,8 +78,38 @@ unsafe fn exe_of(h: HWND) -> String {
     if !ok {
         return String::new();
     }
-    let path = String::from_utf16_lossy(&b[..n as usize]);
-    path.rsplit('\\').next().unwrap_or_default().to_ascii_lowercase()
+    String::from_utf16_lossy(&b[..n as usize])
+}
+
+/// A program's file name, as the rules know it: `firefox.exe`.
+pub(super) fn exe_name(path: &str) -> String {
+    path.rsplit(['\\', '/']).next().unwrap_or_default().to_ascii_lowercase()
+}
+
+/// What a program calls itself ("Google Chrome"), else its file name without ".exe", capitalised.
+pub(super) fn program_name(path: &str) -> String {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+    unsafe {
+        let p = wz(path);
+        let n = GetFileVersionInfoSizeW(p.as_ptr(), null_mut());
+        let mut b = vec![0u8; n as usize];
+        if n > 0 && GetFileVersionInfoW(p.as_ptr(), 0, n, b.as_mut_ptr() as *mut c_void) != 0 {
+            let (mut v, mut len): (*mut c_void, u32) = (null_mut(), 0);
+            if VerQueryValueW(b.as_ptr() as *const c_void, wz("\\VarFileInfo\\Translation").as_ptr(), &mut v, &mut len) != 0 && len >= 4 {
+                let tr = std::ptr::read_unaligned(v as *const [u16; 2]);
+                let key = format!("\\StringFileInfo\\{:04x}{:04x}\\FileDescription", tr[0], tr[1]);
+                if VerQueryValueW(b.as_ptr() as *const c_void, wz(&key).as_ptr(), &mut v, &mut len) != 0 && len > 1 {
+                    let s = String::from_utf16_lossy(std::slice::from_raw_parts(v as *const u16, len as usize - 1));
+                    if !s.trim().is_empty() {
+                        return s.trim().to_string();
+                    }
+                }
+            }
+        }
+    }
+    let stem = exe_name(path);
+    let mut c = stem.trim_end_matches(".exe").chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// A Save dialog's own controls. Windows puts them in `FloatNotifySink`s: the combo box with an Edit in it is the
@@ -147,6 +176,14 @@ fn hidden(h: HWND) -> bool {
     unsafe { IsWindow(h) != 0 && GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW as i32 != 0 }
 }
 
+/// A dialog that is no file window, back as it was: where it is, its focus its own.
+/// ponytail: an unowned one may miss its taskbar button (WS_EX_TOOLWINDOW came off while shown); none seen so far.
+unsafe fn reveal(h: HWND) {
+    SetWindowLongW(h, GWL_EXSTYLE, GetWindowLongW(h, GWL_EXSTYLE) & !MARK);
+    SetWindowPos(h, null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    RedrawWindow(h, null(), null_mut(), RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+}
+
 /// The dialog back on screen, centred over its app's window, in front.
 unsafe fn unhide(h: HWND) {
     if !hidden(h) {
@@ -211,30 +248,50 @@ pub fn watch_main() {
 }
 
 unsafe extern "system" fn created(_: HWINEVENTHOOK, _: u32, h: HWND, obj: i32, child: i32, _: u32, _: u32) {
-    // a top-level dialog of one of the apps, owned by its main window (not a box the dialog itself asks)
-    if obj != OBJID_WINDOW || child != 0 || h.is_null() || class(h) != "#32770" || class(GetWindow(h, GW_OWNER)) != "MozillaWindowClass" {
+    // a top-level dialog: Windows' file windows are of this class (as are message boxes and the like)
+    if obj != OBJID_WINDOW || child != 0 || h.is_null() || class(h) != "#32770" {
         return;
     }
-    if !APPS.contains(&exe_of(h).as_str()) || super::key_down(VK_SHIFT) {
-        return; // Shift held: the Windows dialog, this once
+    let path = exe_of(h);
+    let exe = exe_name(&path);
+    if exe.is_empty() || exe == "mosaic.exe" {
+        return; // Mosaic's own ("Add program…" picks a program in Windows' window)
     }
-    if hide(h) {
-        let h = h as isize;
-        std::thread::spawn(move || unsafe { take(h as HWND) });
+    // Shift held: the Windows dialog, this once
+    let wanted = !super::key_down(VK_SHIFT) && current_rules().wants(&exe);
+    if !wanted && programs().iter().any(|p| exe_name(p) == exe) {
+        return;
     }
+    let hid = wanted && hide(h);
+    let h = h as isize;
+    std::thread::spawn(move || unsafe {
+        let h = h as HWND;
+        if hid {
+            take(h, &path);
+        } else if item(h) {
+            add_program(&path); // a program that opens file windows: listed, to be switched on
+        }
+    });
 }
 
-/// Waits for `dlg` to be built, then tells what it asks for (None: not a file dialog). It shows once its controls
-/// are made (the app has filled them in by then); the item dialog's own come a moment later.
-unsafe fn kind(dlg: HWND) -> Option<Kind> {
+/// Waits for `dlg` to show (its controls made, the app has filled them in by then): whether it is a file window as
+/// Windows makes them today (not a message box, nor the old-style file dialog).
+unsafe fn item(dlg: HWND) -> bool {
     let t = Instant::now();
     while IsWindow(dlg) != 0 && IsWindowVisible(dlg) == 0 && t.elapsed() < Duration::from_secs(2) {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let item = !find(dlg, &|c| class(c) == "DUIViewWndClassName").is_null();
+    IsWindow(dlg) != 0 && !find(dlg, &|c| class(c) == "DUIViewWndClassName").is_null()
+}
+
+/// What a file window asks for (None: not one). Its own controls come a moment after it shows.
+unsafe fn kind(dlg: HWND) -> Option<Kind> {
+    if !item(dlg) {
+        return None;
+    }
     let t = Instant::now();
     let mut k = kind_now(dlg);
-    while item && k.is_none() && IsWindow(dlg) != 0 && t.elapsed() < Duration::from_millis(400) {
+    while k.is_none() && IsWindow(dlg) != 0 && t.elapsed() < Duration::from_millis(400) {
         std::thread::sleep(Duration::from_millis(10));
         k = kind_now(dlg);
     }
@@ -242,9 +299,13 @@ unsafe fn kind(dlg: HWND) -> Option<Kind> {
 }
 
 /// A dialog just hidden: if it is a file dialog, a picker answers it; anything else is shown again at once.
-unsafe fn take(dlg: HWND) {
-    // the picker starts while the dialog is still being built, so both are ready at about the same time; for any
-    // other dialog it finds the same as below and quits without a window
+unsafe fn take(dlg: HWND, path: &str) {
+    if !item(dlg) {
+        return reveal(dlg);
+    }
+    add_program(path);
+    // the picker starts while the dialog's own controls are still coming, so both are ready at about the same
+    // time; if it isn't a file window after all, the picker finds the same as below and quits without a window
     let exe = std::env::current_exe().map(|p| p.with_file_name("mosaic.exe"));
     let picker = exe.and_then(|e| std::process::Command::new(e).args(["--native", "--save", &(dlg as isize).to_string()]).spawn());
     if kind(dlg).is_none() {
@@ -278,10 +339,102 @@ fn pid_of(h: HWND) -> u32 {
 
 // ---- turning it on and off (Tools menu) --------------------------------------------------------------------
 
+/// Which programs' file windows Mosaic answers: every one, or (custom) every one but those switched off. In the
+/// settings as "dialog_apps"; until changed there, every one.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(super) struct Rules {
+    pub custom: bool,
+    pub apps: std::collections::BTreeMap<String, bool>, // by program file name, lowercase; kept while All is chosen
+}
+
+impl Rules {
+    pub fn wants(&self, exe: &str) -> bool {
+        !self.custom || self.apps.get(exe).copied().unwrap_or(true)
+    }
+}
+
+fn rules_from(st: &HashMap<String, String>) -> Rules {
+    st.get("dialog_apps").and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+}
+
+static RULES: Mutex<Rules> = Mutex::new(Rules { custom: false, apps: std::collections::BTreeMap::new() });
+
+pub(super) fn rules() -> Rules {
+    RULES.lock().unwrap().clone()
+}
+
+/// Changed in Tools > File windows…: saved at once, the watcher reads it from there.
+pub(super) fn set_rules(r: Rules) {
+    *RULES.lock().unwrap() = r;
+    with(|u| u.save_settings());
+}
+
+pub(super) fn rules_json() -> String {
+    serde_json::to_string(&*RULES.lock().unwrap()).unwrap_or_default()
+}
+
+/// The watcher's copy of the rules: the settings read again only when the file changed.
+fn current_rules() -> Rules {
+    static SEEN: Mutex<Option<(std::time::SystemTime, Rules)>> = Mutex::new(None);
+    let at = std::fs::metadata(settings_path()).and_then(|m| m.modified()).ok();
+    let mut seen = SEEN.lock().unwrap();
+    match (&*seen, at) {
+        (Some((t, r)), Some(at)) if *t == at => r.clone(),
+        _ => {
+            let r = rules_from(&load_settings());
+            *seen = at.map(|at| (at, r.clone()));
+            r
+        }
+    }
+}
+
+/// Programs seen opening a file window, or added by hand: full paths, one a line.
+fn programs_file() -> std::path::PathBuf {
+    settings_path().with_file_name("dialog-programs.txt")
+}
+
+pub(super) fn programs() -> Vec<String> {
+    std::fs::read_to_string(programs_file()).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()).map(String::from).collect()
+}
+
+/// Listed, once (a line added: a few bytes, and only for a program not listed yet).
+pub(super) fn add_program(path: &str) {
+    use std::io::Write;
+    let exe = exe_name(path);
+    if exe.is_empty() || programs().iter().any(|p| exe_name(p) == exe) {
+        return;
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(programs_file()) {
+        let _ = writeln!(f, "{path}");
+    }
+}
+
+pub(super) fn remove_program(exe: &str) {
+    let rest: Vec<String> = programs().into_iter().filter(|p| exe_name(p) != exe).collect();
+    let _ = std::fs::write(programs_file(), rest.iter().map(|p| format!("{p}\n")).collect::<String>());
+}
+
+/// Where a program not seen yet lives, if it registered itself (App Paths): firefox.exe before Firefox's first file window.
+pub(super) fn app_path(exe: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    let key = wz(&format!("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}"));
+    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE].into_iter().find_map(|root| unsafe {
+        let mut b = [0u16; 1024];
+        let mut n = (b.len() * 2) as u32;
+        (RegGetValueW(root, key.as_ptr(), null(), RRF_RT_REG_SZ, null_mut(), b.as_mut_ptr() as *mut c_void, &mut n) == 0).then(|| {
+            let s = String::from_utf16_lossy(&b[..(n as usize / 2).saturating_sub(1)]);
+            s.trim_matches('"').to_string()
+        })
+    })
+}
+
 pub(super) fn load(st: &HashMap<String, String>) {
-    ON.store(st.get("save_dialog").is_some_and(|v| v == "1"), Ordering::Relaxed);
+    *RULES.lock().unwrap() = rules_from(st);
+    ON.store(st.get("save_dialog").is_none_or(|v| v == "1"), Ordering::Relaxed); // on until turned off
     *DIR.lock().unwrap() = st.get("save_dir").cloned().unwrap_or_default();
     if ON.load(Ordering::Relaxed) && !active() {
+        register(); // the first time
         start(); // after an update, or if it was ended
     }
 }
@@ -301,9 +454,7 @@ pub(super) fn set_on(v: bool) {
     let name = wz(RUN_VALUE);
     unsafe {
         if v {
-            let Ok(exe) = super::dialogs_exe() else { return };
-            let cmd = wz(&format!("\"{}\" --dialogs", exe.display()));
-            RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_SZ, cmd.as_ptr() as *const c_void, (cmd.len() * 2) as u32);
+            register();
             start();
         } else {
             RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr());
@@ -313,6 +464,25 @@ pub(super) fn set_on(v: bool) {
                 CloseHandle(ev);
             }
         }
+    }
+}
+
+/// Started with Windows: written only when it is not there yet (no write each launch).
+fn register() {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+    let (key, name) = (wz(RUN_KEY), wz(RUN_VALUE));
+    let Ok(exe) = super::dialogs_exe() else { return };
+    let cmd = format!("\"{}\" --dialogs", exe.display());
+    unsafe {
+        let mut b = [0u16; 1024];
+        let mut n = (b.len() * 2) as u32;
+        if RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, null_mut(), b.as_mut_ptr() as *mut c_void, &mut n) == 0
+            && String::from_utf16_lossy(&b[..(n as usize / 2).saturating_sub(1)]) == cmd
+        {
+            return;
+        }
+        let cmd = wz(&cmd);
+        RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_SZ, cmd.as_ptr() as *const c_void, (cmd.len() * 2) as u32);
     }
 }
 
@@ -385,9 +555,7 @@ pub(super) fn begin() {
             ty = (send(p.types, CB_GETCURSEL, 0, 0).max(0) as usize).min(n.saturating_sub(1));
             name = text(p.name);
         }
-        let exe = exe_of(dlg);
-        let app = exe.trim_end_matches(".exe");
-        let app = app[..1.min(app.len())].to_uppercase() + &app[1.min(app.len())..];
+        let app = program_name(&exe_of(dlg));
         let start = dialog_dir(dlg).or_else(|| Some(DIR.lock().unwrap().clone()).filter(|d| std::path::Path::new(d).is_dir())).or_else(|| side::user_dirs().into_iter().next()).unwrap_or_else(|| "C:\\".into());
         PICK.set(Some(Pick { dlg, kind, main: null_mut(), edit: null_mut(), types, ty, name, app, start, chosen: Default::default(), done: false }));
     }
@@ -920,6 +1088,19 @@ mod tests {
         assert_eq!(quoted(&two[..1]), "a b.txt");
         assert_eq!(unquote("  a b.txt "), ["a b.txt"]);
         assert!(unquote("  ").is_empty());
+    }
+
+    #[test]
+    fn rules_pick_programs() {
+        assert_eq!(exe_name("C:\\Program Files\\Mozilla Firefox\\Firefox.EXE"), "firefox.exe");
+        // until changed: every program (an old Firefox-only setting too)
+        assert!(rules_from(&HashMap::new()).wants("chrome.exe"));
+        let st = |v: &str| HashMap::from([("dialog_apps".to_string(), v.to_string())]);
+        assert!(rules_from(&st(r#"{"all":false,"apps":{"firefox.exe":true}}"#)).wants("chrome.exe"));
+        // custom: every program but those switched off; All ignores the switches
+        let r = rules_from(&st(r#"{"custom":true,"apps":{"notepad.exe":false}}"#));
+        assert!(r.wants("chrome.exe") && !r.wants("notepad.exe"));
+        assert!(rules_from(&st(r#"{"custom":false,"apps":{"notepad.exe":false}}"#)).wants("notepad.exe"));
     }
 
     #[test]

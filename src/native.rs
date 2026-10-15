@@ -16,6 +16,8 @@ mod tabs;
 mod dnd;
 #[path = "native_save.rs"]
 pub mod save;
+#[path = "native_apps.rs"]
+mod apps;
 use tabs::*;
 
 use std::cell::RefCell;
@@ -406,6 +408,9 @@ unsafe fn cloak(h: HWND, on: bool) {
     } else {
         KillTimer(h, T_UNCLOAK);
         save::on_screen();
+        if std::env::args().any(|a| a == "--file-windows") && apps::hwnd().is_none() {
+            apps::open(h); // over the window, once that is drawn
+        }
     }
 }
 
@@ -1621,6 +1626,11 @@ pub fn run() {
         ui.run(false);
         UI.with(|u| *u.borrow_mut() = Some(ui));
         with(|u| u.restore());
+        // `--file-windows`: Tools > File windows… on its own, its window gone with it (the session left alone)
+        let file_windows = std::env::args().any(|a| a == "--file-windows");
+        if file_windows {
+            with(|u| u.secondary = true);
+        }
         with(|u| u.layout());
         SetTimer(main, T_POLL, 500, None);
         // where and how big it was when last closed (not a window torn off another: that one opens at the cursor)
@@ -1707,8 +1717,8 @@ fn open_item(p: &str) {
 }
 
 unsafe fn dispatch(msg: &MSG) {
-    if themes::hwnd().is_some_and(|h| h == msg.hwnd) {
-        // the theme dialog: the window behind waits, its shortcuts with it
+    if themes::hwnd().or(apps::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
+        // the theme or file windows dialog: the window behind waits, its shortcuts with it
         TranslateMessage(msg);
         DispatchMessageW(msg);
         return;
@@ -4839,6 +4849,7 @@ impl Ui {
             ("tabs", serde_json::to_string(&self.tp).unwrap_or_default()),
             ("sidebar", side::prefs_json()),
             ("save_dialog", (save::on() as u8).to_string()),
+            ("dialog_apps", save::rules_json()),
             ("save_dir", save::last_dir()),
             ("place", place),
             ("save_place", save_place),
@@ -6839,7 +6850,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             ]
         })
         .unwrap_or_default(),
-        4 => vec![(t("menu.language").into(), String::new(), false), sep(), (t("menu.save_dialog").into(), String::new(), save::on())],
+        4 => vec![(t("menu.language").into(), String::new(), false), sep(), (format!("{}…", t("apps.title")), String::new(), false)],
         _ => vec![(t("menu.about").into(), String::new(), false)],
     };
     let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2..=4), items, false) else { return };
@@ -6923,10 +6934,7 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             });
         }
         (4, 0) => drop_menu(main, Hit::Lang),
-        (4, 2) => {
-            save::set_on(!save::on());
-            with(|u| u.save_settings());
-        }
+        (4, 2) => apps::open(main),
         (5, 0) => show_about(main),
         _ => {}
     }
