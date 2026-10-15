@@ -48,6 +48,22 @@ use crate::{ext_of, find, shell, type_cache, SearchArgs};
 
 const PG: usize = 100; // rows per backend page
 const KEEP: usize = 60; // pages kept in memory
+/// The shortcut arrows View > Icons… offers (`Ui::link_arrow`): Windows 11's, a dark one, Windows 7's, a bare arrow, a round
+/// badge, a box, a chain, a folded corner, macOS's, Windows 95's.
+const ARROWS: [&[u8]; 10] = [
+    include_bytes!("../icons/link-windows.png"),
+    include_bytes!("../icons/link-dark.png"),
+    include_bytes!("../icons/link-classic.png"),
+    include_bytes!("../icons/link-arrow.png"),
+    include_bytes!("../icons/link-badge.png"),
+    include_bytes!("../icons/link-box.png"),
+    include_bytes!("../icons/link-chain.png"),
+    include_bytes!("../icons/link-corner.png"),
+    include_bytes!("../icons/link-mac.png"),
+    include_bytes!("../icons/link-win95.png"),
+];
+/// … and how big, in % of Windows' own size (`Ui::link_size`).
+const ARROW_SIZES: std::ops::RangeInclusive<u8> = 50..=200;
 const WM_RESULT: u32 = WM_APP + 1;
 const WM_ICON: u32 = WM_APP + 2;
 const WM_INSTALLED: u32 = WM_APP + 3;
@@ -962,7 +978,8 @@ struct Ui {
     smooth: bool, // glide on wheel / scrollbar paging, else jump
     folder_color: bool, // folder names in the accent colour (off: plain text, like files)
     folder_icons: u8,   // View > Icons…: a tile of a folder of one kind of file shows 0 that kind's folder, 1 what's inside, 2 both
-    link_icons: u8,     // and a shortcut's tile 0 its own icon, 1 what it opens, 2 what it opens with the arrow
+    link_arrow: u8,     // … the arrow on a shortcut's tile: an index into `ARROWS`
+    link_size: u8,      // … how big, in % of Windows' own size (`ARROW_SIZES`)
     hist: std::cell::RefCell<(Vec<String>, usize)>, // folders / searches visited (browse_to) and where we are in them
     tabs: Vec<Tab>,
     ghosts: Vec<Ghost>, // tabs just closed, folding away
@@ -1024,7 +1041,7 @@ struct Ui {
     thumb_order: VecDeque<String>,
     thumb_bytes: usize,
     thumb_pending: HashSet<String>,
-    link_ov: Option<Option<Pic>>, // the shortcut arrow, made on first use
+    link_ov: HashMap<i32, Option<Pic>>, // the shortcut arrow, made at each size it's drawn at
     kinds: HashMap<String, (u8, u64)>,      // folder path -> what its files all are (see `crate::folder_kind`); 0 = mixed
     kind_pending: HashSet<String>,
     special: HashSet<String>,        // Desktop, Downloads, Documents, Pictures, Music, Videos: they keep their own shell icon
@@ -1122,7 +1139,7 @@ view! {
     thumb_order: VecDeque<String>,
     thumb_bytes: usize,
     thumb_pending: HashSet<String>,
-    link_ov: Option<Option<Pic>>,
+    link_ov: HashMap<i32, Option<Pic>>,
     jumbo: HashMap<(String, i32), Option<Pic>>,
     busy: Option<Instant>,
     want_y: Option<f64>,
@@ -1533,7 +1550,8 @@ pub fn run() {
             smooth: get("smooth") != "0",
             folder_color: get("folder_color") == "1",
             folder_icons: get("folder_icons").parse().map_or(2, |v: u8| v.min(2)),
-            link_icons: get("link_icons").parse().map_or(2, |v: u8| v.min(2)),
+            link_arrow: get("link_arrow").parse().map_or(0, |v: u8| v.min(ARROWS.len() as u8 - 1)),
+            link_size: get("link_size").parse().map_or(100, |v: u8| v.clamp(*ARROW_SIZES.start(), *ARROW_SIZES.end())),
             hist: Default::default(),
             tabs: vec![Tab::new(0)],
             ghosts: Vec::new(),
@@ -1590,7 +1608,7 @@ pub fn run() {
             thumb_order: VecDeque::new(),
             thumb_bytes: 0,
             thumb_pending: HashSet::new(),
-            link_ov: None,
+            link_ov: HashMap::new(),
             kinds: load_kinds(),
             kind_pending: HashSet::new(),
             special: side::special_dirs(),
@@ -2037,15 +2055,16 @@ type Px = (Vec<u8>, i32, i32);
 /// A thumbnail key for View > Icons… Both: this, then the folder's path.
 const BOTH: &str = "\0both:";
 
-/// The first file directly in `dir` (by name) that is of `kind` (see [`crate::kind_of`]).
-fn first_of_kind(dir: &str, kind: u8) -> Option<std::path::PathBuf> {
-    let name = std::fs::read_dir(dir)
+/// The file directly in `dir` of `kind` (see [`crate::kind_of`]) that Windows previews on the folder: the last
+/// modified, the first by name among those modified at once.
+fn newest_of_kind(dir: &str, kind: u8) -> Option<std::path::PathBuf> {
+    let (_, _, name) = std::fs::read_dir(dir)
         .ok()?
         .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| crate::kind_of(n) == kind)
-        .min_by_key(|n| n.to_lowercase())?;
+        .filter_map(|e| e.metadata().ok().filter(|m| m.is_file()).map(|m| (m.modified().ok(), e.file_name().to_string_lossy().into_owned())))
+        .filter(|(_, n)| crate::kind_of(n) == kind)
+        .map(|(t, n)| (t, std::cmp::Reverse(n.to_lowercase()), n))
+        .max()?;
     Some(std::path::Path::new(dir).join(name))
 }
 
@@ -2696,7 +2715,7 @@ impl Ui {
             thumb_order: VecDeque::new(),
             thumb_bytes: 0,
             thumb_pending: HashSet::new(),
-            link_ov: None,
+            link_ov: HashMap::new(),
             jumbo: HashMap::new(),
             busy: None,
             want_y: None,
@@ -3975,7 +3994,7 @@ impl Ui {
         self.thumb_order.clear();
         self.thumb_bytes = 0;
         self.jumbo.clear();
-        self.link_ov = None;
+        self.link_ov.clear();
     }
     fn upload(&mut self, px: &[u8], w: i32, h: i32) -> Option<Pic> {
         if !self.canvas_ready() {
@@ -4086,18 +4105,29 @@ impl Ui {
         self.invalidate_all();
     }
 
-    /// Where the shortcut badge goes: a fifth of the icon, in its bottom-left corner.
-    fn badge(&self, x: i32, y: i32, w: i32, h: i32) -> RECT {
-        let s = (w.min(h) * 7 / 20).max(self.px(12));
-        RECT { left: x, top: y + h - s, right: x + s, bottom: y + h }
+    /// The shortcut arrow's look or size changed: only the arrows are made again; `save` once the choice is final.
+    fn arrow_changed(&mut self, save: bool) {
+        self.link_ov.clear();
+        for v in self.panes.iter_mut().flatten() {
+            v.link_ov.clear();
+        }
+        if save {
+            self.save_settings();
+        }
+        self.invalidate_all();
     }
 
-    fn link_overlay(&mut self) -> Option<Pic> {
-        if self.link_ov.is_none() {
-            let pic = png_pixels(include_bytes!("../icons/link-arrow.png"), 128).and_then(|(px, w, h)| self.upload(&px, w, h));
-            self.link_ov = Some(pic);
+    /// The shortcut arrow over the icon at (x, y, w, h), in its bottom-left corner, at 100 % as big as Windows draws its own:
+    /// 100 px on a 256 icon, 40 on 96, 20 on 48, 13 on 32, 8 on 16 (imageres.dll's overlay measured), made at that size.
+    fn link_badge(&mut self, x: i32, y: i32, w: i32, h: i32) -> Option<(Bitmap, RECT)> {
+        let n = w.max(h);
+        let s = ((n as f64 * 0.39 + 1.5) * self.link_size as f64 / 100.0).round().clamp(4.0, n.max(4) as f64) as i32;
+        if !self.link_ov.contains_key(&s) {
+            let pic = png_pixels(ARROWS[self.link_arrow as usize], s).and_then(|(px, w, h)| self.upload(&px, w, h));
+            self.link_ov.insert(s, pic);
         }
-        self.link_ov.clone().flatten()
+        let (bmp, _, _) = self.link_ov.get(&s).cloned().flatten()?;
+        Some((bmp, RECT { left: x, top: y + h - s, right: x + s, bottom: y + h }))
     }
 
     fn save_kinds(&mut self) {
@@ -4149,8 +4179,8 @@ impl Ui {
                 let key = self.icon_key(&r.path, r.is_dir);
                 // a plain folder: what's inside (View > Icons…), else the type's jumbo folder
                 let shown = r.tkey != "svg" && (!r.is_dir || r.own || key != r.path || self.folder_icons != 0);
-                let icon_only = r.is_dir && (r.own || key != r.path) || r.link && self.link_icons == 0;
-                let follow = r.link && self.link_icons != 0 && r.tkey == "lnk";
+                let icon_only = r.is_dir && (r.own || key != r.path);
+                let follow = r.link && r.tkey == "lnk";
                 // fetched: the kind's Windows folder (Type), else the item itself
                 let get = if key.starts_with(BOTH) { r.path.clone() } else { key.clone() };
                 shown.then(|| (key, get, icon_only, follow, self.both(&r.path, r.is_dir)))
@@ -4161,7 +4191,6 @@ impl Ui {
         for (key, p, icon_only, follow, both) in want.into_iter().rev() {
             self.thumb_pending.insert(key.clone());
             shell::shell_spawn(Box::new(move |dropped| {
-                let src = if follow { shell::link_target(&p).unwrap_or_else(|| p.clone()) } else { p.clone() };
                 // decoded and resampled here, on the helper's thread: the UI thread only uploads the pixels
                 let px = if dropped {
                     None
@@ -4169,7 +4198,7 @@ impl Ui {
                     // the kind's folder holding a preview of its first such file (that folder alone when there's none);
                     // drawn at full size, then made tile-sized as a whole, so its edges come out smooth
                     let icon = shell::thumbnail(&dir, ts, true).and_then(|b| png_pixels(&b, ts));
-                    let inner = first_of_kind(&p, kind).and_then(|f| {
+                    let inner = newest_of_kind(&p, kind).and_then(|f| {
                         let f = f.to_string_lossy();
                         // no preview (Windows answers with the icon itself): drawn as Windows draws an icon there
                         let b = shell::thumbnail(&f, ts, false)?;
@@ -4177,8 +4206,16 @@ impl Ui {
                         Some((b, icon))
                     });
                     icon.map(|i| shrink(inner.and_then(|(b, ic)| fold_in(&i, &b, ic)).unwrap_or(i), tile))
+                } else if follow {
+                    // what it opens when that has a picture of its own (a photo, a video...); else, as Explorer, the
+                    // shortcut's own icon: a custom one (a web app's) or one kept for a program since moved or removed
+                    let pic = shell::link_target(&p).and_then(|t| {
+                        let b = shell::thumbnail(&t, ts, false)?;
+                        (shell::thumbnail(&t, ts, true).as_ref() != Some(&b)).then_some(b)
+                    });
+                    pic.or_else(|| shell::thumbnail(&p, ts, true)).and_then(|b| png_pixels(&b, tile))
                 } else {
-                    shell::thumbnail(&src, ts, icon_only).and_then(|b| png_pixels(&b, tile))
+                    shell::thumbnail(&p, ts, icon_only).and_then(|b| png_pixels(&b, tile))
                 };
                 let p = key;
                 let b: Box<(String, Option<Px>, bool, i32)> = Box::new((p, px, dropped, tile));
@@ -5139,7 +5176,8 @@ impl Ui {
             ("smooth", (self.smooth as u8).to_string()),
             ("folder_color", (self.folder_color as u8).to_string()),
             ("folder_icons", self.folder_icons.to_string()),
-            ("link_icons", self.link_icons.to_string()),
+            ("link_arrow", self.link_arrow.to_string()),
+            ("link_size", self.link_size.to_string()),
             ("browse", self.browse.to_string()),
             ("side", (self.show_side as u8).to_string()),
             ("tags", (self.args.tags as u8).to_string()),
@@ -5682,7 +5720,7 @@ impl Ui {
         for i in i0..i1.max(i0) {
             let texts = self.item_texts(i);
             let Some((is_dir, sys, own, path, tkey, hidden, link)) = self.get(i).map(|r| (r.is_dir, r.sys, r.own, r.path.clone(), r.tkey.clone(), r.hidden, r.link)) else { continue };
-            let arrow = if link && self.link_icons != 1 { self.link_overlay() } else { None };
+            let arrow = link;
             let fade = if hidden { 0.5 } else { 1.0 };
             let color = if is_dir && self.folder_color { theme().accent } else { theme().text };
             let (dx, dy) = self.lag(&path); // sliding to its new place after a live refresh
@@ -5709,8 +5747,8 @@ impl Ui {
                         let (dw, dh) = ((w as f64 * k).round() as i32, (h as f64 * k).round() as i32);
                         let (x, y) = (pv.left + (tile - dw) / 2, pv.top + (tile - dh) / 2);
                         self.cl.bitmap(&bmp, &RECT { left: x, top: y, right: x + dw, bottom: y + dh }, fade);
-                        if let Some((ov, _, _)) = &arrow {
-                            self.cl.bitmap(ov, &self.badge(x, y, dw, dh), fade);
+                        if let Some((ov, r)) = arrow.then(|| self.link_badge(x, y, dw, dh)).flatten() {
+                            self.cl.bitmap(&ov, &r, fade);
                         }
                     }
                     // until then, the type's jumbo icon filling the box (.pv img.ph)
@@ -5745,8 +5783,8 @@ impl Ui {
                     let bs = self.px(18);
                     let (x, y) = (icon_x + (bs - w) / 2, bx.top + (bx.bottom - bx.top - h) / 2);
                     self.cl.bitmap(&bmp, &RECT { left: x, top: y, right: x + w, bottom: y + h }, fade);
-                    if let Some((ov, _, _)) = &arrow {
-                        self.cl.bitmap(ov, &self.badge(x, y, w, h), fade);
+                    if let Some((ov, r)) = arrow.then(|| self.link_badge(x, y, w, h)).flatten() {
+                        self.cl.bitmap(&ov, &r, fade);
                     }
                 }
                 if let Some(t) = &texts {
@@ -7969,6 +8007,27 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_folder_preview_is_the_newest_file_of_its_kind() {
+        let d = std::env::temp_dir().join(format!("mosaic-newest-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let t = std::time::SystemTime::now();
+        let at = |n: &str, secs: u64| {
+            let f = std::fs::File::create(d.join(n)).unwrap();
+            f.set_modified(t - std::time::Duration::from_secs(secs)).unwrap();
+        };
+        at("a.mp4", 300);
+        at("z.mp4", 10); // newest video, last by name
+        at("m.txt", 1); // newer, but not a video
+        let kind = crate::kind_of("x.mp4");
+        let pick = || newest_of_kind(d.to_str().unwrap(), kind).map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(pick().as_deref(), Some("z.mp4"));
+        at("b.mp4", 10);
+        at("z.mp4", 10); // a tie: the first by name
+        assert_eq!(pick().as_deref(), Some("b.mp4"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 
     #[test]
     fn both_puts_the_preview_in_the_kind_folder() {

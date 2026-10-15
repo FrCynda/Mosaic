@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256">
+  <!-- two chain links on the diagonal, white-edged so they read on any icon -->
+  <defs>
+    <linearGradient id="blue" gradientUnits="userSpaceOnUse" x1="10" y1="90" x2="90" y2="10">
+      <stop offset="0" stop-color="#0067C8"/>
+      <stop offset="1" stop-color="#2AA7EA"/>
+    </linearGradient>
+  </defs>
+  <g transform="rotate(-45 50 50)" fill="none" stroke-linejoin="round">
+    <g stroke="#FFF" stroke-width="22">
+      <rect x="8" y="36" width="48" height="28" rx="14"/>
+      <rect x="44" y="36" width="48" height="28" rx="14"/>
+    </g>
+    <rect x="8" y="36" width="48" height="28" rx="14" stroke="url(#blue)" stroke-width="10"/>
+    <rect x="44" y="36" width="48" height="28" rx="14" stroke="url(#blue)" stroke-width="10"/>
+  </g>
+</svg>

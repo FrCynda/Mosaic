@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256">
+  <!-- a round blue badge, a white arrow on it -->
+  <defs>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2AA7EA"/>
+      <stop offset="1" stop-color="#005FB8"/>
+    </linearGradient>
+  </defs>
+  <circle cx="50" cy="50" r="47" fill="url(#blue)" stroke="#FFFFFF" stroke-width="6"/>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <path d="M30 70 L66 34" stroke-width="10"/>
+    <path d="M44 32 H68 V56" stroke-width="10" stroke-linejoin="miter"/>
+  </g>
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256">
+  <!-- macOS's alias arrow: black, curving up and right, edged in white -->
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 88 C22 58 34 46 58 46" fill="none" stroke="#FFF" stroke-width="26"/>
+    <path d="M54 18 L90 46 L54 74 Z" fill="#FFF" stroke="#FFF" stroke-width="12"/>
+    <path d="M22 88 C22 58 34 46 58 46" fill="none" stroke="#111" stroke-width="14"/>
+    <path d="M54 18 L90 46 L54 74 Z" fill="#111" stroke="#111" stroke-width="2"/>
+  </g>
+</svg>

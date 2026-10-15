@@ -1,5 +1,6 @@
 //! View > Icons…: what a tile shows for a folder holding one kind of file (that kind's Windows folder, what's
-//! inside, or both) and for a shortcut (its own icon, what it opens, or both). Saved and shown at once.
+//! inside, or both), and which arrow marks a shortcut, how big.
+//! Saved and shown at once.
 
 use std::cell::RefCell;
 use std::ptr::{null, null_mut};
@@ -10,29 +11,49 @@ use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, Sc
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use super::gfx::{Canvas, Gfx};
+use super::gfx::{Bitmap, Canvas, Gfx};
 use super::themes::ink;
-use super::{put, put_mid, t, theme, w, wz, xy};
+use super::{png_pixels, put, put_mid, t, theme, w, wz, xy, ARROWS, ARROW_SIZES};
 
-// the layout, in CSS px from the top: two sections, each a heading, three choices and what the chosen one does
+// the layout, in CSS px from the top: the folders' section, a heading, three choices and what the chosen one does,
+// then the arrows (a size slider beside their heading), each a swatch with its name, five to a row
 const WIDTH: i32 = 520;
 const PAD: i32 = 24;
 const SECTION: [i32; 2] = [70, 196];
-const FOOT_TOP: i32 = 340;
+const SWATCH: i32 = 70;
+const PER_ROW: usize = 5;
+const ARROW: i32 = 32;
+const FOOT_TOP: i32 = SECTION[1] + 26 + 2 * SWATCH + 8 + 34;
 const HEIGHT: i32 = FOOT_TOP + 34 + PAD;
 
 // per section: heading, then (label, what it does) for each value
-const TEXT: [(&str, [(&str, &str); 3]); 2] = [
+const TEXT: [(&str, [(&str, &str); 3]); 1] = [
     ("icons.folders", [("icons.type", "icons.type_hint"), ("icons.contents", "icons.contents_hint"), ("icons.both", "icons.both_hint")]),
-    ("icons.links", [("icons.icon", "icons.icon_hint"), ("icons.target", "icons.target_hint"), ("icons.both", "icons.link_both_hint")]),
+];
+// (key, or a name said the same in every language)
+const ARROW_NAMES: [(&str, &str); 10] = [
+    ("", "Windows 11"),
+    ("icons.arrow_dark", ""),
+    ("icons.arrow_classic", ""),
+    ("icons.arrow_plain", ""),
+    ("icons.arrow_badge", ""),
+    ("icons.arrow_box", ""),
+    ("icons.arrow_chain", ""),
+    ("icons.arrow_corner", ""),
+    ("", "macOS"),
+    ("", "Windows 95"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Hot {
     Seg(usize, u8),
+    Arrow(u8),
+    Size,
     Done,
 }
 
@@ -42,7 +63,10 @@ struct Dlg {
     gfx: Gfx,
     cv: Canvas,
     scale: f64,
-    vals: [u8; 2], // folder_icons, link_icons
+    vals: [u8; 2], // folder_icons, link_arrow
+    arrows: (u32, Vec<Option<Bitmap>>), // the swatches' arrows, made on this canvas (its `gen`)
+    size: u8,      // link_size
+    sliding: bool, // the size knob held (the mouse captured)
     hot: Option<Hot>,
     press: Option<Hot>,
     tracking: bool,
@@ -68,6 +92,43 @@ impl Dlg {
         RECT { left: edge(i) - (i > 0) as i32, top, right: edge(i + 1), bottom: top + self.px(34) }
     }
 
+    /// Arrow `i`'s swatch.
+    fn swatch(&self, i: u8) -> RECT {
+        let (l, r) = (self.px(PAD), self.px(WIDTH - PAD));
+        let (col, row) = ((i as usize % PER_ROW) as i32, (i as usize / PER_ROW) as i32);
+        let edge = |i: i32| l + (r - l + self.px(8)) * i / PER_ROW as i32;
+        let top = self.px(SECTION[1] + 26 + row * (SWATCH + 8));
+        RECT { left: edge(col), top, right: edge(col + 1) - self.px(8), bottom: top + self.px(SWATCH) }
+    }
+
+    /// The size slider's track (as tall as its row, for the mouse), right of the arrows' heading after "Size".
+    fn track(&self) -> RECT {
+        let g = &self.gfx;
+        let (mid, r) = (self.px(WIDTH / 2), self.px(WIDTH - PAD));
+        let cy = self.px(SECTION[1]) + g.f.lh / 2;
+        RECT { left: mid + g.width(t("icons.arrow_size"), &g.f.reg) + self.px(16), top: cy - self.px(14), right: r - self.px(52), bottom: cy + self.px(14) }
+    }
+
+    /// The knob to x: the size it stands for, in steps of 10 %, shown at once (saved when let go).
+    fn slide(&mut self, x: i32) {
+        let tr = self.track();
+        let (a, b) = (*ARROW_SIZES.start() as f64, *ARROW_SIZES.end() as f64);
+        let f = ((x - tr.left) as f64 / (tr.right - tr.left).max(1) as f64).clamp(0.0, 1.0);
+        self.resize(((a + f * (b - a)) / 10.0).round() as u8 * 10, false);
+    }
+
+    fn resize(&mut self, v: u8, save: bool) {
+        let v = v.clamp(*ARROW_SIZES.start(), *ARROW_SIZES.end());
+        if v != self.size || save {
+            self.size = v;
+            super::with(|u| {
+                u.link_size = v;
+                u.arrow_changed(save);
+            });
+            unsafe { InvalidateRect(self.hwnd, null(), 0) };
+        }
+    }
+
     fn done(&self) -> RECT {
         let g = &self.gfx;
         let r = self.px(WIDTH - PAD);
@@ -80,7 +141,13 @@ impl Dlg {
         if inside(&self.done()) {
             return Some(Hot::Done);
         }
-        (0..2).flat_map(|k| (0..3).map(move |i| (k, i))).find(|&(k, i)| inside(&self.seg(k, i))).map(|(k, i)| Hot::Seg(k, i))
+        if inside(&self.track()) {
+            return Some(Hot::Size);
+        }
+        if let Some(i) = (0..ARROWS.len() as u8).find(|&i| inside(&self.swatch(i))) {
+            return Some(Hot::Arrow(i));
+        }
+        (0..TEXT.len()).flat_map(|k| (0..3).map(move |i| (k, i))).find(|&(k, i)| inside(&self.seg(k, i))).map(|(k, i)| Hot::Seg(k, i))
     }
 
     fn act(&mut self, k: usize, v: u8) {
@@ -89,10 +156,12 @@ impl Dlg {
         }
         self.vals[k] = v;
         super::with(|u| {
-            if k == 0 {
-                u.folder_icons = v;
-            } else {
-                u.link_icons = v;
+            match k {
+                0 => u.folder_icons = v,
+                _ => {
+                    u.link_arrow = v;
+                    return u.arrow_changed(true); // only the arrows made again, not every icon
+                }
             }
             u.icons_changed();
         });
@@ -100,6 +169,10 @@ impl Dlg {
     }
 
     fn paint(&mut self) {
+        if self.arrows.0 != self.cv.gen || self.arrows.1.is_empty() {
+            let s = self.px(ARROW);
+            self.arrows = (self.cv.gen, ARROWS.iter().map(|b| png_pixels(b, s).and_then(|(px, w, h)| self.cv.make_bitmap(&px, w, h))).collect());
+        }
         if !self.cv.begin() {
             return;
         }
@@ -136,6 +209,35 @@ impl Dlg {
                 cv.text(&tl, l, px(SECTION[k] + 70), th.muted);
             }
         }
+        put(g, cv, t("icons.arrow"), &g.f.semi, l, px(SECTION[1]), th.text);
+        // Size: a track, filled up to the knob, a tick at Windows' own size, the value
+        let tr = self.track();
+        let cy = (tr.top + tr.bottom) / 2;
+        let lo = *ARROW_SIZES.start() as i32;
+        let at = |v: i32| tr.left + (tr.right - tr.left) * (v - lo) / (*ARROW_SIZES.end() as i32 - lo);
+        put(g, cv, t("icons.arrow_size"), &g.f.reg, px(WIDTH / 2), mid_y(&tr), th.muted);
+        let (kx, bar) = (at(self.size as i32), px(2));
+        cv.rrect(&RECT { left: tr.left, top: cy - bar, right: tr.right, bottom: cy + bar }, bar as f32, Some(th.line), None);
+        cv.rrect(&RECT { left: tr.left, top: cy - bar, right: kx, bottom: cy + bar }, bar as f32, Some(th.accent), None);
+        let tick = at(100);
+        cv.fill(&RECT { left: tick, top: cy + px(5), right: tick + px(1).max(1), bottom: cy + px(9) }, th.muted, 1.0);
+        let big = hot(Hot::Size) || self.sliding;
+        cv.circle(kx as f32, cy as f32, rad(if big { 9.0 } else { 8.0 }), th.accent, 1.0);
+        cv.circle(kx as f32, cy as f32, rad(3.5), th.card, 1.0);
+        let val = RECT { left: tr.right + px(8), top: tr.top, right: r, bottom: tr.bottom };
+        put_mid(g, cv, &format!("{}%", self.size), &g.f.reg, &val, mid_y(&val), th.text);
+        for (i, name) in ARROW_NAMES.iter().enumerate() {
+            let (i, sel) = (i as u8, self.vals[1] == i as u8);
+            let rc = self.swatch(i);
+            cv.rrect(&rc, rad(6.0), Some(if sel { th.hl } else if hot(Hot::Arrow(i)) { th.row } else { th.card }), Some(if sel { th.accent } else { th.line }));
+            if let Some(Some(b)) = self.arrows.1.get(i as usize) {
+                let (a, x) = (px(ARROW), (rc.left + rc.right - px(ARROW)) / 2);
+                cv.bitmap(b, &RECT { left: x, top: rc.top + px(10), right: x + a, bottom: rc.top + px(10) + a }, 1.0);
+            }
+            let label = if name.0.is_empty() { name.1 } else { t(name.0) };
+            let row = RECT { top: rc.top + px(10 + ARROW + 4), bottom: rc.bottom - px(4), ..rc };
+            put_mid(g, cv, label, if sel { &g.f.semi } else { &g.f.reg }, &row, mid_y(&row), if sel { th.accent } else { th.muted });
+        }
         // footer: a rule, where it shows, Done
         let done = self.done();
         let rule = done.top - px(18);
@@ -158,7 +260,7 @@ pub fn open(owner: HWND) {
     if with(|p| unsafe { SetForegroundWindow(p.hwnd) }).is_some() {
         return;
     }
-    let Some(vals) = super::with(|u| [u.folder_icons, u.link_icons]) else { return };
+    let Some((vals, size)) = super::with(|u| ([u.folder_icons, u.link_arrow], u.link_size)) else { return };
     static CLASS: std::sync::Once = std::sync::Once::new();
     let class = wz("MosaicIcons");
     unsafe {
@@ -186,7 +288,7 @@ pub fn open(owner: HWND) {
         DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const std::ffi::c_void, 4);
         let dark: BOOL = theme().dark as i32;
         DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const std::ffi::c_void, 4);
-        let d = Dlg { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, vals, hot: None, press: None, tracking: false };
+        let d = Dlg { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, vals, arrows: (0, Vec::new()), size, sliding: false, hot: None, press: None, tracking: false };
         DLG.with(|c| *c.borrow_mut() = Some(d));
         EnableWindow(owner, 0);
         ShowWindow(hwnd, SW_SHOW);
@@ -235,6 +337,9 @@ unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESU
         WM_MOUSEMOVE => {
             let (x, y) = xy(l);
             with(|p| {
+                if p.sliding {
+                    return p.slide(x);
+                }
                 let hot = p.hit(x, y);
                 if hot != p.hot {
                     p.hot = hot;
@@ -258,7 +363,30 @@ unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESU
         }
         WM_LBUTTONDOWN => {
             let (x, y) = xy(l);
-            with(|p| p.press = p.hit(x, y));
+            let slide = with(|p| {
+                p.press = p.hit(x, y);
+                p.sliding = p.press == Some(Hot::Size);
+                if p.sliding {
+                    p.slide(x);
+                }
+                p.sliding
+            });
+            if slide == Some(true) {
+                SetCapture(h);
+            }
+            return 0;
+        }
+        WM_LBUTTONUP if with(|p| p.sliding) == Some(true) => {
+            ReleaseCapture(); // → WM_CAPTURECHANGED, which saves
+            return 0;
+        }
+        WM_CAPTURECHANGED => {
+            with(|p| {
+                if std::mem::take(&mut p.sliding) {
+                    p.press = None;
+                    p.resize(p.size, true);
+                }
+            });
             return 0;
         }
         WM_LBUTTONUP => {
@@ -266,13 +394,16 @@ unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESU
             match with(|p| p.press.take().filter(|&b| p.hit(x, y) == Some(b))).flatten() {
                 Some(Hot::Done) => close(),
                 Some(Hot::Seg(k, i)) => _ = with(|p| p.act(k, i)),
-                None => {}
+                Some(Hot::Arrow(i)) => _ = with(|p| p.act(1, i)),
+                Some(Hot::Size) | None => {}
             }
             return 0;
         }
         WM_KEYDOWN => {
-            if matches!(wp as u16, VK_ESCAPE | VK_RETURN) {
-                close();
+            match wp as u16 {
+                VK_ESCAPE | VK_RETURN => close(),
+                k @ (VK_LEFT | VK_RIGHT) => _ = with(|p| p.resize(if k == VK_LEFT { p.size.saturating_sub(10) } else { p.size + 10 }, true)),
+                _ => {}
             }
             return 0;
         }

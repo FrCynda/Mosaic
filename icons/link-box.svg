@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256">
+  <!-- a cardboard box seen from the front: the lid's edge on top, one face with its handle hole -->
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#DDAE6C"/>
+      <stop offset="1" stop-color="#C48C4C"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C99555"/>
+      <stop offset="1" stop-color="#A97536"/>
+    </linearGradient>
+  </defs>
+  <rect x="9" y="32" width="82" height="64" rx="5" fill="url(#face)" stroke="#8A5A26" stroke-width="2.5"/>
+  <rect x="3" y="12" width="94" height="24" rx="5" fill="url(#lid)" stroke="#8A5A26" stroke-width="2.5"/>
+  <rect x="5" y="31" width="90" height="3" fill="#000" opacity=".12"/>
+  <rect x="33" y="50" width="34" height="13" rx="6.5" fill="#5A3815"/>
+  <rect x="35" y="52" width="30" height="4" rx="2" fill="#000" opacity=".25"/>
+</svg>

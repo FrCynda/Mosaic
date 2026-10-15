@@ -1,8 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- body -->
-  <rect x="40" y="96" width="176" height="124" rx="8" fill="#C99A5B"/>
-  <!-- lid -->
-  <rect x="28" y="52" width="200" height="52" rx="8" fill="#B07F45"/>
-  <!-- handle cutout -->
-  <rect x="94" y="132" width="68" height="22" rx="11" fill="#6E4A24"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256">
+  <!-- the arrow alone, no tile: blue, its white outline keeping it clear on any picture -->
+  <defs>
+    <linearGradient id="blue" gradientUnits="userSpaceOnUse" x1="14" y1="14" x2="88" y2="88">
+      <stop offset="0" stop-color="#26A6E6"/>
+      <stop offset="1" stop-color="#0067C0"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 84 L78 22" stroke-width="27"/>
+    <path d="M40 20 H80 V60" stroke-width="26"/>
+  </g>
+  <g fill="none" stroke="url(#blue)" stroke-linecap="round" stroke-linejoin="miter">
+    <path d="M16 84 L78 22" stroke-width="15"/>
+    <path d="M40 20 H80 V60" stroke-width="14"/>
+  </g>
 </svg>

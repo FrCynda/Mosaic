@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256" shape-rendering="crispEdges">
+  <!-- Windows 95's: a white box with a black edge, a black curved arrow -->
+  <rect x="3" y="3" width="94" height="94" fill="#FFF" stroke="#000" stroke-width="6"/>
+  <path d="M24 82 C24 58 34 48 56 48" fill="none" stroke="#000" stroke-width="13" shape-rendering="geometricPrecision"/>
+  <path d="M52 24 L82 48 L52 72 Z" fill="#000" shape-rendering="geometricPrecision"/>
+</svg>
