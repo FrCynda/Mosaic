@@ -601,6 +601,10 @@ fn main() {
         let choice: Vec<(String, String)> = std::env::args().skip(k + 2).filter_map(|a| a.split_once('=').map(|(r, n)| (r.to_string(), n.to_string()))).collect();
         std::process::exit(i32::from(native::dist(std::path::Path::new(&dir), &choice).is_err()));
     }
+    if std::env::args().any(|a| a == "--dialogs") {
+        native::save::watch_main();
+        return;
+    }
     if std::env::args().any(|a| a == "--shell-menu") {
         shell::menu_main();
         return;

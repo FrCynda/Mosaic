@@ -118,6 +118,11 @@ pub fn desktop() -> Option<String> {
     known(&FOLDERID_Desktop, "").map(|i| i.target)
 }
 
+/// The user's own folders, Downloads first, wherever they are.
+pub fn user_dirs() -> Vec<String> {
+    [&FOLDERID_Downloads, &FOLDERID_Desktop, &FOLDERID_Documents, &FOLDERID_Pictures, &FOLDERID_Music, &FOLDERID_Videos, &FOLDERID_Profile].into_iter().filter_map(|id| known(id, "")).map(|i| i.target).collect()
+}
+
 /// Folders with a unique Windows icon of their own (lowercased paths), wherever they are listed.
 pub fn special_dirs() -> std::collections::HashSet<String> {
     [&FOLDERID_Desktop, &FOLDERID_Downloads, &FOLDERID_Documents, &FOLDERID_Pictures, &FOLDERID_Music, &FOLDERID_Videos].into_iter().filter_map(|id| known(id, "")).map(|i| i.target.to_lowercase()).collect()

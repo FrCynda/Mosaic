@@ -14,6 +14,8 @@ mod themes;
 mod tabs;
 #[path = "native_drop.rs"]
 mod dnd;
+#[path = "native_save.rs"]
+pub mod save;
 use tabs::*;
 
 use std::cell::RefCell;
@@ -55,6 +57,7 @@ const T_POLL: usize = 2;
 const T_FLASH: usize = 3;
 const T_THUMB: usize = 4;
 const T_PREVIEW: usize = 5;
+const T_UNCLOAK: usize = 8; // the window shown even if its first frame never came
 const T_RENAME: usize = 7; // a second, slow click on a selected item's name: rename it, unless a double-click follows
 const G: i32 = 6; // grid: gutter between a cell's edge and its clickable box
 const SB: i32 = 12; // width kept free for the scrollbar at the list's right edge
@@ -391,6 +394,20 @@ unsafe fn fullscreen(h: HWND) {
     SetWindowPos(h, HWND_TOP, m.left, m.top, m.right - m.left, m.bottom - m.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
 }
 thread_local!(static FULL: std::cell::Cell<Option<WINDOWPLACEMENT>> = const { std::cell::Cell::new(None) });
+// The window is on screen but cloaked until its first frame is drawn: Windows would show it white until then.
+thread_local!(static CLOAKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+unsafe fn cloak(h: HWND, on: bool) {
+    let v: i32 = on as i32;
+    DwmSetWindowAttribute(h, 13, &v as *const _ as *const c_void, 4); // DWMWA_CLOAK
+    CLOAKED.set(on);
+    if on {
+        SetTimer(h, T_UNCLOAK, 500, None);
+    } else {
+        KillTimer(h, T_UNCLOAK);
+        save::on_screen();
+    }
+}
 
 /// The window's place for the settings: "left,top,right,bottom,maximized" of its normal (restored) size. While
 /// full screen, the place it had before.
@@ -541,6 +558,11 @@ enum Hit {
     TabList,          // ▾ after the tabs: every tab in a menu
     Scroll(bool),     // the strip's ‹ › when its tabs scroll (true: on to the right)
     TreePane(usize, usize), // vertical tabs: a split tab's pane under it (tab, pane)
+    SaveName,   // Save window (native_save.rs): the name box
+    SaveType,   // … the type dropdown
+    SaveOk,     // … Save
+    SaveCancel, // … Cancel
+    SaveWin,    // … the Windows dialog instead
 }
 
 /// How a tab's room is shared: one pane, or two parts side by side (`vert`) or stacked. `shown` is the share `a`
@@ -1253,6 +1275,7 @@ pub fn dist(dir: &std::path::Path, choice: &[(String, String)]) -> std::io::Resu
     stamp(&me, &dir.join("mosaic.exe"), "Mosaic", pick("main", default_set("main")))?;
     stamp(&me, &dir.join("mosaic-content.exe"), "Mosaic Content Index", pick("content", default_set("content")))?;
     stamp(&me, &dir.join("mosaic-thumbs.exe"), "Mosaic Thumbnails", pick("thumbs", default_set("thumbs")))?;
+    stamp(&me, &dir.join("mosaic-dialogs.exe"), "Mosaic Save Window", pick("thumbs", default_set("thumbs")))?;
     std::fs::write(dir.join("icons.txt"), choice.iter().map(|(r, n)| format!("{r}={n}
 ")).collect::<String>())
 }
@@ -1268,6 +1291,11 @@ pub fn index_icons(dir: &std::path::Path) -> [(i32, &'static [u8]); 8] {
 /// instead of flickering under whatever launched it.
 pub fn content_exe() -> std::io::Result<std::path::PathBuf> {
     stamped_helper("mosaic-content.exe", "Mosaic Content Index", default_set("content"))
+}
+
+/// `mosaic-dialogs.exe`: the `--dialogs` watcher that puts Mosaic in place of Firefox's Save window (native_save.rs).
+pub fn dialogs_exe() -> std::io::Result<std::path::PathBuf> {
+    stamped_helper("mosaic-dialogs.exe", "Mosaic Save Window", default_set("thumbs"))
 }
 
 /// `mosaic-thumbs.exe`: the `--shell-helper` thumbnail/icon workers (up to 4, one per worker
@@ -1380,6 +1408,8 @@ pub fn run() {
 
         let st = load_settings();
         let get = |k: &str| st.get(k).cloned().unwrap_or_default();
+        save::load(&st);
+        save::begin(); // `--save`: this window answers a Save dialog
         set_theme(&get("theme"));
         apply_titlebar(main);
         if !get("lang").is_empty() {
@@ -1583,6 +1613,7 @@ pub fn run() {
             ui.isz = cy;
         }
         SendMessageW(edit, WM_SETFONT, ui.edit_font as usize, 0);
+        save::create(main, ui.edit_font);
         ui.run(false);
         UI.with(|u| *u.borrow_mut() = Some(ui));
         with(|u| u.restore());
@@ -1590,6 +1621,7 @@ pub fn run() {
         SetTimer(main, T_POLL, 500, None);
         // where and how big it was when last closed (not a window torn off another: that one opens at the cursor)
         let wp = st.get("place").filter(|_| with(|u| !u.secondary) == Some(true)).and_then(|s| placement(s));
+        cloak(main, true);
         match wp {
             Some(wp) => {
                 SetWindowPlacement(main, &wp); // shows it, maximized or not; moved onto a screen if its own is gone
@@ -1599,6 +1631,7 @@ pub fn run() {
             }
         }
         SetFocus(edit);
+        save::shown();
         pump();
     }
 }
@@ -1651,6 +1684,13 @@ fn open_item(p: &str) {
         Some(t) if std::fs::metadata(t).is_ok_and(|m| m.is_dir()) => t.as_str(),
         _ => p,
     };
+    if save::active() {
+        // a Save/Open/folder window: a folder opens here, a file may be the answer
+        if let Some(main) = with(|u| u.main) {
+            unsafe { save::open(main, p) };
+        }
+        return;
+    }
     if with(|u| u.browse > 0).unwrap_or(false) && (std::fs::metadata(p).is_ok_and(|m| m.is_dir()) || crate::direct::server(p)) {
         with(|u| u.go_dir(p));
     } else {
@@ -1728,6 +1768,17 @@ unsafe fn dispatch(msg: &MSG) {
         if under != msg.hwnd && with(|u| u.on_list(under, |_| ()).is_some()) == Some(true) {
             SendMessageW(under, msg.message, msg.wParam, msg.lParam);
             return;
+        }
+    }
+    if save::is_name(msg.hwnd) {
+        // the name box: Enter answers, Esc cancels; for a Save, nothing a file name can't have (Open and folder
+        // take paths and "a" "b")
+        let main = GetParent(msg.hwnd);
+        match msg.message {
+            WM_KEYDOWN if msg.wParam == VK_RETURN as usize => return save::commit(main),
+            WM_KEYDOWN if msg.wParam == VK_ESCAPE as usize => return save::cancel(main),
+            WM_CHAR if save::kind_of() == Some(save::Kind::Save) && char::from_u32(msg.wParam as u32).is_some_and(|c| BAD_NAME.contains(c)) => return bad_name_tip(msg.hwnd),
+            _ => {}
         }
     }
     if msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize && with(|u| u.drag.as_ref().is_some_and(|d| d.on)) == Some(true) {
@@ -3394,6 +3445,7 @@ impl Ui {
             self.sel = Sel::default();
             self.focus = None;
             self.anchor = None;
+            save::picked(self); // a folder picker's box: the folder now on screen
         } else {
             if !kept.is_empty() || focus.is_some() {
                 let mut sel = Sel::default();
@@ -3525,6 +3577,7 @@ impl Ui {
             return true;
         }
         let (count, changes) = (st.count, st.changes);
+        save::poll();
         if watch(&self.args.q) {
             self.run(true); // a folder the index doesn't see (a USB stick…) changed
         }
@@ -3892,7 +3945,7 @@ impl Ui {
             Hit::PaneClose(_) => "Ctrl+W".into(),
             Hit::Gutter(_) | Hit::ColEdge(..) => String::new(),
             Hit::Split => t("tip.split").into(),
-            Hit::Search => String::new(),
+            Hit::Search | Hit::SaveName | Hit::SaveType | Hit::SaveOk | Hit::SaveCancel | Hit::SaveWin => String::new(),
             Hit::Menu(i) => menu_bar_labels().get(i).copied().unwrap_or_default().into(),
             // in full: the tab may cut it short (its card says more)
             Hit::Tab(k) => if self.tp.cards { String::new() } else { self.tab_name(k) },
@@ -4149,6 +4202,7 @@ impl Ui {
         self.invalidate();
         self.want_preview();
         self.linked();
+        save::picked(self);
     }
 
     /// What the preview pane should show: the one selected file, else a note.
@@ -4620,6 +4674,7 @@ impl Ui {
             // the side panels: flush against the window's edges, from the toolbar down to the status bar, a hairline
             // between them and the lists, which run right up to it (no strip of background between)
             let (top, mut bottom) = (self.head_h, self.status_top);
+            bottom -= self.place_save(wd, box_h, tm.tmHeight, &mut hits);
             let mut left = 0;
             match pos {
                 1 => {
@@ -4754,6 +4809,8 @@ impl Ui {
             ("lang", crate::i18n::lang()),
             ("tabs", serde_json::to_string(&self.tp).unwrap_or_default()),
             ("sidebar", side::prefs_json()),
+            ("save_dialog", (save::on() as u8).to_string()),
+            ("save_dir", save::last_dir()),
             ("place", if self.secondary { load_settings().remove("place").unwrap_or_default() } else { unsafe { place_of(self.main) } }),
         ]);
         let new = serde_json::to_string(&m).unwrap_or_default();
@@ -4827,6 +4884,8 @@ impl Ui {
         let &(_, hit) = self.hits.iter().find(|(r, _)| inside(r, x, y))?;
         match hit {
             Hit::Filter | Hit::Sort | Hit::Preview | Hit::Side | Hit::Lang | Hit::Menu(_) => return Some(hit),
+            Hit::SaveType | Hit::SaveOk | Hit::SaveCancel | Hit::SaveWin => return Some(hit),
+            Hit::SaveName => save::focus(),
             Hit::Back | Hit::Fwd => self.go_hist(hit == Hit::Back),
             Hit::Tab(k) => self.switch_tab(k),
             Hit::TabClose(k) => self.drop_tab(k, true),
@@ -4932,6 +4991,7 @@ impl Ui {
         cv.fill(&RECT { top: self.status_top, ..c }, theme().card, 1.0);
         cv.fill(&RECT { top: self.status_top, bottom: self.status_top + 1, ..c }, theme().line, 1.0);
         cv.fill(&RECT { top: self.menu_h, bottom: self.menu_h + 1, ..c }, theme().line, 1.0);
+        self.paint_save(c.right);
         let hot = |h: Hit| self.hot == Some(h);
         for &(r, h) in &self.hits {
             if let Hit::Menu(i) = h {
@@ -6749,10 +6809,10 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             ]
         })
         .unwrap_or_default(),
-        4 => vec![(t("menu.language").into(), String::new(), false)],
+        4 => vec![(t("menu.language").into(), String::new(), false), sep(), (t("menu.save_dialog").into(), String::new(), save::on())],
         _ => vec![(t("menu.about").into(), String::new(), false)],
     };
-    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2 | 3), items, false) else { return };
+    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2..=4), items, false) else { return };
     match (menu, k) {
         (0, 0) => act(Act::Open),
         (0, 1) => act(Act::Reveal),
@@ -6833,6 +6893,10 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             });
         }
         (4, 0) => drop_menu(main, Hit::Lang),
+        (4, 2) => {
+            save::set_on(!save::on());
+            with(|u| u.save_settings());
+        }
         (5, 0) => show_about(main),
         _ => {}
     }
@@ -6866,6 +6930,11 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             BeginPaint(h, &mut ps);
             with(|u| u.paint_main());
             EndPaint(h, &ps);
+            if CLOAKED.get() {
+                // the panes are windows of their own: drawn now, then the whole shows at once
+                RedrawWindow(h, null(), null_mut(), RDW_UPDATENOW | RDW_ALLCHILDREN);
+                cloak(h, false);
+            }
             return 0;
         }
         WM_SIZE => {
@@ -6897,6 +6966,12 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
             return b.unwrap().1;
         }
+        WM_COMMAND if wp & 0xffff == save::ID => {
+            if matches!((wp >> 16) as u32, 0x0100 | 0x0200) {
+                InvalidateRect(h, null(), 0); // EN_SETFOCUS / EN_KILLFOCUS: the name box's focus ring
+            }
+            return 0;
+        }
         WM_COMMAND => {
             match (wp >> 16) as u32 {
                 0x0300 => {
@@ -6923,6 +6998,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                         u.typed();
                     });
                 }
+                T_UNCLOAK => cloak(h, false),
                 T_POLL => {
                     if with(|u| u.poll()) == Some(true) {
                         offer_install(h);
@@ -7041,6 +7117,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_CLOSE => {
+            save::closing();
             let n = with(|u| if u.merged { 0 } else { u.tabs.len() }).unwrap_or(0);
             if n > 10 {
                 let text = wz(&t("tabs.close_many").replace("{n}", &n.to_string()));
@@ -7079,6 +7156,10 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 Some(Hit::Preview) => toggle_preview(),
                 Some(Hit::Side) => toggle_side(),
                 Some(Hit::Menu(i)) => menu_bar_popup(h, i),
+                Some(Hit::SaveType) => save::type_menu(h),
+                Some(Hit::SaveOk) => save::commit(h),
+                Some(Hit::SaveCancel) => save::cancel(h),
+                Some(Hit::SaveWin) => save::give_back(h),
                 Some(Hit::TabList) => {
                     if let Some(r) = with(|u| u.hits.iter().find(|x| x.1 == Hit::TabList).map(|x| x.0)).flatten() {
                         tab_list_menu(h, r);
