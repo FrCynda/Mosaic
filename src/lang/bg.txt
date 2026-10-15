@@ -313,6 +313,7 @@ keys.move_right=Преместване на раздела надясно
 act.open_parent_tab=Отваряне на папката му в нов раздел
 save.title=Запиши като
 save.name_label=Име на файл:
+save.type_label=Тип на файла:
 save.save=Запиши
 save.cancel=Отказ
 save.windows=Диалог на Windows

@@ -313,6 +313,7 @@ keys.move_right=Siirrä välilehti oikealle
 act.open_parent_tab=Avaa sen kansio uudessa välilehdessä
 save.title=Tallenna nimellä
 save.name_label=Tiedostonimi:
+save.type_label=Tallennusmuoto:
 save.save=Tallenna
 save.cancel=Peruuta
 save.windows=Windowsin valintaikkuna

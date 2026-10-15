@@ -313,6 +313,7 @@ keys.move_right=Skuif oortjie regs
 act.open_parent_tab=Maak sy vouer in nuwe oortjie oop
 save.title=Stoor as
 save.name_label=Lêernaam:
+save.type_label=Stoor as tipe:
 save.save=Stoor
 save.cancel=Kanselleer
 save.windows=Windows-dialoog

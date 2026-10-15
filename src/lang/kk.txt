@@ -313,6 +313,7 @@ keys.move_right=Қойындыны оңға жылжыту
 act.open_parent_tab=Оның қалтасын жаңа қойындыда ашу
 save.title=Басқаша сақтау
 save.name_label=Файл аты:
+save.type_label=Файл түрі:
 save.save=Сақтау
 save.cancel=Бас тарту
 save.windows=Windows сұхбат терезесі

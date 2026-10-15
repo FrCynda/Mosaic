@@ -315,6 +315,7 @@ keys.move_right=Premakni zavihek desno
 act.open_parent_tab=Odpri njegovo mapo v novem zavihku
 save.title=Shrani kot
 save.name_label=Ime datoteke:
+save.type_label=Vrsta datoteke:
 save.save=Shrani
 save.cancel=Prekliči
 save.windows=Pogovorno okno Windows

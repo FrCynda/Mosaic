@@ -315,6 +315,7 @@ keys.move_right=Перамясціць укладку ўправа
 act.open_parent_tab=Адкрыць яго папку ў новай укладцы
 save.title=Захаваць як
 save.name_label=Імя файла:
+save.type_label=Тып файла:
 save.save=Захаваць
 save.cancel=Скасаваць
 save.windows=Дыялог Windows

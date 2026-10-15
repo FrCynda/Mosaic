@@ -312,6 +312,7 @@ keys.move_right=Di chuyển thẻ sang phải
 act.open_parent_tab=Mở thư mục chứa trong thẻ mới
 save.title=Lưu thành
 save.name_label=Tên tệp:
+save.type_label=Kiểu tệp:
 save.save=Lưu
 save.cancel=Hủy
 save.windows=Hộp thoại Windows

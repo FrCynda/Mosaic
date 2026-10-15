@@ -313,6 +313,7 @@ keys.move_right=ടാബ് വലത്തേക്ക് നീക്കു�
 act.open_parent_tab=അതിന്റെ ഫോൾഡർ പുതിയ ടാബിൽ തുറക്കുക
 save.title=ഇങ്ങനെ സേവ് ചെയ്യുക
 save.name_label=ഫയലിന്റെ പേര്:
+save.type_label=ഫയൽ തരം:
 save.save=സേവ് ചെയ്യുക
 save.cancel=റദ്ദാക്കുക
 save.windows=Windows ഡയലോഗ്

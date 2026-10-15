@@ -942,6 +942,7 @@ struct Ui {
     search_box: RECT,
     lh: RECT,
     status_top: i32, // the status bar along the bottom
+    save_top: i32,   // a Save/Open window's bar under it (the window's height when none)
     sys: HashMap<String, i32>,
     himl: isize,
     isz: i32,
@@ -1509,6 +1510,7 @@ pub fn run() {
             search_box: zeroed(),
             lh: zeroed(),
             status_top: 0,
+            save_top: 0,
             sys: HashMap::new(),
             himl: 0,
             isz: 16,
@@ -4643,7 +4645,8 @@ impl Ui {
             // status bar along the bottom (text on the left). At its right, like Explorer's and Everything's:
             // the active filter, then the view controls. Right to left: [List|Grid], 10, (grid: ▲, sort), names, 10, filter
             let bar_h = lh + px(12);
-            self.status_top = ht - bar_h;
+            self.save_top = ht - self.save_height(box_h);
+            self.status_top = self.save_top - bar_h;
             let ctl_h = lh + px(4);
             let y = self.status_top + 1 + (bar_h - 1 - ctl_h) / 2;
             let mut x = wd - px(10);
@@ -4675,7 +4678,7 @@ impl Ui {
             // the side panels: flush against the window's edges, from the toolbar down to the status bar, a hairline
             // between them and the lists, which run right up to it (no strip of background between)
             let (top, mut bottom) = (self.head_h, self.status_top);
-            bottom -= self.place_save(wd, box_h, tm.tmHeight, &mut hits);
+            self.place_save(wd, box_h, tm.tmHeight, &mut hits);
             let mut left = 0;
             match pos {
                 1 => {
@@ -5092,9 +5095,9 @@ impl Ui {
             }
         }
         // status text: left of the status bar's controls, cut with "…" where they begin
-        let stop = self.hits.iter().filter(|x| x.0.top >= self.status_top).map(|x| x.0.left).min().unwrap_or(c.right);
+        let stop = self.hits.iter().filter(|x| x.0.top >= self.status_top && x.0.top < self.save_top).map(|x| x.0.left).min().unwrap_or(c.right);
         if let Some(t) = g.layout(&w(&self.status()), &g.f.reg, (stop - px(20)) as f32, lh as f32) {
-            cv.text(&t, px(10), self.status_top + 1 + (c.bottom - self.status_top - 1 - lh) / 2, theme().muted);
+            cv.text(&t, px(10), self.status_top + 1 + (self.save_top - self.status_top - 1 - lh) / 2, theme().muted);
         }
         // each pane's caption and column header
         for (id, _) in self.areas.clone() {

@@ -313,6 +313,7 @@ keys.move_right=Tab nach rechts verschieben
 act.open_parent_tab=Seinen Ordner in neuem Tab öffnen
 save.title=Speichern unter
 save.name_label=Dateiname:
+save.type_label=Dateityp:
 save.save=Speichern
 save.cancel=Abbrechen
 save.windows=Windows-Dialog

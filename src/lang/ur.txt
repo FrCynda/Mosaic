@@ -313,6 +313,7 @@ keys.move_right=ٹیب دائیں منتقل کریں
 act.open_parent_tab=اس کا فولڈر نئے ٹیب میں کھولیں
 save.title=بطور محفوظ کریں
 save.name_label=فائل کا نام:
+save.type_label=فائل کی قسم:
 save.save=محفوظ کریں
 save.cancel=منسوخ کریں
 save.windows=Windows ڈائیلاگ

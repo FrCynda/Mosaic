@@ -312,6 +312,7 @@ keys.move_right=Ilipat ang tab pakanan
 act.open_parent_tab=Buksan ang folder nito sa bagong tab
 save.title=I-save bilang
 save.name_label=Pangalan ng file:
+save.type_label=I-save bilang uri:
 save.save=I-save
 save.cancel=Kanselahin
 save.windows=Windows dialog

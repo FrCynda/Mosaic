@@ -313,6 +313,7 @@ keys.move_right=Sekmeyi sağa taşı
 act.open_parent_tab=Klasörünü yeni sekmede aç
 save.title=Farklı kaydet
 save.name_label=Dosya adı:
+save.type_label=Kayıt türü:
 save.save=Kaydet
 save.cancel=İptal
 save.windows=Windows iletişim kutusu

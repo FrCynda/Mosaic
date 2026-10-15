@@ -313,6 +313,7 @@ keys.move_right=ትሩን ወደ ቀኝ አንቀሳቅስ
 act.open_parent_tab=አቃፊውን በአዲስ ትር ክፈት
 save.title=አስቀምጥ እንደ
 save.name_label=የፋይል ስም:
+save.type_label=የፋይል አይነት:
 save.save=አስቀምጥ
 save.cancel=ሰርዝ
 save.windows=የWindows መገናኛ

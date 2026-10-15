@@ -312,6 +312,7 @@ keys.move_right=Bufee taabụ n'aka nri
 act.open_parent_tab=Mepee igbe akwụkwọ ya na taabụ ọhụrụ
 save.title=Chekwaa dị ka
 save.name_label=Aha faịlụ:
+save.type_label=Ụdị faịlụ:
 save.save=Chekwaa
 save.cancel=Kagbuo
 save.windows=Igbe Windows

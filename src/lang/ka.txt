@@ -313,6 +313,7 @@ keys.move_right=ჩანართის მარჯვნივ გადა�
 act.open_parent_tab=მისი საქაღალდის ახალ ჩანართში გახსნა
 save.title=შენახვა როგორც
 save.name_label=ფაილის სახელი:
+save.type_label=ფაილის ტიპი:
 save.save=შენახვა
 save.cancel=გაუქმება
 save.windows=Windows-ის დიალოგი

@@ -312,6 +312,7 @@ keys.move_right=タブを右へ移動
 act.open_parent_tab=格納フォルダーを新しいタブで開く
 save.title=名前を付けて保存
 save.name_label=ファイル名:
+save.type_label=ファイルの種類:
 save.save=保存
 save.cancel=キャンセル
 save.windows=Windows のダイアログ

@@ -314,6 +314,7 @@ keys.move_right=Premesti karticu desno
 act.open_parent_tab=Otvori njegovu fasciklu u novoj kartici
 save.title=Sačuvaj kao
 save.name_label=Ime datoteke:
+save.type_label=Tip datoteke:
 save.save=Sačuvaj
 save.cancel=Otkaži
 save.windows=Windows dijalog

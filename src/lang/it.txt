@@ -313,6 +313,7 @@ keys.move_right=Sposta scheda a destra
 act.open_parent_tab=Apri la sua cartella in una nuova scheda
 save.title=Salva con nome
 save.name_label=Nome file:
+save.type_label=Salva come:
 save.save=Salva
 save.cancel=Annulla
 save.windows=Finestra di Windows

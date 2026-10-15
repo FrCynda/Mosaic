@@ -317,6 +317,7 @@ keys.move_right=نقل علامة التبويب لليمين
 act.open_parent_tab=فتح مجلده في علامة تبويب جديدة
 save.title=حفظ باسم
 save.name_label=اسم الملف:
+save.type_label=حفظ بنوع:
 save.save=حفظ
 save.cancel=إلغاء
 save.windows=مربع حوار Windows

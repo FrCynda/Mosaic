@@ -313,6 +313,7 @@ keys.move_right=Flyt fane til højre
 act.open_parent_tab=Åbn dens mappe i ny fane
 save.title=Gem som
 save.name_label=Filnavn:
+save.type_label=Filtype:
 save.save=Gem
 save.cancel=Annuller
 save.windows=Windows-dialog

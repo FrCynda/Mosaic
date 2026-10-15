@@ -313,6 +313,7 @@ keys.move_right=Tabı sağa köçür
 act.open_parent_tab=Onun qovluğunu yeni tabda aç
 save.title=Fərqli saxla
 save.name_label=Fayl adı:
+save.type_label=Fayl növü:
 save.save=Saxla
 save.cancel=Ləğv et
 save.windows=Windows dialoqu

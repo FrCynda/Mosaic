@@ -313,6 +313,7 @@ keys.move_right=U guuri tab-ka midig
 act.open_parent_tab=Ku fur galkiisa tab cusub
 save.title=Kaydi sida
 save.name_label=Magaca faylka:
+save.type_label=Nooca faylka:
 save.save=Kaydi
 save.cancel=Jooji
 save.windows=Wada-hadalka Windows

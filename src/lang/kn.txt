@@ -313,6 +313,7 @@ keys.move_right=ಟ್ಯಾಬ್ ಬಲಕ್ಕೆ ಸರಿಸಿ
 act.open_parent_tab=ಅದರ ಫೋಲ್ಡರ್ ಅನ್ನು ಹೊಸ ಟ್ಯಾಬ್‌ನಲ್ಲಿ ತೆರೆಯಿರಿ
 save.title=ಹೀಗೆ ಉಳಿಸಿ
 save.name_label=ಫೈಲ್ ಹೆಸರು:
+save.type_label=ಫೈಲ್ ಪ್ರಕಾರ:
 save.save=ಉಳಿಸಿ
 save.cancel=ರದ್ದುಮಾಡಿ
 save.windows=Windows ಸಂವಾದ

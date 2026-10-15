@@ -313,6 +313,7 @@ keys.move_right=Hambisa ithebhu kwesokudla
 act.open_parent_tab=Vula ifolda yayo kuthebhu entsha
 save.title=Londoloza njenge
 save.name_label=Igama lefayela:
+save.type_label=Uhlobo lwefayela:
 save.save=Londoloza
 save.cancel=Khansela
 save.windows=Ibhokisi le-Windows

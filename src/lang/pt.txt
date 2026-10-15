@@ -313,6 +313,7 @@ keys.move_right=Mover aba para a direita
 act.open_parent_tab=Abrir a pasta dele em nova aba
 save.title=Salvar como
 save.name_label=Nome do arquivo:
+save.type_label=Tipo:
 save.save=Salvar
 save.cancel=Cancelar
 save.windows=Caixa de diálogo do Windows

@@ -313,6 +313,7 @@ keys.move_right=Teisalda vahekaart paremale
 act.open_parent_tab=Ava selle kaust uuel vahekaardil
 save.title=Salvesta nimega
 save.name_label=Faili nimi:
+save.type_label=Faili tüüp:
 save.save=Salvesta
 save.cancel=Loobu
 save.windows=Windowsi dialoog

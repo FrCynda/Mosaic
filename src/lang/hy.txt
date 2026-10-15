@@ -313,6 +313,7 @@ keys.move_right=Տեղափոխել ներդիրը աջ
 act.open_parent_tab=Բացել դրա պանակը նոր ներդիրում
 save.title=Պահել որպես
 save.name_label=Ֆայլի անուն՝
+save.type_label=Ֆայլի տեսակ՝
 save.save=Պահել
 save.cancel=Չեղարկել
 save.windows=Windows-ի երկխոսություն

@@ -313,6 +313,7 @@ keys.move_right=Zhvendos skedën djathtas
 act.open_parent_tab=Hap dosjen e tij në skedë të re
 save.title=Ruaj si
 save.name_label=Emri i skedarit:
+save.type_label=Lloji i skedarit:
 save.save=Ruaj
 save.cancel=Anulo
 save.windows=Dialogu i Windows

@@ -811,32 +811,34 @@ fn label(k: Kind) -> &'static str {
     if k == Kind::Folder { t("save.folder_label") } else { t("save.name_label") }
 }
 
+/// As Windows' own: a row per box, full width, labels right-aligned before them; a gap; [Windows dialog] at the
+/// left and [Save] [Cancel] at the right. Below the status bar, at the very bottom of the window.
 impl Ui {
-    /// Lays the bar out above the status bar: [File name ______] [type ▾] [Windows dialog] [Save] [Cancel] (Open
-    /// and Select folder have no types). Returns its height (0: not a Save/Open/folder window).
-    pub(super) fn place_save(&mut self, wd: i32, box_h: i32, text_h: i32, hits: &mut Vec<(RECT, Hit)>) -> i32 {
-        let Some((e, types, kind)) = pick(|p| (p.edit, p.types.clone(), p.kind)) else { return 0 };
+    /// The bar's height (0: not a Save/Open/folder window). Two rows for a Save with types, else one.
+    pub(super) fn save_height(&self, box_h: i32) -> i32 {
+        let Some(rows) = pick(|p| 1 + (p.kind == Kind::Save && !p.types.is_empty()) as i32) else { return 0 };
+        self.px(14) + rows * box_h + (rows - 1) * self.px(6) + self.px(30) + box_h + self.px(14)
+    }
+
+    pub(super) fn place_save(&mut self, wd: i32, box_h: i32, text_h: i32, hits: &mut Vec<(RECT, Hit)>) {
+        let Some((e, types, kind)) = pick(|p| (p.edit, p.types.clone(), p.kind)) else { return };
         let (g, px) = (&self.gfx, |v: i32| (v as f64 * self.scale).round() as i32);
-        let bar = box_h + px(24);
-        let top = self.status_top - bar + (bar - box_h) / 2;
-        let row = |l: i32, r: i32| RECT { left: l, top, right: r, bottom: top + box_h };
-        let seg = |s: &str| g.width(s, &g.f.reg) + px(28);
-        let mut x = wd - px(12);
-        for (label, h, gap) in [(t("save.cancel"), Hit::SaveCancel, px(8)), (verb(kind), Hit::SaveOk, px(16)), (t("save.windows"), Hit::SaveWin, px(12))] {
-            let w = seg(label).max(px(88));
-            hits.push((row(x - w, x), h));
-            x -= w + gap;
-        }
+        let ht = self.save_top + self.save_height(box_h);
+        let col = px(16) + g.width(label(kind), &g.f.reg).max(if types.is_empty() { 0 } else { g.width(t("save.type_label"), &g.f.reg) }) + px(8);
+        let row = |top: i32, l: i32, r: i32| RECT { left: l, top, right: r, bottom: top + box_h };
+        let name = row(self.save_top + px(14), col, wd - px(16));
+        hits.push((name, Hit::SaveName));
+        unsafe { MoveWindow(e, name.left + px(8), name.top + (box_h - text_h) / 2, (name.right - name.left - px(16)).max(1), text_h, 1) };
         if !types.is_empty() {
-            let w = (types.iter().map(|s| g.width(s, &g.f.reg)).max().unwrap_or(0) + px(40)).clamp(px(140), px(340));
-            hits.push((row(x - w, x), Hit::SaveType));
-            x -= w + px(8);
+            hits.push((row(name.bottom + px(6), col, wd - px(16)), Hit::SaveType));
         }
-        let left = px(12) + g.width(label(kind), &g.f.reg) + px(10);
-        let r = row(left, x.max(left + px(120)));
-        hits.push((r, Hit::SaveName));
-        unsafe { MoveWindow(e, r.left + px(8), r.top + (box_h - text_h) / 2, (r.right - r.left - px(16)).max(1), text_h, 1) };
-        bar
+        let top = ht - px(14) - box_h;
+        let btn = |s: &str| (g.width(s, &g.f.reg) + px(32)).max(px(96));
+        let cancel = row(top, wd - px(16) - btn(t("save.cancel")), wd - px(16));
+        let ok = row(top, cancel.left - px(10) - btn(verb(kind)), cancel.left - px(10));
+        hits.push((cancel, Hit::SaveCancel));
+        hits.push((ok, Hit::SaveOk));
+        hits.push((row(top, px(10), px(10) + g.width(t("save.windows"), &g.f.reg) + px(36)), Hit::SaveWin));
     }
 
     pub(super) fn paint_save(&self, wd: i32) {
@@ -845,18 +847,20 @@ impl Ui {
         let (g, cv, lh) = (&self.gfx, &self.cm, self.gfx.f.lh);
         let px = |v: i32| (v as f64 * self.scale).round() as i32;
         let rad = |v: f64| (v * self.scale) as f32;
-        let bar_top = self.status_top - (name_r.bottom - name_r.top) - px(24);
-        let all = RECT { left: 0, top: bar_top, right: wd, bottom: self.status_top };
+        let all = RECT { left: 0, top: self.save_top, right: wd, bottom: self.save_top + 100_000 };
         cv.fill(&all, theme().card, 1.0);
-        cv.fill(&RECT { bottom: bar_top + 1, ..all }, theme().line, 1.0);
+        cv.fill(&RECT { bottom: self.save_top + 1, ..all }, theme().line, 1.0);
         let ty_of = |r: &RECT| r.top + (r.bottom - r.top - lh) / 2;
-        put(g, cv, label(kind), &g.f.reg, px(12), ty_of(&name_r), theme().muted);
+        // labels end where the boxes begin
+        let right_label = |s: &str, r: &RECT| put(g, cv, s, &g.f.reg, r.left - px(8) - g.width(s, &g.f.reg), ty_of(r), theme().text);
+        right_label(label(kind), &name_r);
         let focused = unsafe { GetFocus() } == e;
         cv.rrect(&name_r, rad(4.0), Some(theme().bg), Some(if focused { theme().accent } else { theme().line }));
         let hot = |h: Hit| self.hot == Some(h);
         for &(r, h) in &self.hits {
             match h {
                 Hit::SaveType => {
+                    right_label(t("save.type_label"), &r);
                     cv.rrect(&r, rad(4.0), Some(theme().bg), Some(if hot(h) { theme().muted } else { theme().line }));
                     if let Some(l) = g.layout(&w(types.get(ty).map_or("", |s| s.as_str())), &g.f.reg, (r.right - r.left - px(34)) as f32, lh as f32) {
                         cv.text(&l, r.left + px(9), ty_of(&r), theme().text);
@@ -868,9 +872,18 @@ impl Ui {
                     cv.rrect(&r, rad(4.0), Some(if hot(h) { mix(theme().accent, theme().text, 0.15) } else { theme().accent }), None);
                     put_mid(g, cv, verb(kind), &g.f.reg, &r, ty_of(&r), theme().bg);
                 }
-                Hit::SaveCancel | Hit::SaveWin => {
+                Hit::SaveCancel => {
                     cv.rrect(&r, rad(4.0), Some(if hot(h) { theme().hl } else { theme().card }), Some(theme().line));
-                    put_mid(g, cv, if h == Hit::SaveCancel { t("save.cancel") } else { t("save.windows") }, &g.f.reg, &r, ty_of(&r), if hot(h) { theme().text } else { theme().muted });
+                    put_mid(g, cv, t("save.cancel"), &g.f.reg, &r, ty_of(&r), theme().text);
+                }
+                Hit::SaveWin => {
+                    // where Windows has "Hide Folders": a quiet link, ˄ before it
+                    if hot(h) {
+                        cv.rrect(&r, rad(4.0), Some(theme().hl), None);
+                    }
+                    let c = if hot(h) { theme().text } else { theme().muted };
+                    cv.chevron((r.left + px(13)) as f32, (r.top + r.bottom) as f32 / 2.0, rad(3.5), false, c, rad(1.25));
+                    put(g, cv, t("save.windows"), &g.f.reg, r.left + px(26), ty_of(&r), c);
                 }
                 _ => {}
             }

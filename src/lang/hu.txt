@@ -313,6 +313,7 @@ keys.move_right=Lap mozgatása jobbra
 act.open_parent_tab=Mappájának megnyitása új lapon
 save.title=Mentés másként
 save.name_label=Fájlnév:
+save.type_label=Fájl típusa:
 save.save=Mentés
 save.cancel=Mégse
 save.windows=Windows-párbeszédablak

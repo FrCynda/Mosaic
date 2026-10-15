@@ -312,6 +312,7 @@ keys.move_right=Yóbbu tab bi ci ndijoor
 act.open_parent_tab=Ubbi fisye bi ko yor ci tab bu bees
 save.title=Denc ni
 save.name_label=Turu dencukaay:
+save.type_label=Xeetu dencukaay:
 save.save=Denc
 save.cancel=Neenal
 save.windows=Waxtaanu Windows

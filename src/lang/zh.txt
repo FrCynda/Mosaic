@@ -312,6 +312,7 @@ keys.move_right=将标签页右移
 act.open_parent_tab=在新标签页中打开所在文件夹
 save.title=另存为
 save.name_label=文件名:
+save.type_label=保存类型:
 save.save=保存
 save.cancel=取消
 save.windows=Windows 对话框

@@ -314,6 +314,7 @@ keys.move_right=Mută fila la dreapta
 act.open_parent_tab=Deschide folderul său într-o filă nouă
 save.title=Salvare ca
 save.name_label=Nume fișier:
+save.type_label=Tip fișier:
 save.save=Salvează
 save.cancel=Anulează
 save.windows=Dialog Windows

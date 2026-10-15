@@ -313,6 +313,7 @@ keys.move_right=Flytt fanen til høyre
 act.open_parent_tab=Åpne mappen i ny fane
 save.title=Lagre som
 save.name_label=Filnavn:
+save.type_label=Filtype:
 save.save=Lagre
 save.cancel=Avbryt
 save.windows=Windows-dialog

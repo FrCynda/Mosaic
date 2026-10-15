@@ -317,6 +317,7 @@ keys.move_right=Move tab right
 act.open_parent_tab=Open its folder in a new tab
 save.title=Save as
 save.name_label=File name:
+save.type_label=Save as type:
 save.save=Save
 save.cancel=Cancel
 save.windows=Windows dialog

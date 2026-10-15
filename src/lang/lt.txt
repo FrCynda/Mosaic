@@ -314,6 +314,7 @@ keys.move_right=Perkelti skirtuką dešinėn
 act.open_parent_tab=Atidaryti jo aplanką naujame skirtuke
 save.title=Įrašyti kaip
 save.name_label=Failo vardas:
+save.type_label=Failo tipas:
 save.save=Įrašyti
 save.cancel=Atšaukti
 save.windows=Windows dialogas

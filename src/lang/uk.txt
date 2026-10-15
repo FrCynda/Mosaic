@@ -315,6 +315,7 @@ keys.move_right=Перемістити вкладку праворуч
 act.open_parent_tab=Відкрити його папку в новій вкладці
 save.title=Зберегти як
 save.name_label=Ім'я файлу:
+save.type_label=Тип файлу:
 save.save=Зберегти
 save.cancel=Скасувати
 save.windows=Діалог Windows

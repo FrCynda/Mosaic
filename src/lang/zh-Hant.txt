@@ -312,6 +312,7 @@ keys.move_right=將索引標籤右移
 act.open_parent_tab=在新索引標籤中開啟所在資料夾
 save.title=另存新檔
 save.name_label=檔案名稱:
+save.type_label=存檔類型:
 save.save=儲存
 save.cancel=取消
 save.windows=Windows 對話方塊

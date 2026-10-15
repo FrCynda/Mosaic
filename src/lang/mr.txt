@@ -313,6 +313,7 @@ keys.move_right=टॅब उजवीकडे हलवा
 act.open_parent_tab=त्याचे फोल्डर नवीन टॅबमध्ये उघडा
 save.title=म्हणून सेव्ह करा
 save.name_label=फाइलचे नाव:
+save.type_label=फाइल प्रकार:
 save.save=सेव्ह करा
 save.cancel=रद्द करा
 save.windows=Windows संवाद

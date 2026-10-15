@@ -313,6 +313,7 @@ keys.move_right=ट्याब दायाँ सार्नुहोस्
 act.open_parent_tab=यसको फोल्डर नयाँ ट्याबमा खोल्नुहोस्
 save.title=यस रूपमा सेभ गर्नुहोस्
 save.name_label=फाइलको नाम:
+save.type_label=फाइलको प्रकार:
 save.save=सेभ गर्नुहोस्
 save.cancel=रद्द गर्नुहोस्
 save.windows=Windows संवाद

@@ -313,6 +313,7 @@ keys.move_right=Tabblad naar rechts
 act.open_parent_tab=De map ervan openen in nieuw tabblad
 save.title=Opslaan als
 save.name_label=Bestandsnaam:
+save.type_label=Opslaan als:
 save.save=Opslaan
 save.cancel=Annuleren
 save.windows=Windows-dialoogvenster

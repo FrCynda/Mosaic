@@ -313,6 +313,7 @@ keys.move_right=Μετακίνηση καρτέλας δεξιά
 act.open_parent_tab=Άνοιγμα του φακέλου του σε νέα καρτέλα
 save.title=Αποθήκευση ως
 save.name_label=Όνομα αρχείου:
+save.type_label=Αποθήκευση ως τύπου:
 save.save=Αποθήκευση
 save.cancel=Άκυρο
 save.windows=Παράθυρο Windows

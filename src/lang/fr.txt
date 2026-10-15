@@ -313,6 +313,7 @@ keys.move_right=Déplacer l’onglet à droite
 act.open_parent_tab=Ouvrir son dossier dans un nouvel onglet
 save.title=Enregistrer sous
 save.name_label=Nom du fichier :
+save.type_label=Type :
 save.save=Enregistrer
 save.cancel=Annuler
 save.windows=Boîte de dialogue Windows

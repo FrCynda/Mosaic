@@ -313,6 +313,7 @@ keys.move_right=ট্যাব ডানে সরান
 act.open_parent_tab=এর ফোল্ডার নতুন ট্যাবে খুলুন
 save.title=এভাবে সংরক্ষণ করুন
 save.name_label=ফাইলের নাম:
+save.type_label=ফাইলের ধরন:
 save.save=সংরক্ষণ
 save.cancel=বাতিল
 save.windows=Windows ডায়ালগ

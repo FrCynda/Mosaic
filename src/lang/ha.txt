@@ -313,6 +313,7 @@ keys.move_right=Matsar da shafi dama
 act.open_parent_tab=Buɗe fayil ɗinsa a sabon shafi
 save.title=Ajiye a matsayin
 save.name_label=Sunan fayil:
+save.type_label=Nau'in fayil:
 save.save=Ajiye
 save.cancel=Soke
 save.windows=Akwatin Windows

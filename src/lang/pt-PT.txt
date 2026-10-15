@@ -313,6 +313,7 @@ keys.move_right=Mover separador para a direita
 act.open_parent_tab=Abrir a pasta num novo separador
 save.title=Guardar como
 save.name_label=Nome do ficheiro:
+save.type_label=Guardar com o tipo:
 save.save=Guardar
 save.cancel=Cancelar
 save.windows=Caixa de diálogo do Windows

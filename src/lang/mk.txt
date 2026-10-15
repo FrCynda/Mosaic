@@ -313,6 +313,7 @@ keys.move_right=Премести го јазичето десно
 act.open_parent_tab=Отвори ја неговата папка во ново јазиче
 save.title=Зачувај како
 save.name_label=Име на датотека:
+save.type_label=Тип на датотека:
 save.save=Зачувај
 save.cancel=Откажи
 save.windows=Дијалог на Windows

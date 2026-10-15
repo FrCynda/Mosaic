@@ -312,6 +312,7 @@ keys.move_right=탭을 오른쪽으로 이동
 act.open_parent_tab=상위 폴더를 새 탭에서 열기
 save.title=다른 이름으로 저장
 save.name_label=파일 이름:
+save.type_label=파일 형식:
 save.save=저장
 save.cancel=취소
 save.windows=Windows 대화 상자

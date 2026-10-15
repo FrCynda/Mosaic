@@ -313,6 +313,7 @@ keys.move_right=Mou la pestanya a la dreta
 act.open_parent_tab=Obre la seva carpeta en una pestanya nova
 save.title=Desa com a
 save.name_label=Nom del fitxer:
+save.type_label=Tipus:
 save.save=Desa
 save.cancel=Cancel·la
 save.windows=Diàleg del Windows

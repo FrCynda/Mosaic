@@ -312,6 +312,7 @@ keys.move_right=Alih tab ke kanan
 act.open_parent_tab=Buka foldernya dalam tab baharu
 save.title=Simpan sebagai
 save.name_label=Nama fail:
+save.type_label=Simpan sebagai jenis:
 save.save=Simpan
 save.cancel=Batal
 save.windows=Dialog Windows

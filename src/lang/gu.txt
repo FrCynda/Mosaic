@@ -313,6 +313,7 @@ keys.move_right=ટૅબ જમણે ખસેડો
 act.open_parent_tab=તેનું ફોલ્ડર નવા ટૅબમાં ખોલો
 save.title=આ રીતે સાચવો
 save.name_label=ફાઇલનું નામ:
+save.type_label=ફાઇલનો પ્રકાર:
 save.save=સાચવો
 save.cancel=રદ કરો
 save.windows=Windows સંવાદ

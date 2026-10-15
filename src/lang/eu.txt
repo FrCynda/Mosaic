@@ -313,6 +313,7 @@ keys.move_right=Eraman fitxa eskuinera
 act.open_parent_tab=Ireki bere karpeta fitxa berrian
 save.title=Gorde honela
 save.name_label=Fitxategi-izena:
+save.type_label=Mota:
 save.save=Gorde
 save.cancel=Utzi
 save.windows=Windows-en elkarrizketa-koadroa

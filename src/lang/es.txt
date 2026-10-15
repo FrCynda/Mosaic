@@ -313,6 +313,7 @@ keys.move_right=Mover pestaña a la derecha
 act.open_parent_tab=Abrir su carpeta en una pestaña nueva
 save.title=Guardar como
 save.name_label=Nombre de archivo:
+save.type_label=Tipo:
 save.save=Guardar
 save.cancel=Cancelar
 save.windows=Diálogo de Windows

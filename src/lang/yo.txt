@@ -312,6 +312,7 @@ keys.move_right=Gbé táàbù sí ọ̀tún
 act.open_parent_tab=Ṣí fódà rẹ̀ ní táàbù tuntun
 save.title=Fipamọ́ bí
 save.name_label=Orúkọ fáìlì:
+save.type_label=Irú fáìlì:
 save.save=Fipamọ́
 save.cancel=Fagilé
 save.windows=Àpótí ìbánisọ̀rọ̀ Windows

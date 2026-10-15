@@ -313,6 +313,7 @@ keys.move_right=ట్యాబ్‌ను కుడికి తరలిం�
 act.open_parent_tab=దాని ఫోల్డర్‌ను కొత్త ట్యాబ్‌లో తెరవండి
 save.title=ఇలా సేవ్ చేయి
 save.name_label=ఫైల్ పేరు:
+save.type_label=ఫైల్ రకం:
 save.save=సేవ్ చేయి
 save.cancel=రద్దు చేయి
 save.windows=Windows డైలాగ్

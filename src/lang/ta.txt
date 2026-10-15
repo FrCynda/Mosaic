@@ -313,6 +313,7 @@ keys.move_right=தாவலை வலப்புறம் நகர்த்�
 act.open_parent_tab=அதன் கோப்புறையைப் புதிய தாவலில் திற
 save.title=இவ்வாறு சேமி
 save.name_label=கோப்பின் பெயர்:
+save.type_label=கோப்பு வகை:
 save.save=சேமி
 save.cancel=ரத்துசெய்
 save.windows=Windows உரையாடல்

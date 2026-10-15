@@ -314,6 +314,7 @@ keys.move_right=Премести картицу десно
 act.open_parent_tab=Отвори његову фасциклу у новој картици
 save.title=Сачувај као
 save.name_label=Име датотеке:
+save.type_label=Тип датотеке:
 save.save=Сачувај
 save.cancel=Откажи
 save.windows=Windows дијалог

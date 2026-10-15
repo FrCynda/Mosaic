@@ -312,6 +312,7 @@ keys.move_right=ย้ายแท็บไปทางขวา
 act.open_parent_tab=เปิดโฟลเดอร์ของรายการนี้ในแท็บใหม่
 save.title=บันทึกเป็น
 save.name_label=ชื่อไฟล์:
+save.type_label=ชนิดของไฟล์:
 save.save=บันทึก
 save.cancel=ยกเลิก
 save.windows=กล่องโต้ตอบของ Windows

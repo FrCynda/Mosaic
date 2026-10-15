@@ -313,6 +313,7 @@ keys.move_right=Flytta flik åt höger
 act.open_parent_tab=Öppna dess mapp i ny flik
 save.title=Spara som
 save.name_label=Filnamn:
+save.type_label=Filformat:
 save.save=Spara
 save.cancel=Avbryt
 save.windows=Windows-dialog

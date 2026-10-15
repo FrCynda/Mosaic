@@ -313,6 +313,7 @@ keys.move_right=Varaqni o‘ngga surish
 act.open_parent_tab=Uning jildini yangi varaqda ochish
 save.title=Boshqacha saqlash
 save.name_label=Fayl nomi:
+save.type_label=Fayl turi:
 save.save=Saqlash
 save.cancel=Bekor qilish
 save.windows=Windows muloqot oynasi

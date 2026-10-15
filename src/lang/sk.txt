@@ -314,6 +314,7 @@ keys.move_right=Presunúť kartu vpravo
 act.open_parent_tab=Otvoriť jeho priečinok v novej karte
 save.title=Uložiť ako
 save.name_label=Názov súboru:
+save.type_label=Uložiť vo formáte:
 save.save=Uložiť
 save.cancel=Zrušiť
 save.windows=Dialóg Windows

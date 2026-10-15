@@ -313,6 +313,7 @@ keys.move_right=ਟੈਬ ਸੱਜੇ ਲਿਜਾਓ
 act.open_parent_tab=ਇਸ ਦਾ ਫੋਲਡਰ ਨਵੀਂ ਟੈਬ ਵਿੱਚ ਖੋਲ੍ਹੋ
 save.title=ਇਸ ਵਜੋਂ ਸੇਵ ਕਰੋ
 save.name_label=ਫ਼ਾਈਲ ਦਾ ਨਾਮ:
+save.type_label=ਫ਼ਾਈਲ ਦੀ ਕਿਸਮ:
 save.save=ਸੇਵ ਕਰੋ
 save.cancel=ਰੱਦ ਕਰੋ
 save.windows=Windows ਡਾਇਲਾਗ

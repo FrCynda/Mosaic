@@ -314,6 +314,7 @@ keys.move_right=Premjesti karticu desno
 act.open_parent_tab=Otvori njegovu mapu u novoj kartici
 save.title=Spremi kao
 save.name_label=Naziv datoteke:
+save.type_label=Spremi kao vrstu:
 save.save=Spremi
 save.cancel=Odustani
 save.windows=Windows dijalog

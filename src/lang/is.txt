@@ -313,6 +313,7 @@ keys.move_right=Færa flipa til hægri
 act.open_parent_tab=Opna möppu þess í nýjum flipa
 save.title=Vista sem
 save.name_label=Skráarheiti:
+save.type_label=Skráargerð:
 save.save=Vista
 save.cancel=Hætta við
 save.windows=Windows-gluggi

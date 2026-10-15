@@ -314,6 +314,7 @@ keys.move_right=Pārvietot cilni pa labi
 act.open_parent_tab=Atvērt tā mapi jaunā cilnē
 save.title=Saglabāt kā
 save.name_label=Faila nosaukums:
+save.type_label=Faila tips:
 save.save=Saglabāt
 save.cancel=Atcelt
 save.windows=Windows dialogs

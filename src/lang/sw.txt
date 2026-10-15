@@ -313,6 +313,7 @@ keys.move_right=Sogeza kichupo kulia
 act.open_parent_tab=Fungua folda yake katika kichupo kipya
 save.title=Hifadhi kama
 save.name_label=Jina la faili:
+save.type_label=Aina ya faili:
 save.save=Hifadhi
 save.cancel=Ghairi
 save.windows=Kidirisha cha Windows

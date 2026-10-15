@@ -313,6 +313,7 @@ keys.move_right=انتقال زبانه به راست
 act.open_parent_tab=باز کردن پوشه آن در زبانه جدید
 save.title=ذخیره با نام
 save.name_label=نام پرونده:
+save.type_label=ذخیره به‌عنوان نوع:
 save.save=ذخیره
 save.cancel=لغو
 save.windows=پنجرهٔ Windows
