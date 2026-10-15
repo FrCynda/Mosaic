@@ -943,6 +943,7 @@ struct Ui {
     lh: RECT,
     status_top: i32, // the status bar along the bottom
     save_top: i32,   // a Save/Open window's bar under it (the window's height when none)
+    status_bot: i32, // where the status bar ends (under the search bar in a Save/Open window)
     sys: HashMap<String, i32>,
     himl: isize,
     isz: i32,
@@ -1511,6 +1512,7 @@ pub fn run() {
             lh: zeroed(),
             status_top: 0,
             save_top: 0,
+            status_bot: 0,
             sys: HashMap::new(),
             himl: 0,
             isz: 16,
@@ -1622,7 +1624,8 @@ pub fn run() {
         with(|u| u.layout());
         SetTimer(main, T_POLL, 500, None);
         // where and how big it was when last closed (not a window torn off another: that one opens at the cursor)
-        let wp = st.get("place").filter(|_| with(|u| !u.secondary) == Some(true)).and_then(|s| placement(s));
+        // (a Save/Open window keeps its own)
+        let wp = if save::active() { st.get("save_place") } else { st.get("place").filter(|_| with(|u| !u.secondary) == Some(true)) }.and_then(|s| placement(s));
         cloak(main, true);
         match wp {
             Some(wp) => {
@@ -4562,6 +4565,11 @@ impl Ui {
         (self.cw() / (self.tile() + self.px(2 * G + 10))).max(1) as usize
     }
 
+    /// Where the lists end: at the status bar, or at a Save/Open window's bar when the status bar is up top.
+    fn list_bottom(&self) -> i32 {
+        if self.status_bot <= self.head_h { self.save_top } else { self.status_top }
+    }
+
     fn layout_at(&mut self, first: usize) {
         if self.guest {
             self.relayout = true; // once the focused pane is back in the fields
@@ -4646,7 +4654,14 @@ impl Ui {
             // the active filter, then the view controls. Right to left: [List|Grid], 10, (grid: ▲, sort), names, 10, filter
             let bar_h = lh + px(12);
             self.save_top = ht - self.save_height(box_h);
-            self.status_top = self.save_top - bar_h;
+            if self.save_top < ht {
+                // a Save/Open window: right under the search bar, the header growing by it
+                self.status_top = self.head_h - 1;
+                self.head_h += bar_h;
+            } else {
+                self.status_top = self.save_top - bar_h;
+            }
+            self.status_bot = self.status_top + bar_h;
             let ctl_h = lh + px(4);
             let y = self.status_top + 1 + (bar_h - 1 - ctl_h) / 2;
             let mut x = wd - px(10);
@@ -4677,7 +4692,7 @@ impl Ui {
             let min_list = px(220);
             // the side panels: flush against the window's edges, from the toolbar down to the status bar, a hairline
             // between them and the lists, which run right up to it (no strip of background between)
-            let (top, mut bottom) = (self.head_h, self.status_top);
+            let (top, mut bottom) = (self.head_h, self.list_bottom());
             self.place_save(wd, box_h, tm.tmHeight, &mut hits);
             let mut left = 0;
             match pos {
@@ -4790,6 +4805,16 @@ impl Ui {
     fn save_settings(&self) {
         let p = settings_path();
         let _ = std::fs::create_dir_all(p.parent().unwrap());
+        // the main window's place and a Save/Open window's, each written only by its own kind of window
+        let keep = |k: &str| load_settings().remove(k).unwrap_or_default();
+        let here = || unsafe { place_of(self.main) };
+        let (place, save_place) = if save::active() {
+            (keep("place"), here())
+        } else if self.secondary {
+            (keep("place"), keep("save_place"))
+        } else {
+            (here(), keep("save_place"))
+        };
         let m: HashMap<&str, String> = HashMap::from([
             ("view", (if self.grid { "grid" } else { "list" }).to_string()),
             ("size", self.size.to_string()),
@@ -4815,7 +4840,8 @@ impl Ui {
             ("sidebar", side::prefs_json()),
             ("save_dialog", (save::on() as u8).to_string()),
             ("save_dir", save::last_dir()),
-            ("place", if self.secondary { load_settings().remove("place").unwrap_or_default() } else { unsafe { place_of(self.main) } }),
+            ("place", place),
+            ("save_place", save_place),
         ]);
         let new = serde_json::to_string(&m).unwrap_or_default();
         if std::fs::read_to_string(&p).ok().as_deref() != Some(new.as_str()) {
@@ -4992,7 +5018,7 @@ impl Ui {
         cv.fill(&RECT { top: self.menu_h, bottom: self.head_h - 1, ..c }, theme().card, 1.0);
         cv.fill(&RECT { top: self.head_h - 1, bottom: self.head_h, ..c }, theme().line, 1.0);
         // status bar
-        cv.fill(&RECT { top: self.status_top, ..c }, theme().card, 1.0);
+        cv.fill(&RECT { top: self.status_top, bottom: self.status_bot, ..c }, theme().card, 1.0);
         cv.fill(&RECT { top: self.status_top, bottom: self.status_top + 1, ..c }, theme().line, 1.0);
         cv.fill(&RECT { top: self.menu_h, bottom: self.menu_h + 1, ..c }, theme().line, 1.0);
         self.paint_save(c.right);
@@ -5095,9 +5121,9 @@ impl Ui {
             }
         }
         // status text: left of the status bar's controls, cut with "…" where they begin
-        let stop = self.hits.iter().filter(|x| x.0.top >= self.status_top && x.0.top < self.save_top).map(|x| x.0.left).min().unwrap_or(c.right);
+        let stop = self.hits.iter().filter(|x| x.0.top >= self.status_top && x.0.top < self.status_bot).map(|x| x.0.left).min().unwrap_or(c.right);
         if let Some(t) = g.layout(&w(&self.status()), &g.f.reg, (stop - px(20)) as f32, lh as f32) {
-            cv.text(&t, px(10), self.status_top + 1 + (self.save_top - self.status_top - 1 - lh) / 2, theme().muted);
+            cv.text(&t, px(10), self.status_top + 1 + (self.status_bot - self.status_top - 1 - lh) / 2, theme().muted);
         }
         // each pane's caption and column header
         for (id, _) in self.areas.clone() {

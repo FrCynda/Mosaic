@@ -445,8 +445,7 @@ unsafe extern "system" fn foreground(_: HWINEVENTHOOK, _: u32, h: HWND, _: i32, 
     }
 }
 
-/// Shown maximized (room for the list, nothing behind it to click by mistake) on the screen of the app's window;
-/// un-maximized, it is centred there at 80 %.
+/// The first time (after that, where it was last left): centred at 80 % on the screen of the app's window.
 pub(super) unsafe fn show(main: HWND) {
     if let Some(dlg) = pick(|p| p.dlg) {
         let mut mi: MONITORINFO = zeroed();
@@ -457,7 +456,7 @@ pub(super) unsafe fn show(main: HWND) {
             SetWindowPos(main, null_mut(), a.left + (a.right - a.left - w) / 2, a.top + (a.bottom - a.top - h) / 2, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
-    ShowWindow(main, SW_SHOWMAXIMIZED);
+    ShowWindow(main, SW_SHOW);
 }
 
 /// On screen (its first frame drawn): in front. Windows refuses that to a window still cloaked.
@@ -848,7 +847,7 @@ impl Ui {
         let px = |v: i32| (v as f64 * self.scale).round() as i32;
         let rad = |v: f64| (v * self.scale) as f32;
         let all = RECT { left: 0, top: self.save_top, right: wd, bottom: self.save_top + 100_000 };
-        cv.fill(&all, theme().card, 1.0);
+        cv.fill(&all, mix(theme().card, theme().text, 0.04), 1.0); // a shade off the bars: lighter on dark, darker on light
         cv.fill(&RECT { bottom: self.save_top + 1, ..all }, theme().line, 1.0);
         let ty_of = |r: &RECT| r.top + (r.bottom - r.top - lh) / 2;
         // labels end where the boxes begin

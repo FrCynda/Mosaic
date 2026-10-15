@@ -93,8 +93,8 @@ pub(super) struct TabPrefs {
     pub(super) mru: bool,                 // Ctrl+Tab in most-recently-used order, with a switcher
     pub(super) captions: bool,            // split panes' captions
     pub(super) sounds: bool,
-    pub(super) restore: bool,         // the tabs come back as they were
-    pub(super) startup: Vec<String>,  // … else these folders
+    pub(super) start: u8,             // at launch: 0 the tabs as they were, 1 Desktop, 2 Home, 3 All, 4 `startup`
+    pub(super) startup: Vec<String>,  // the folders `start` 4 opens
     pub(super) sleep: usize,          // at most this many tabs awake (0: no limit)
     pub(super) keys: HashMap<String, String>, // shortcuts changed from `KEYS`
     pub(super) cards: bool,           // a card about a tab pointed at
@@ -120,7 +120,7 @@ impl Default for TabPrefs {
             mru: false,
             captions: true,
             sounds: false,
-            restore: true,
+            start: 3,
             startup: Vec::new(),
             sleep: 0,
             keys: HashMap::new(),
@@ -268,6 +268,10 @@ fn kind_icon(q: &str) -> &'static str {
     match q.trim() {
         "" => "🗂️",
         "home:" => "🏠",
+        "recent:" | "recent-dirs:" => "🕘",
+        "pc:" => "💻",
+        "net:" => "🌐",
+        "linux:" => "🐧",
         q if listed_dir(q).is_some() => "📁",
         _ => "🔍",
     }
@@ -388,6 +392,7 @@ pub(super) struct Face {
     pub(super) busy: bool,
     pub(super) count: Option<usize>,
     pub(super) marks: String, // locked, muted, live
+    pub(super) naming: bool,  // its title is being typed over: where it goes is noted, the field shows it
 }
 
 /// What the card over the window shows: a tab pointed at, the Ctrl+Tab switcher (tabs, the one picked), a note.
@@ -517,7 +522,7 @@ fn off(mut i: MItem, off: bool) -> MItem {
 }
 
 /// Every Mosaic window but `me`, with its title.
-fn windows(me: HWND) -> Vec<(HWND, String)> {
+pub(super) fn windows(me: HWND) -> Vec<(HWND, String)> {
     unsafe extern "system" fn each(h: HWND, l: LPARAM) -> BOOL {
         let v = &mut *(l as *mut Vec<HWND>);
         let mut c = [0u16; 32];
@@ -752,7 +757,8 @@ impl Ui {
     }
     /// The window's title: the tab shown's name (the taskbar and Alt+Tab show it).
     pub(super) fn title(&self) {
-        let s = format!("{} — Mosaic", self.tab_name(self.cur));
+        super::side::current(&self.focus_q(self.cur));
+        let s = super::save::title().unwrap_or_else(|| format!("{} — Mosaic", self.tab_name(self.cur)));
         let mut b = [0u16; 512];
         let n = unsafe { GetWindowTextW(self.main, b.as_mut_ptr(), 512) };
         if String::from_utf16_lossy(&b[..n.max(0) as usize]) != s {
@@ -771,15 +777,23 @@ impl Ui {
         }) {
             unsafe { SetWindowPos(self.main, null_mut(), x - self.px(200), y - self.px(16), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
         }
-        let s: Option<Session> = if let Some(f) = arg("--tabs") {
+        let s: Option<Session> = if let Some(d) = super::save::start_dir() {
+            self.secondary = true; // a Save window: its own folder, not the session's
+            Some(Session { tabs: vec![TabSpec::folder(&self.browse_q(&d))], ..Default::default() })
+        } else if let Some(f) = arg("--tabs") {
             self.secondary = true;
             let s = std::fs::read_to_string(&f).ok().and_then(|s| serde_json::from_str(&s).ok());
             let _ = std::fs::remove_file(&f);
             s
-        } else if self.tp.restore {
-            std::fs::read_to_string(session_path()).ok().and_then(|s| serde_json::from_str(&s).ok())
         } else {
-            Some(Session { tabs: self.tp.startup.iter().map(|d| TabSpec::folder(&self.browse_q(d))).collect(), ..Default::default() })
+            let one = |q: String| Some(Session { tabs: vec![TabSpec::folder(&q)], ..Default::default() });
+            match self.tp.start {
+                0 => std::fs::read_to_string(session_path()).ok().and_then(|s| serde_json::from_str(&s).ok()),
+                1 => super::side::desktop().and_then(|d| one(self.browse_q(&d))),
+                2 => one("home:".into()),
+                4 if !self.tp.startup.is_empty() => Some(Session { tabs: self.tp.startup.iter().map(|d| TabSpec::folder(&self.browse_q(d))).collect(), ..Default::default() }),
+                _ => one(String::new()),
+            }
         };
         if let Some(s) = s.filter(|s| !s.tabs.is_empty()) {
             self.load_session(s, true);
@@ -817,7 +831,7 @@ impl Ui {
     /// The session to disk when its tabs changed (not for scrolling alone), or `force` (closing: with where each
     /// pane was scrolled to). The same text twice is never written.
     pub(super) fn autosave(&mut self, force: bool) {
-        if self.secondary || self.merged || !self.tp.restore {
+        if self.secondary || self.merged || self.tp.start != 0 {
             return;
         }
         let now = self.session_json(false);
@@ -1030,10 +1044,6 @@ impl Ui {
         };
         n.clamp(1, 4)
     }
-    /// Tab `k`'s width in plain tabs: longer by most of one for each further name.
-    fn span(&self, k: usize) -> f64 {
-        1.0 + 0.6 * (self.names_shown(k) - 1) as f64
-    }
     pub(super) fn face(&self, k: usize) -> Face {
         let t = &self.tabs[k];
         let (root, panes): (Node, Vec<(usize, String)>) = match &t.o.asleep {
@@ -1057,6 +1067,7 @@ impl Ui {
             busy: self.tp.busy && awake && t.root.leaves().iter().any(|&p| self.pane_busy(p)),
             count: (self.tp.count && awake).then(|| of_pane!(self, t.focus, |v| v.matches).unwrap_or(0)),
             marks,
+            naming: self.naming == Some(k),
         }
     }
     /// Any tab's spinner turning.
@@ -1175,13 +1186,15 @@ impl Ui {
         let pinw = px(40);
         let width_of = |it: &Item, tw: i32| match it {
             Item::Tab(k) if self.tabs[*k].o.pinned => pinw,
-            Item::Tab(k) => (tw as f64 * self.span(*k)).round() as i32,
+            Item::Tab(_) => tw, // a split tab too: its panes' names share the width
             Item::Hole => tw,
             Item::Label(g) => label_w(*g),
             Item::Tree(..) => 0,
         };
         let shown = |it: &Item| !matches!(it, Item::Tab(k) if self.folded_away(*k));
-        let total = |tw: i32| items.iter().filter(|i| shown(i)).map(|i| width_of(i, tw) + gap).sum::<i32>() + px(6 + 28);
+        // along the top, the current tab's bottom corners flare out (see `Canvas::tab`): room for the first one's
+        let x0 = area.left + if self.tp.pos == 0 { px(8) } else { 0 };
+        let total = |tw: i32| items.iter().filter(|i| shown(i)).map(|i| width_of(i, tw) + gap).sum::<i32>() + px(6 + 28) + x0 - area.left;
         let room = area.right - area.left;
         let mut tw = maxw;
         let mut scroll = false;
@@ -1193,7 +1206,7 @@ impl Ui {
                         .iter()
                         .map(|i| match i {
                             Item::Hole => 1.0,
-                            Item::Tab(k) if shown(i) && !self.tabs[*k].o.pinned => self.span(*k),
+                            Item::Tab(k) if shown(i) && !self.tabs[*k].o.pinned => 1.0,
                             _ => 0.0,
                         })
                         .sum();
@@ -1209,7 +1222,7 @@ impl Ui {
         }
         let ctl = px(26);
         let right = if scroll { area.right - 4 * ctl } else { area.right };
-        let (mut x, mut y) = (area.left, area.top);
+        let (mut x, mut y) = (x0, area.top);
         let mut label_at: HashMap<u64, RECT> = HashMap::new();
         for it in items {
             if let Item::Tab(k) = it {
@@ -1220,8 +1233,8 @@ impl Ui {
                 }
             }
             let wd = width_of(&it, tw);
-            if self.tp.fit == 2 && x > area.left && x + wd > right - px(34) {
-                (x, y) = (area.left, y + rh + gap);
+            if self.tp.fit == 2 && x > x0 && x + wd > right - px(34) {
+                (x, y) = (x0, y + rh + gap);
             }
             let r = RECT { left: x, top: y, right: x + wd, bottom: y + rh };
             if let Item::Label(g) = it {
@@ -1233,7 +1246,7 @@ impl Ui {
         f.height = y + rh - area.top;
         if scroll {
             f.clip = RECT { right, top: area.top, bottom: area.top + rh, ..area };
-            f.max_scroll = (x - area.left - (right - area.left)).max(0);
+            f.max_scroll = (x - right).max(0);
             let cy = area.top + (rh - ctl) / 2;
             let b = |i: i32| RECT { left: right + i * ctl, top: cy, right: right + (i + 1) * ctl, bottom: cy + ctl };
             f.arrows = Some((b(0), b(1)));
@@ -1364,7 +1377,7 @@ impl Ui {
         let vert = self.tp.pos == 2;
         let c = self.strip_r;
         if vert {
-            let panel = RECT { left: 0, top: self.head_h, right: c.right, bottom: self.status_top };
+            let panel = RECT { left: 0, top: self.head_h, right: c.right, bottom: self.list_bottom() };
             cv.fill(&panel, theme().card, 1.0);
             cv.fill(&RECT { left: panel.right - 1, ..panel }, theme().line, 1.0);
         }
@@ -1406,7 +1419,7 @@ impl Ui {
             let r = self.drawn(k);
             let a = self.tabs[k].born.map_or(1.0, |b| ease_out(b.elapsed().as_secs_f64() / TAB_IN));
             let on = k == self.cur;
-            let near = on || lit(k);
+            let near = on || lit(k) || self.naming == Some(k);
             let next = k + 1 < self.tabs.len() && !self.folded_away(k + 1);
             let sep = !vert && !near && next && k + 1 != self.cur && !lit(k + 1);
             let close = match self.tp.close {
@@ -1561,7 +1574,11 @@ impl Ui {
             let end = if close.is_some() { x_r.left - px(2) } else { full.right - px(8) };
             let badge = if multi && self.tp.fused & 4 != 0 { px(18) } else { 0 };
             let font = if on { fs } else { fr };
-            if fc.split && !vert {
+            if fc.naming {
+                // typed over: no title under the field, which takes its place and background
+                let fill = if on && !vert && !bottom { tint(theme().card) } else { tint(theme().hl) };
+                self.name_slot.set(Some((RECT { left: tx, top: ty, right: end, bottom: ty + flh }, fill)));
+            } else if fc.split && !vert {
                 // each pane's name, side by side: short ones whole, long ones sharing what's left, cut with …
                 let mut segs = seg_names(&fc.panes);
                 if let Some(l) = segs.last_mut() {
@@ -1887,8 +1904,8 @@ pub(super) unsafe fn mru_switch(back: bool) {
 
 /// A line of text typed over `r` (main window coordinates) in place, starting as `init` (`hint` while empty): Enter
 /// or a click elsewhere keeps it, Esc doesn't.
-pub(super) unsafe fn ask(main: HWND, r: RECT, init: &str, hint: &str) -> Option<String> {
-    let e = field(main, r, init, -1, hint, false);
+pub(super) unsafe fn ask(main: HWND, r: RECT, init: &str, hint: &str, look: Look) -> Option<String> {
+    let e = field(main, r, init, -1, hint, false, look);
     if e.is_null() {
         return None;
     }
@@ -2205,14 +2222,37 @@ pub(super) unsafe fn tab_act(a: TA) {
             });
         }
         TA::Rename(k) => {
-            let Some((r, name)) = with(|u| {
-                let mut r = u.drawn(k);
-                if r.right <= r.left {
-                    r = RECT { left: u.search_box.left, top: u.search_box.top, right: u.search_box.left + u.px(240), bottom: u.search_box.bottom };
+            // typed right on the tab, in its own font: the title just becomes editable
+            with(|u| {
+                u.naming = Some(k);
+                u.name_slot.set(None);
+                u.invalidate();
+            });
+            UpdateWindow(main);
+            let Some((r, name, look, font)) = with(|u| {
+                let name = u.tabs[k].o.title.clone().unwrap_or_else(|| u.tab_name(k));
+                match u.name_slot.get().filter(|(r, _)| r.right - r.left > u.px(24)) {
+                    Some((r, fill)) => {
+                        let px = [10.5, 12.0, 14.0][u.tp.font.min(2) as usize] * u.scale;
+                        let font = gdi_font(px, if k == u.cur { 600 } else { 400 });
+                        (r, name, Look::Bare(font, fill), font)
+                    }
+                    None => {
+                        // pinned, or not on screen: a box of its own over the search box
+                        let r = RECT { left: u.search_box.left, top: u.search_box.top, right: u.search_box.left + u.px(240), bottom: u.search_box.bottom };
+                        (r, name, Look::Box, null_mut())
+                    }
                 }
-                (RECT { right: r.right.max(r.left + u.px(160)), ..r }, u.tabs[k].o.title.clone().unwrap_or_else(|| u.tab_name(k)))
             }) else { return };
-            if let Some(s) = ask(main, r, &name, &with(|u| u.tab_name(k)).unwrap_or_default()) {
+            let got = ask(main, r, &name, &with(|u| u.tab_name(k)).unwrap_or_default(), look);
+            if !font.is_null() {
+                DeleteObject(font);
+            }
+            with(|u| {
+                u.naming = None;
+                u.invalidate();
+            });
+            if let Some(s) = got {
                 with(|u| {
                     if let Some(t) = u.tabs.get_mut(k) {
                         t.o.title = (!s.is_empty()).then_some(s);
@@ -2253,7 +2293,7 @@ pub(super) unsafe fn tab_act(a: TA) {
         }
         TA::IconCustom(k) => {
             let Some(r) = with(|u| u.drawn(k)) else { return };
-            if let Some(s) = ask(main, r, "", t("tab.icon")) {
+            if let Some(s) = ask(main, r, "", t("tab.icon"), Look::Box) {
                 tab_act(TA::Icon(k, (!s.is_empty()).then_some(s)));
             }
         }
@@ -2349,7 +2389,7 @@ pub(super) unsafe fn tab_act(a: TA) {
                 let r = u.hits.iter().find(|h| h.1 == Hit::Group(g)).map_or(u.search_box, |h| h.0);
                 (RECT { right: r.left + u.px(180), ..r }, u.group(g).map_or(String::new(), |x| x.name.clone()))
             }) else { return };
-            if let Some(s) = ask(main, r, &name, t("tab.group_new")) {
+            if let Some(s) = ask(main, r, &name, t("tab.group_new"), Look::Box) {
                 with(|u| {
                     if let Some(x) = u.groups.iter_mut().find(|x| x.id == g) {
                         x.name = s;
@@ -2501,7 +2541,7 @@ pub(super) unsafe fn tab_act(a: TA) {
         }
         TA::WsSave => {
             let Some(r) = with(|u| RECT { right: u.search_box.left + u.px(260), ..u.search_box }) else { return };
-            let Some(name) = ask(main, r, "", t("ws.name")).filter(|s| !s.is_empty()) else { return };
+            let Some(name) = ask(main, r, "", t("ws.name"), Look::Box).filter(|s| !s.is_empty()) else { return };
             let Some(s) = with(|u| u.session_of(&(0..u.tabs.len()).collect::<Vec<_>>())) else { return };
             let mut v = load_workspaces();
             v.retain(|w| w.0 != name);
@@ -2547,13 +2587,16 @@ pub(super) unsafe fn tab_act(a: TA) {
         TA::StartupSet => {
             with(|u| {
                 u.tp.startup = (0..u.tabs.len()).filter_map(|k| listed_dir(&u.focus_q(k))).collect();
-                u.tp.restore = false;
+                u.tp.start = 4;
                 save(u);
             });
         }
         TA::StartupClear => {
             with(|u| {
                 u.tp.startup.clear();
+                if u.tp.start == 4 {
+                    u.tp.start = 3;
+                }
                 save(u);
             });
         }
@@ -2997,8 +3040,12 @@ impl Ui {
         }
         wins.push(off(mb.it(t("tabs.merge"), "", false, TA::Merge), others.is_empty()));
         let startup = vec![
-            mb.it(t("st.restore"), "", p.restore, TA::Pb(|p| &mut p.restore)),
-            mb.it(t("st.use"), "", !p.restore && !p.startup.is_empty(), TA::StartupSet),
+            mb.it(t("st.restore"), "", p.start == 0, TA::Pu(|p| &mut p.start, 0)),
+            mb.it(t("side.desktop"), "", p.start == 1, TA::Pu(|p| &mut p.start, 1)),
+            mb.it(t("side.home"), "", p.start == 2, TA::Pu(|p| &mut p.start, 2)),
+            mb.it(t("side.all"), "", p.start == 3, TA::Pu(|p| &mut p.start, 3)),
+            sep(),
+            mb.it(t("st.use"), "", p.start == 4 && !p.startup.is_empty(), TA::StartupSet),
             off(mb.it(t("st.clear"), "", false, TA::StartupClear), p.startup.is_empty()),
         ];
         let sleep = [0usize, 3, 5, 10, 20].iter().map(|&n| mb.it(&if n == 0 { t("tabs.never").to_string() } else { t("tabs.keep").replace("{n}", &n.to_string()) }, "", p.sleep == n, TA::SleepMax(n))).collect();
@@ -3249,7 +3296,7 @@ impl Ui {
     /// What a search from pane `p` looks in when its tab is kept to one folder.
     pub(super) fn scoped(&self, q: &str) -> String {
         let Some(s) = self.tab_of(self.id).and_then(|k| self.tabs[k].o.scope.clone()) else { return q.into() };
-        if q.contains("child:") || q.contains("descendant:") || q.trim() == "home:" {
+        if q.contains("child:") || q.contains("descendant:") || list_of(q).is_some() {
             return q.into();
         }
         format!("descendant:\"{}\" {q}", s.trim_end_matches('\\'))
@@ -3323,6 +3370,6 @@ mod tests {
         let old: Session = serde_json::from_str(r#"{"tabs":[{}]}"#).unwrap();
         assert_eq!(old.tabs.len(), 1);
         let p: TabPrefs = serde_json::from_str("{}").unwrap();
-        assert!(p.restore && p.icons);
+        assert!(p.start == 3 && p.icons);
     }
 }
