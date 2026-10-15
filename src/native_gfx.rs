@@ -64,6 +64,13 @@ impl Gfx {
         unsafe { self.dw.CreateTextLayout(s, f, width.max(0.0), height.max(0.0)).ok() }
     }
 
+    /// [`Self::layout`], wrapped at word ends to `width` (whatever `f` says).
+    pub fn wrapped(&self, s: &[u16], f: &IDWriteTextFormat, width: f32) -> Option<Text> {
+        let t = self.layout(s, f, width, 1e4)?;
+        unsafe { t.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP).ok()? };
+        Some(t)
+    }
+
     /// Advance width of `s`, rounded up to whole pixels.
     pub fn width(&self, s: &str, f: &IDWriteTextFormat) -> i32 {
         let s: Vec<u16> = s.encode_utf16().collect();

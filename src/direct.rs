@@ -125,6 +125,11 @@ fn place(name: String, path: String) -> Hit {
     Hit { name, path, size: -1, modified: 0, created: 0, accessed: 0, attributes: 0x10, is_dir: true }
 }
 
+/// What a place (`pc:`, `net:`, `linux:`) holds: its drives, servers or distributions, as (name, path).
+pub fn places(dir: &str) -> Vec<(String, String)> {
+    read(dir).unwrap_or_default().into_iter().map(|h| (h.name, h.path)).collect()
+}
+
 fn read(dir: &str) -> Result<Vec<Hit>, String> {
     let low = dir.trim_end_matches('\\').to_ascii_lowercase();
     match low.as_str() {

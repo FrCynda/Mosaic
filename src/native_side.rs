@@ -21,6 +21,7 @@ use super::gfx::{Bitmap, Canvas, Gfx};
 use super::{mix, png_pixels, put, shell, t, theme, wz, xy, MItem};
 
 const WM_ICON: u32 = WM_APP + 10;
+const WM_KIDS: u32 = WM_APP + 11; // lParam: a boxed (place, its rows)
 /// Width (CSS px) of the panel.
 pub const WIDTH: i32 = 200;
 
@@ -28,8 +29,10 @@ pub const WIDTH: i32 = 200;
 enum Kind {
     Place,
     Pin,        // a folder pinned by the user
-    Head(bool), // Recent files (false) / folders (true): opens the whole list; its chevron folds the rows below
-    Child,      // a recent file or folder, under its header
+    Head(u8),   // Recent files (0) / folders (1), Bookmarks (2), This PC (3), Network (4), Linux (5): its chevron
+                // folds the rows below (Bookmarks' whole row); the rest opens the place
+    Child,      // a recent file or folder, a place's drive or server, under its header
+    Mark,       // a bookmarked file or folder, under Bookmarks; dropped there (never into it)
     Drive,      // at the bottom, with how full it is
     Sep,
 }
@@ -51,10 +54,14 @@ pub struct Prefs {
     compact: bool,
     hidden: Vec<String>, // targets, lowercased
     pins: Vec<String>,
+    marks: bool,
+    open_marks: bool,
+    bookmarks: Vec<String>,
+    open_places: [bool; 3], // This PC, Network, Linux unfolded
 }
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { recent_files: true, recent_dirs: true, open_files: true, open_dirs: true, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new() }
+        Prefs { recent_files: true, recent_dirs: true, open_files: true, open_dirs: true, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new(), marks: true, open_marks: true, bookmarks: Vec::new(), open_places: [false; 3] }
     }
 }
 impl Prefs {
@@ -67,7 +74,17 @@ impl Prefs {
             3 => &mut self.places,
             4 => &mut self.terminals,
             5 => &mut self.drives,
-            _ => &mut self.bars,
+            6 => &mut self.bars,
+            _ => &mut self.marks,
+        }
+    }
+    /// Header `k`'s rows unfolded (see [`Kind::Head`]).
+    fn open(&mut self, k: u8) -> &mut bool {
+        match k {
+            0 => &mut self.open_files,
+            1 => &mut self.open_dirs,
+            2 => &mut self.open_marks,
+            k => &mut self.open_places[(k as usize - 3).min(2)],
         }
     }
 }
@@ -100,6 +117,8 @@ struct Side {
     cur_dir: Option<String>, // the folder on screen, as it's spelled
     prefs: Prefs,
     drv: Vec<Item>, // read on a device change only: a sleeping disk can take seconds to answer
+    kids: HashMap<String, Vec<(String, String)>>, // an unfolded place's rows (name, path), read when it opens
+    dropping: bool, // a drag over Bookmarks: lit
     gen: u64,       // `crate::recent`'s, when its rows were read
 }
 
@@ -203,7 +222,7 @@ fn base(p: &str) -> String {
     }
 }
 
-fn build(p: &Prefs, drv: &[Item]) -> Vec<Item> {
+fn build(p: &Prefs, drv: &[Item], kids: &HashMap<String, Vec<(String, String)>>) -> Vec<Item> {
     // Home and Gallery are virtual shell folders; browse their real folders (profile, Pictures) but keep Explorer's icons
     let place = |label: &str, guid: &str, id: &windows::core::GUID| {
         let mut it = known(id, label).unwrap_or_else(|| special(label, guid));
@@ -222,12 +241,23 @@ fn build(p: &Prefs, drv: &[Item]) -> Vec<Item> {
         v[2].target = sc.target;
     }
     v.extend(p.pins.iter().map(|d| Item { space: None, kind: Kind::Pin, label: base(d), target: d.clone(), mosaic: true, icon: String::new() }));
+    if p.marks {
+        // the star of Explorer's Favorites
+        let star = "shell:::{323CA680-C24D-4099-B94D-446DD2D7249E}".into();
+        v.push(Item { space: None, kind: Kind::Head(2), label: t("side.bookmarks").into(), target: "marks:".into(), mosaic: false, icon: star });
+        if p.open_marks {
+            v.extend(p.bookmarks.iter().map(|f| Item { space: None, kind: Kind::Mark, label: base(f), target: f.clone(), mosaic: std::path::Path::new(f).is_dir(), icon: String::new() }));
+            if p.bookmarks.is_empty() {
+                v.push(Item { space: None, kind: Kind::Mark, label: t("side.marks_empty").into(), target: String::new(), mosaic: false, icon: String::new() });
+            }
+        }
+    }
     for (dirs, on, open, label, q) in [(false, p.recent_files, p.open_files, "side.recent_files", "recent:"), (true, p.recent_dirs, p.open_dirs, "side.recent_folders", "recent-dirs:")] {
         if !on {
             continue;
         }
         // the shell has no icon for Recent folders: the Recent folder's clock, for both
-        v.push(Item { space: None, kind: Kind::Head(dirs), label: t(label).into(), target: q.into(), mosaic: true, icon: recent_dir() });
+        v.push(Item { space: None, kind: Kind::Head(dirs as u8), label: t(label).into(), target: q.into(), mosaic: true, icon: recent_dir() });
         if open {
             let n = v.len();
             v.extend(crate::recent::list(dirs, p.recent_n).into_iter().map(|f| Item { space: None, kind: Kind::Child, label: base(&f), target: f, mosaic: dirs, icon: String::new() }));
@@ -253,12 +283,20 @@ fn build(p: &Prefs, drv: &[Item]) -> Vec<Item> {
     );
     v.push(sep());
     // listed in Mosaic too, by asking the file system (`crate::direct`); Explorer's icons
-    let list = |label: &str, q: &str, guid: &str| Item { target: q.into(), mosaic: true, icon: format!("shell:::{{{guid}}}"), ..special(label, guid) };
+    // each unfolds, as Explorer's, into its drives, servers or distributions
     if p.places {
-        v.push(list(t("side.this_pc"), "pc:", "20D04FE0-3AEA-1069-A2D8-08002B30309D"));
-        v.push(list(t("side.network"), "net:", "F02C1A0D-BE21-4350-88B0-7367FC96EF3C"));
-        if std::path::Path::new(r"C:\Windows\System32\wsl.exe").exists() {
-            v.push(list(t("side.linux"), "linux:", "B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6"));
+        let wsl = std::path::Path::new(r"C:\Windows\System32\wsl.exe").exists();
+        let all = [("side.this_pc", "pc:", "20D04FE0-3AEA-1069-A2D8-08002B30309D"), ("side.network", "net:", "F02C1A0D-BE21-4350-88B0-7367FC96EF3C"), ("side.linux", "linux:", "B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6")];
+        for (k, (label, q, guid)) in all.into_iter().enumerate().filter(|&(k, _)| k < 2 || wsl) {
+            v.push(Item { kind: Kind::Head(3 + k as u8), target: q.into(), mosaic: true, icon: format!("shell:::{{{guid}}}"), ..special(t(label), guid) });
+            if !p.open_places[k] || p.hidden.contains(&q.to_string()) {
+                continue;
+            }
+            match kids.get(q) {
+                Some(rows) if rows.is_empty() => v.push(Item { space: None, kind: Kind::Child, label: t("side.empty").into(), target: String::new(), mosaic: false, icon: String::new() }),
+                Some(rows) => v.extend(rows.iter().map(|(name, path)| Item { space: None, kind: Kind::Child, label: name.clone(), target: path.clone(), mosaic: true, icon: String::new() })),
+                None => {} // being read
+            }
         }
     }
     // terminals: open in the selected / current folder (`go_place` resolves it)
@@ -310,9 +348,11 @@ pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
             cv: Canvas::new(hwnd, &gfx),
             gfx,
             scale,
-            items: build(&prefs, &drv),
+            items: build(&prefs, &drv, &HashMap::new()),
             prefs,
             drv,
+            kids: HashMap::new(),
+            dropping: false,
             gen: crate::recent::generation(),
             cur_dir: None,
             png: HashMap::new(),
@@ -325,6 +365,7 @@ pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
             grab: None,
             cur: String::new(),
         };
+        s.ask_kids();
         s.ask_icons();
         SIDE.with(|c| *c.borrow_mut() = Some(s));
     }
@@ -358,8 +399,39 @@ pub fn current(q: &str) {
 pub fn relabel() {
     with(|s| {
         s.drv = drives();
+        s.kids.clear(); // a drive came or went, perhaps
         s.rebuild();
     });
+}
+
+/// Screen point `x, y` over Bookmarks (its header or rows), where a drag bookmarks what it carries.
+pub fn over_marks(x: i32, y: i32) -> bool {
+    with(|s| s.marks_span(x, y).is_some()).unwrap_or(false)
+}
+
+/// A drag is over Bookmarks (or not): it lights up.
+pub fn dropping(on: bool) {
+    with(|s| {
+        if s.dropping != on {
+            s.dropping = on;
+            unsafe { InvalidateRect(s.hwnd, null(), 0) };
+        }
+    });
+}
+
+/// `files` bookmarked (those not yet), Bookmarks shown and unfolded, and saved.
+pub fn bookmark(files: &[String]) {
+    with(|s| {
+        let p = &mut s.prefs;
+        for f in files {
+            if !p.bookmarks.iter().any(|b| b.eq_ignore_ascii_case(f)) {
+                p.bookmarks.push(f.clone());
+            }
+        }
+        (p.marks, p.open_marks) = (true, true);
+        s.rebuild();
+    });
+    save();
 }
 
 /// The recent rows again, if the lists changed (something was opened).
@@ -396,7 +468,8 @@ impl Side {
     }
 
     fn rebuild(&mut self) {
-        self.items = build(&self.prefs, &self.drv);
+        self.ask_kids();
+        self.items = build(&self.prefs, &self.drv, &self.kids);
         self.gen = crate::recent::generation();
         self.hot = None;
         self.press = None;
@@ -410,6 +483,41 @@ impl Side {
         if open && self.gen != crate::recent::generation() {
             self.rebuild();
         }
+    }
+
+    /// Read what each unfolded place holds, off this thread (a network can take a while); rebuilt when it's in.
+    fn ask_kids(&mut self) {
+        for (k, q) in ["pc:", "net:", "linux:"].into_iter().enumerate() {
+            if !self.prefs.places || !self.prefs.open_places[k] {
+                self.kids.remove(q); // read again when unfolded again
+                continue;
+            }
+            if self.kids.contains_key(q) || !self.asked.insert(format!("kids:{q}")) {
+                continue;
+            }
+            let hw = self.hwnd as isize;
+            std::thread::spawn(move || {
+                let b: Box<(String, Vec<(String, String)>)> = Box::new((q.to_string(), crate::direct::places(q)));
+                unsafe { PostMessageW(hw as HWND, WM_KIDS, 0, Box::into_raw(b) as isize) };
+            });
+        }
+    }
+
+    /// Bookmarks' rows (header to last), in this window's coordinates, if screen point `x, y` is over them.
+    fn marks_span(&self, x: i32, y: i32) -> Option<RECT> {
+        let mut p = POINT { x, y };
+        let mut c: RECT = unsafe { std::mem::zeroed() };
+        unsafe {
+            if IsWindowVisible(self.hwnd) == 0 {
+                return None;
+            }
+            ScreenToClient(self.hwnd, &mut p);
+            GetClientRect(self.hwnd, &mut c);
+        }
+        let off = self.y.round() as i32;
+        let rows: Vec<_> = self.rows().0.into_iter().filter(|r| matches!(self.items[r.0].kind, Kind::Head(2) | Kind::Mark)).collect();
+        let r = RECT { left: self.px(6), top: rows.first()?.1 - off, right: c.right - self.px(6), bottom: rows.last()?.2 - off };
+        (p.x >= 0 && p.x < c.right && p.y >= r.top && p.y < r.bottom).then_some(r)
     }
 
     /// Ask the shell helper for every item's icon (once each).
@@ -568,9 +676,9 @@ impl Side {
         }
         let i = self.press.take().filter(|&p| self.item_at(x, y) == Some(p))?;
         let it = &self.items[i];
-        if let Kind::Head(dirs) = it.kind {
-            if x < self.px(30) {
-                let open = if dirs { &mut self.prefs.open_dirs } else { &mut self.prefs.open_files };
+        if let Kind::Head(k) = it.kind {
+            if k == 2 || x < self.px(30) {
+                let open = self.prefs.open(k);
                 *open = !*open;
                 self.rebuild();
                 return Some(None);
@@ -639,10 +747,15 @@ impl Side {
             let slh = self.small_lh();
             // a drive's name over its bar over its free space, the three centred together
             let ty = r.top + (r.bottom - r.top - lh - if drive { px(9) + slh } else { 0 }) / 2;
-            let ix = r.left + px(if it.kind == Kind::Child { 36 } else { 24 });
-            if let Kind::Head(dirs) = it.kind {
+            let ix = r.left + px(if matches!(it.kind, Kind::Child | Kind::Mark) { 36 } else { 24 });
+            if let Kind::Head(k) = it.kind {
                 // its chevron, in the gutter: › folded, ⌄ open
-                let open = if dirs { self.prefs.open_dirs } else { self.prefs.open_files };
+                let open = match k {
+                    0 => self.prefs.open_files,
+                    1 => self.prefs.open_dirs,
+                    2 => self.prefs.open_marks,
+                    k => self.prefs.open_places[(k as usize - 3).min(2)],
+                };
                 let (cx, cy, h) = ((r.left + px(12)) as f32, (r.top + r.bottom) as f32 / 2.0, 3.5 * s as f32);
                 if open {
                     cv.chevron(cx, cy, h, true, theme().muted, 1.3 * s as f32);
@@ -674,6 +787,15 @@ impl Side {
             cv.unclip();
         }
         cv.unclip();
+        // a drag over Bookmarks: the section framed, as where it lands
+        if self.dropping {
+            if let Some(r) = self.rows().0.iter().filter(|r| matches!(self.items[r.0].kind, Kind::Head(2) | Kind::Mark)).fold(None, |a: Option<RECT>, r| {
+                Some(a.map_or(RECT { left: px(4), top: r.1 - off - px(2), right: c.right - px(5), bottom: r.2 - off + px(2) }, |a| RECT { bottom: r.2 - off + px(2), ..a }))
+            }) {
+                cv.rrect_a(&r, (7.0 * s) as f32, Some(theme().accent), None, 0.10);
+                cv.rrect(&r, (7.0 * s) as f32, None, Some(theme().accent));
+            }
+        }
         if let Some(r) = self.thumb() {
             cv.rrect_a(&r, (r.right - r.left) as f32 / 2.0, Some(theme().muted), None, if self.grab.is_some() { 0.9 } else { 0.45 });
         }
@@ -705,6 +827,19 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         WM_ICON => {
             let p = l as *mut (String, Option<Vec<u8>>);
             if with(|s| s.got(*Box::from_raw(p))).is_none() {
+                PostMessageW(h, m, wp, l); // busy: try again in a moment
+            }
+            return 0;
+        }
+        WM_KIDS => {
+            let p = l as *mut (String, Vec<(String, String)>);
+            let got = with(|s| {
+                let (q, rows) = *Box::from_raw(p);
+                s.asked.remove(&format!("kids:{q}"));
+                s.kids.insert(q, rows);
+                s.rebuild();
+            });
+            if got.is_none() {
                 PostMessageW(h, m, wp, l); // busy: try again in a moment
             }
             return 0;
@@ -786,6 +921,7 @@ enum A {
     Reveal,
     Pin(String),
     Unpin,
+    Unmark,
     Forget,
     Hide,
     Eject,
@@ -835,7 +971,7 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
         if let Some(x) = explorer {
             v.push(e(t("side.open_explorer"), false, A::Explorer(x)));
         }
-        if it.kind == Kind::Child {
+        if matches!(it.kind, Kind::Child | Kind::Mark) && real {
             v.push(e(t("menu.open_folder"), false, A::Reveal));
         }
         if real {
@@ -847,6 +983,9 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
         }
         match it.kind {
             Kind::Pin => v.push(e(t("side.unpin"), false, A::Unpin)),
+            Kind::Mark => v.push(e(t("side.unmark"), false, A::Unmark)),
+            Kind::Head(2) => v.push(e(t("side.hide"), false, A::Show(7))),
+            Kind::Child if !real || it.target.starts_with(r"\\") || it.target.len() <= 3 => {} // a place's drive or server
             Kind::Child => v.push(e(t("side.remove_recent"), false, A::Forget)),
             _ => v.push(e(t("side.hide"), false, A::Hide)),
         }
@@ -862,7 +1001,7 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
         v.push(e(t("side.pin_current"), false, A::Pin(d)));
     }
     let mut q = p.clone();
-    let shows = [("side.recent_files", 0), ("side.recent_folders", 1), ("side.folders", 2), ("side.places", 3), ("side.terminals", 4), ("side.drives", 5), ("side.usage", 6)];
+    let shows = [("side.bookmarks", 7), ("side.recent_files", 0), ("side.recent_folders", 1), ("side.folders", 2), ("side.places", 3), ("side.terminals", 4), ("side.drives", 5), ("side.usage", 6)];
     let sub = shows.iter().map(|&(k, n)| e(t(k), *q.flag(n), A::Show(n))).collect();
     v.push(MItem { label: t("side.show").into(), sub, ..Default::default() });
     let sub = [5, 10, 20].iter().map(|&n| e(&n.to_string(), p.recent_n == n, A::Count(n))).collect();
@@ -905,6 +1044,7 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
                 match a {
                     A::Pin(d) => p.pins.push(d),
                     A::Unpin => p.pins.retain(|d| *d != target),
+                    A::Unmark => p.bookmarks.retain(|d| *d != target),
                     A::Hide => p.hidden.push(target.to_lowercase()),
                     A::Show(n) => {
                         let f = p.flag(n);

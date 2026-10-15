@@ -18,13 +18,19 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::gfx::{Bitmap, Canvas, Gfx};
 use super::themes::ink;
-use super::{png_pixels, put, put_mid, t, theme, w, wz, xy, ARROWS, ARROW_SIZES};
+use super::{png_pixels, put, put_mid, t, theme, w, wz, xy, Px, ARROWS, ARROW_SIZES};
 
-// the layout, in CSS px from the top: the folders' section, a heading, three choices and what the chosen one does,
+const WM_PREVIEWS: u32 = WM_APP + 1; // lParam: a boxed [Option<Px>; 3], the folder as Type, Contents, Both
+const SAMPLE: &[u8] = include_bytes!("../icons/sample-photo.png");
+
+// the layout, in CSS px from the top: the folders' section, a heading, three choices (each showing a folder of
+// pictures that way) and what the chosen one does,
 // then the arrows (a size slider beside their heading), each a swatch with its name, five to a row
 const WIDTH: i32 = 520;
 const PAD: i32 = 24;
-const SECTION: [i32; 2] = [70, 196];
+const SEG_H: i32 = 104;
+const PREVIEW: i32 = 64;
+const SECTION: [i32; 2] = [70, 266];
 const SWATCH: i32 = 70;
 const PER_ROW: usize = 5;
 const ARROW: i32 = 32;
@@ -65,6 +71,8 @@ struct Dlg {
     scale: f64,
     vals: [u8; 2], // folder_icons, link_arrow
     arrows: (u32, Vec<Option<Bitmap>>), // the swatches' arrows, made on this canvas (its `gen`)
+    previews: Option<[Option<Px>; 3]>, // a folder of pictures as each choice shows it
+    shown: (u32, Vec<Option<Bitmap>>),  // … made on this canvas
     size: u8,      // link_size
     sliding: bool, // the size knob held (the mouse captured)
     hot: Option<Hot>,
@@ -89,7 +97,7 @@ impl Dlg {
         let edge = |i: i32| l + (r - l) * i / 3;
         let i = i as i32;
         let top = self.px(SECTION[k] + 26);
-        RECT { left: edge(i) - (i > 0) as i32, top, right: edge(i + 1), bottom: top + self.px(34) }
+        RECT { left: edge(i) - (i > 0) as i32, top, right: edge(i + 1), bottom: top + self.px(SEG_H) }
     }
 
     /// Arrow `i`'s swatch.
@@ -173,6 +181,9 @@ impl Dlg {
             let s = self.px(ARROW);
             self.arrows = (self.cv.gen, ARROWS.iter().map(|b| png_pixels(b, s).and_then(|(px, w, h)| self.cv.make_bitmap(&px, w, h))).collect());
         }
+        if let Some(p) = self.previews.as_ref().filter(|_| self.shown.0 != self.cv.gen || self.shown.1.is_empty()) {
+            self.shown = (self.cv.gen, p.iter().map(|x| x.as_ref().and_then(|(px, w, h)| self.cv.make_bitmap(px, *w, *h))).collect());
+        }
         if !self.cv.begin() {
             return;
         }
@@ -200,13 +211,19 @@ impl Dlg {
                     }
                     let rc = self.seg(k, i);
                     let (a, b) = (if i == 0 { rad(6.0) } else { 0.0 }, if i == 2 { rad(6.0) } else { 0.0 });
-                    cv.corners(&rc, [a, b, b, a], if sel { th.hl } else { th.card }, if sel { th.accent } else { th.line });
-                    put_mid(g, cv, t(label), if sel { &g.f.semi } else { &g.f.reg }, &rc, mid_y(&rc), if sel { th.accent } else if hot(Hot::Seg(k, i)) { th.text } else { th.muted });
+                    cv.corners(&rc, [a, b, b, a], if sel { th.hl } else if hot(Hot::Seg(k, i)) { th.row } else { th.card }, if sel { th.accent } else { th.line });
+                    // the folder that way, over its name
+                    let (p, x) = (px(PREVIEW), (rc.left + rc.right - px(PREVIEW)) / 2);
+                    if let Some(Some(bm)) = self.shown.1.get(i as usize) {
+                        cv.bitmap(bm, &RECT { left: x, top: rc.top + px(8), right: x + p, bottom: rc.top + px(8) + p }, 1.0);
+                    }
+                    let row = RECT { top: rc.bottom - px(30), ..rc };
+                    put_mid(g, cv, t(label), if sel { &g.f.semi } else { &g.f.reg }, &row, mid_y(&row), if sel { th.accent } else if hot(Hot::Seg(k, i)) { th.text } else { th.muted });
                 }
             }
             let hint = choices[self.vals[k].min(2) as usize].1;
             if let Some(tl) = g.layout(&w(t(hint)), &g.f.reg, (r - l) as f32, (2 * lh) as f32) {
-                cv.text(&tl, l, px(SECTION[k] + 70), th.muted);
+                cv.text(&tl, l, px(SECTION[k] + 26 + SEG_H + 10), th.muted);
             }
         }
         put(g, cv, t("icons.arrow"), &g.f.semi, l, px(SECTION[1]), th.text);
@@ -288,12 +305,34 @@ pub fn open(owner: HWND) {
         DwmSetWindowAttribute(hwnd, 33, &round as *const _ as *const std::ffi::c_void, 4);
         let dark: BOOL = theme().dark as i32;
         DwmSetWindowAttribute(hwnd, 20, &dark as *const _ as *const std::ffi::c_void, 4);
-        let d = Dlg { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, vals, arrows: (0, Vec::new()), size, sliding: false, hot: None, press: None, tracking: false };
+        let d = Dlg { hwnd, owner, cv: Canvas::new(hwnd, &gfx), gfx, scale, vals, arrows: (0, Vec::new()), previews: None, shown: (0, Vec::new()), size, sliding: false, hot: None, press: None, tracking: false };
         DLG.with(|c| *c.borrow_mut() = Some(d));
+        previews(hwnd, (PREVIEW as f64 * scale).round() as i32);
         EnableWindow(owner, 0);
         ShowWindow(hwnd, SW_SHOW);
         SetFocus(hwnd);
     }
+}
+
+/// A folder of pictures as Type (Pictures' own folder), Contents (a plain folder showing a photo inside) and Both
+/// (Pictures' folder holding it) show it, `size` px, made off this thread and posted to `hwnd`.
+fn previews(hwnd: HWND, size: i32) {
+    let hw = hwnd as isize;
+    super::shell::shell_spawn(Box::new(move |dropped| {
+        if dropped {
+            return;
+        }
+        let big = 256; // drawn large, made small as a whole: smooth edges
+        let icon = |p: &str| super::shell::thumbnail(p, big, true).and_then(|b| png_pixels(&b, big));
+        let kind = super::side::kind_dir(1).and_then(|d| icon(&d));
+        let plain = icon(&std::env::temp_dir().to_string_lossy());
+        let inside = |f: &Option<Px>| f.as_ref().and_then(|f| super::fold_in(f, SAMPLE, false));
+        let out: Box<[Option<Px>; 3]> = Box::new([kind.clone(), inside(&plain).or(plain), inside(&kind).or(kind)].map(|p| p.map(|p| super::shrink(p, size))));
+        let raw = Box::into_raw(out);
+        if unsafe { PostMessageW(hw as HWND, WM_PREVIEWS, 0, raw as isize) } == 0 {
+            drop(unsafe { Box::from_raw(raw) }); // closed already
+        }
+    }));
 }
 
 fn close() {
@@ -320,6 +359,14 @@ pub fn hwnd() -> Option<HWND> {
 unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
     match m {
         WM_ERASEBKGND => return 1,
+        WM_PREVIEWS => {
+            let p = *Box::from_raw(l as *mut [Option<Px>; 3]);
+            with(|d| {
+                (d.previews, d.shown) = (Some(p), (0, Vec::new()));
+                InvalidateRect(h, null(), 0);
+            });
+            return 0;
+        }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             BeginPaint(h, &mut ps);

@@ -18,6 +18,7 @@ enum Spot {
     NewTab,
     Pane(usize, String),
     Item(usize, String),
+    Mark, // the sidebar's Bookmarks: bookmarked, never moved into one
 }
 pub(super) struct Dropped {
     files: Vec<String>,
@@ -160,6 +161,9 @@ fn parent_of(p: &str) -> Option<String> {
 impl Ui {
     /// Where a drag at screen point `pt` points.
     fn spot_at(&mut self, pt: Pointl, files: &[String]) -> Option<Spot> {
+        if side::over_marks(pt.x, pt.y) {
+            return Some(Spot::Mark);
+        }
         let mut p = POINT { x: pt.x, y: pt.y };
         unsafe { ScreenToClient(self.main, &mut p) };
         let (x, y) = (p.x, p.y);
@@ -191,6 +195,7 @@ impl Ui {
         let Some(mut o) = OVER.with(|o| o.borrow_mut().take()) else { return (DROPEFFECT_NONE, None) };
         let spot = self.spot_at(pt, &o.files);
         if spot != o.spot {
+            side::dropping(spot == Some(Spot::Mark));
             (o.spot, o.since, o.sprung) = (spot.clone(), Instant::now(), false);
         }
         // held over: a tab opens, a folder opens in its pane
@@ -209,7 +214,7 @@ impl Ui {
         }
         let eff = match &spot {
             None => DROPEFFECT_NONE,
-            Some(Spot::NewTab) => {
+            Some(Spot::NewTab | Spot::Mark) => {
                 if allowed & DROPEFFECT_LINK != 0 { DROPEFFECT_LINK } else { DROPEFFECT_COPY & allowed }
             }
             Some(s) => self.spot_dir(s).map_or(DROPEFFECT_NONE, |d| effect(keys, &o.files, &d, allowed)),
@@ -217,6 +222,7 @@ impl Ui {
         let say = match (&spot, eff) {
             (None, _) | (_, DROPEFFECT_NONE) => None,
             (Some(Spot::NewTab), _) => Some((6, t("drop.new_tab").to_string(), String::new())), // DROPIMAGE_LABEL: words only
+            (Some(Spot::Mark), _) => Some((4, t("drop.bookmark").to_string(), String::new())), // DROPIMAGE_LINK
             (Some(s), e) => {
                 let name = self.spot_dir(s).map_or(String::new(), |d| place_name(&self.browse_q(&d)));
                 let (img, key) = match e {
@@ -271,6 +277,7 @@ unsafe fn describe(data: &IDataObject, say: &Option<Say>) {
 }
 /// The drag left or dropped: its image off this window, its words cleared.
 unsafe fn done(o: Option<Over>) {
+    side::dropping(false);
     let Some(o) = o else { return };
     if let (Some(d), Some(_)) = (&o.data, &o.said) {
         describe(d, &None);
@@ -350,6 +357,7 @@ pub(super) unsafe fn dropped(l: LPARAM) {
     let d = *Box::from_raw(l as *mut Dropped);
     let dirs: Vec<String> = d.files.iter().filter(|f| is_dir_path(f)).cloned().collect();
     match d.spot {
+        Spot::Mark => side::bookmark(&d.files),
         Spot::NewTab => {
             with(|u| {
                 for f in &dirs {

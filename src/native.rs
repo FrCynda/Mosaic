@@ -20,6 +20,8 @@ pub mod save;
 mod apps;
 #[path = "native_icons.rs"]
 mod icons;
+#[path = "native_help.rs"]
+mod help;
 use tabs::*;
 
 use std::cell::RefCell;
@@ -431,6 +433,14 @@ unsafe fn cloak(h: HWND, on: bool) {
         }
         if std::env::args().any(|a| a == "--icons") && icons::hwnd().is_none() {
             icons::open(h);
+        }
+        // a search switch's help on its own (`--switch-help=N`, N from 0, Timestamps last), for a look at it
+        if let Some(n) = std::env::args().find_map(|a| a.strip_prefix("--switch-help=").and_then(|n| n.parse::<usize>().ok())) {
+            const SWITCHES: [Hit; 7] = [Hit::Content, Hit::Tags, Hit::MatchCase, Hit::WholeWord, Hit::Regex, Hit::Diacritics, Hit::Timestamps];
+            let k = SWITCHES[n.min(6)];
+            if let Some(r) = with(|u| u.hits.iter().find(|x| x.1 == k).map(|x| x.0)).flatten() {
+                help::open(h, k, r);
+            }
         }
     }
 }
@@ -1745,7 +1755,7 @@ fn open_item(p: &str) {
 }
 
 unsafe fn dispatch(msg: &MSG) {
-    if themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
+    if themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).or(help::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
         // the theme or file windows dialog: the window behind waits, its shortcuts with it
         TranslateMessage(msg);
         DispatchMessageW(msg);
@@ -5266,6 +5276,38 @@ impl Ui {
     }
 
     /// A toolbar click. Returns the target when it opens something modal (a menu, the Contents page).
+    /// A search switch (Content, Metadata, Match case, Whole word, Regex, Diacritics, Timestamps) on or off.
+    fn toggled(&self, h: Hit) -> bool {
+        match h {
+            Hit::Tags => self.args.tags,
+            Hit::Content => self.args.content,
+            Hit::MatchCase => self.args.match_case,
+            Hit::WholeWord => self.args.whole_word,
+            Hit::Regex => self.args.regex,
+            Hit::Diacritics => self.args.diacritics,
+            _ => self.timestamps,
+        }
+    }
+
+    /// Turns a search switch (see [`Self::toggled`]) over, saves, and searches again.
+    fn flip(&mut self, h: Hit) {
+        match h {
+            Hit::Tags => self.args.tags = !self.args.tags,
+            Hit::Content => self.args.content = !self.args.content,
+            Hit::MatchCase => self.args.match_case = !self.args.match_case,
+            Hit::WholeWord => self.args.whole_word = !self.args.whole_word,
+            Hit::Regex => self.args.regex = !self.args.regex,
+            Hit::Diacritics => self.args.diacritics = !self.args.diacritics,
+            _ => {
+                self.timestamps = !self.timestamps;
+                crate::datestore::set_enabled(self.timestamps);
+            }
+        }
+        self.save_settings();
+        self.run(false);
+        self.invalidate();
+    }
+
     fn click_main(&mut self, x: i32, y: i32) -> Option<Hit> {
         let &(_, hit) = self.hits.iter().find(|(r, _)| inside(r, x, y))?;
         match hit {
@@ -5296,25 +5338,7 @@ impl Ui {
                 }
                 self.activate(p);
             }
-            Hit::Tags | Hit::Content => {
-                if hit == Hit::Tags {
-                    self.args.tags = !self.args.tags;
-                } else {
-                    self.args.content = !self.args.content;
-                }
-                self.save_settings();
-                self.run(false);
-            }
-            Hit::MatchCase | Hit::WholeWord | Hit::Regex | Hit::Diacritics => {
-                match hit {
-                    Hit::MatchCase => self.args.match_case = !self.args.match_case,
-                    Hit::WholeWord => self.args.whole_word = !self.args.whole_word,
-                    Hit::Regex => self.args.regex = !self.args.regex,
-                    _ => self.args.diacritics = !self.args.diacritics,
-                }
-                self.save_settings();
-                self.run(false);
-            }
+            Hit::Tags | Hit::Content | Hit::MatchCase | Hit::WholeWord | Hit::Regex | Hit::Diacritics | Hit::Timestamps => self.flip(hit),
             Hit::Search => unsafe {
                 SetFocus(self.edit);
             },
@@ -5337,12 +5361,6 @@ impl Ui {
             Hit::Smooth => {
                 self.smooth = !self.smooth;
                 self.save_settings();
-            }
-            Hit::Timestamps => {
-                self.timestamps = !self.timestamps;
-                crate::datestore::set_enabled(self.timestamps);
-                self.save_settings();
-                self.run(false);
             }
             Hit::View(k) => self.reshape(k == 1, self.size),
             Hit::Browse(k) => self.set_browse(if self.browse == k { 0 } else { k }),
@@ -5717,12 +5735,18 @@ impl Ui {
         let r0 = (self.y / rh as f64).floor() as usize;
         let r1 = ((self.y + ht as f64) / rh as f64).floor() as usize;
         let (i0, i1) = (r0 * self.ncols(), ((r1 + 1) * self.ncols()).min(self.matches));
+        // the item being renamed looks unselected, its name in the field, as in Explorer
+        let renaming = RENAMING.with(|r| r.borrow().as_ref().map(|r| r.1.clone()));
         for i in i0..i1.max(i0) {
             let texts = self.item_texts(i);
             let Some((is_dir, sys, own, path, tkey, hidden, link)) = self.get(i).map(|r| (r.is_dir, r.sys, r.own, r.path.clone(), r.tkey.clone(), r.hidden, r.link)) else { continue };
             let arrow = link;
             let fade = if hidden { 0.5 } else { 1.0 };
             let color = if is_dir && self.folder_color { theme().accent } else { theme().text };
+            let (sel, hover) = match renaming.as_deref() == Some(path.as_str()) {
+                true => (false, false),
+                false => (self.sel.has(i), self.hover == Some(i)),
+            };
             let (dx, dy) = self.lag(&path); // sliding to its new place after a live refresh
             let (dx, dy) = (dx.round() as i32, dy.round() as i32);
             if self.grid {
@@ -5731,9 +5755,9 @@ impl Ui {
                 let top = ((i / self.per) as f64 * rh as f64 - self.y).round() as i32 + dy;
                 let g = self.px(G);
                 let bx = RECT { left: a + g, top: top + g, right: b - g, bottom: top + rh - g };
-                if self.sel.has(i) {
+                if sel {
                     self.cl.rrect(&bx, rad(8.0), Some(theme().sel), Some(theme().accent));
-                } else if self.hover == Some(i) {
+                } else if hover {
                     self.cl.rrect(&bx, rad(8.0), Some(theme().row), None);
                 }
                 self.glow(&path, &bx, rad(8.0));
@@ -5764,9 +5788,9 @@ impl Ui {
             } else {
                 let top = (i as f64 * rh as f64 - self.y).round() as i32 + dy;
                 let bx = RECT { left: self.px(6), top: top + self.px(2), right: cw, bottom: top + rh - self.px(2) };
-                if self.sel.has(i) {
+                if sel {
                     self.cl.rrect(&bx, rad(6.0), Some(theme().sel), None);
-                } else if self.hover == Some(i) {
+                } else if hover {
                     self.cl.rrect(&bx, rad(6.0), Some(theme().row), None);
                 }
                 self.glow(&path, &bx, rad(6.0));
@@ -6501,7 +6525,8 @@ const BAD_NAME: &str = "\\/:*?\"<>|";
 pub(super) enum Look {
     /// A box of its own: padded, in a rounded accent border, at least 150 px wide.
     Box,
-    /// Right over a name drawn in `r` (a list row's): the same font, the text where it was, a thin border hugging it.
+    /// Right over a name drawn in `r` (a list row's): the same font, the text where it was, a thin square border
+    /// hugging it, as Explorer's.
     Name,
     /// The same for a name drawn on up to two centred lines (a grid tile's): it wraps, and grows down as it's typed into.
     Wrap,
@@ -6581,7 +6606,7 @@ unsafe fn field_bg(e: HWND) -> u32 {
     }
 }
 
-/// Widens (or narrows back) field `e` to its text, within its parent, and rounds its corners. A wrapping one keeps
+/// Widens (or narrows back) field `e` to its text, within its parent, and rounds a box's corners. A wrapping one keeps
 /// its width and grows down instead, up to five lines.
 unsafe fn fit(e: HWND, force: bool) {
     let Fld { pad, padv, min_w, th, look, .. } = FIELD.get();
@@ -6610,9 +6635,8 @@ unsafe fn fit(e: HWND, force: bool) {
         return;
     }
     SetWindowPos(e, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    if !matches!(look, Look::Bare(..)) {
-        let rad = if look == Look::Box { pad } else { 2 * pad };
-        SetWindowRgn(e, CreateRoundRectRgn(0, 0, w + 1, h + 1, rad, rad), 1);
+    if look == Look::Box {
+        SetWindowRgn(e, CreateRoundRectRgn(0, 0, w + 1, h + 1, pad, pad), 1);
     }
     // scrolled while it was narrower: back to the start, then to the caret
     let (mut a, mut z) = (0u32, 0u32);
@@ -6663,7 +6687,7 @@ unsafe extern "system" fn field_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM, _: 
             FillRect(dc, &RECT { left: 0, top: 0, right: w, bottom: hh }, bg);
             DeleteObject(bg);
             if !matches!(look, Look::Bare(..)) {
-                let (wd, rad) = if look == Look::Box { ((pad / 8).max(1), pad) } else { (1, 2 * pad) };
+                let (wd, rad) = if look == Look::Box { ((pad / 8).max(1), pad) } else { (1, 0) }; // a name's: square
                 let pen = CreatePen(PS_INSIDEFRAME, wd, gdi(theme().accent));
                 let (op, ob) = (SelectObject(dc, pen), SelectObject(dc, GetStockObject(NULL_BRUSH)));
                 RoundRect(dc, 0, 0, w, hh, rad, rad);
@@ -6850,6 +6874,7 @@ unsafe fn start_rename() {
     let edit = field(list, r, &name, name[..stem].encode_utf16().count() as isize, "", true, look);
     if !edit.is_null() {
         RENAMING.set(Some((edit, path)));
+        InvalidateRect(list, null(), 0); // its selection off
     }
 }
 
@@ -6864,7 +6889,9 @@ unsafe fn end_rename(keep: bool) {
             SetFocus(list);
         }
     }
+    let list = GetParent(edit);
     DestroyWindow(edit);
+    InvalidateRect(list, null(), 0); // its selection back
     let from = std::path::Path::new(&path);
     if !keep || name.is_empty() || from.file_name().is_some_and(|n| n.to_string_lossy() == name) {
         return;
@@ -7587,6 +7614,14 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_RBUTTONUP => {
             let (x, y) = xy(l);
+            // a search switch: what it does, with examples (Timestamps: a date filter to pick)
+            let switch = with(|u| u.hits.iter().find(|(r, _)| inside(r, x, y)).copied()).flatten().filter(|(_, k)| {
+                matches!(k, Hit::Tags | Hit::Content | Hit::MatchCase | Hit::WholeWord | Hit::Regex | Hit::Diacritics | Hit::Timestamps)
+            });
+            if let Some((r, k)) = switch {
+                help::open(h, k, r);
+                return 0;
+            }
             if main_menu(h, x, y) {
                 return 0;
             }
@@ -7713,11 +7748,12 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         // menu does, and the click goes no further (no beep)
         WM_SETCURSOR if (l & 0xffff) as u16 == HTERROR as u16
             && matches!((l >> 16) as u32 & 0xffff, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
-            && themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).is_some() =>
+            && themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).or(help::hwnd()).is_some() =>
         {
             themes::dismiss();
             apps::dismiss();
             icons::dismiss();
+            help::dismiss();
             return 1;
         }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|u| {

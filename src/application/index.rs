@@ -1511,7 +1511,7 @@ mod tests {
     #[test]
     fn a_coalesced_change_log_replays_to_the_live_index() {
         for k in 1..=20 {
-            coalesced_replay(k * 0x9e3779b97f4a7c15);
+            coalesced_replay((k as u64).wrapping_mul(0x9e3779b97f4a7c15));
         }
     }
 

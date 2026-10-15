@@ -707,11 +707,19 @@ pub(super) fn poll() {
     });
 }
 
+/// This window going: the app's (hidden) dialog takes the activation first, so that Windows hands it back to the app
+/// when the dialog closes. Hidden first, this window gave it to whatever window came next (another program).
+unsafe fn leave(main: HWND, dlg: HWND) {
+    front(dlg);
+    ShowWindow(main, SW_HIDE);
+}
+
 /// The window closing without an answer (×, Alt+F4) is Cancel.
 pub(super) fn closing() {
     pick(|p| unsafe {
         if !p.done {
             p.done = true;
+            front(p.dlg); // see `leave`
             PostMessageW(p.dlg, WM_COMMAND, IDCANCEL as usize, 0);
         }
     });
@@ -728,7 +736,7 @@ pub(super) unsafe fn give_back(main: HWND) {
         p.done = true;
         p.dlg
     }) {
-        ShowWindow(main, SW_HIDE);
+        leave(main, dlg);
         unhide(dlg);
     }
     PostMessageW(main, WM_CLOSE, 0, 0);
@@ -882,7 +890,7 @@ pub(super) unsafe fn commit(main: HWND) {
 /// no, with a message of its own), the real dialog it is.
 unsafe fn hand_over(main: HWND, dlg: HWND, answer: &str, folder: bool, remember: Option<String>) {
     pick(|p| p.done = true);
-    ShowWindow(main, SW_HIDE);
+    leave(main, dlg);
     let e = name_edit(dlg);
     if !e.is_null() {
         send(e, WM_SETTEXT, 0, wz(answer).as_ptr() as isize);
@@ -953,7 +961,7 @@ unsafe fn commit_save(main: HWND, dlg: HWND, e: HWND, typed: &str, dir: Option<S
         Err(_) => {}
     }
     pick(|p| p.done = true);
-    ShowWindow(main, SW_HIDE);
+    leave(main, dlg);
     let Some(p) = parts(dlg) else {
         unhide(dlg);
         PostMessageW(main, WM_CLOSE, 0, 0);
