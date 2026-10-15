@@ -572,6 +572,7 @@ enum Hit {
     Smooth,      // status bar: smooth scrolling on / off (off: the wheel moves in steps)
     Browse(u8),  // status bar [Browse|Subfolders]: 1 / 2 lists a folder's contents / everything below it here; neither opens folders in Explorer (Alt+Up goes up)
     Side,        // status bar: the places panel at the left on / off (Alt+B)
+    Fold,        // status bar, at its right end: › folds all its buttons away, ‹ brings them back
     MatchCase,   // toolbar: case-sensitive search (Alt+M)
     WholeWord,   // toolbar: whole-word search (Alt+W)
     Regex,       // toolbar: regex search (Alt+E)
@@ -989,6 +990,7 @@ struct Ui {
     thousands: Vec<u16>,
     wheel_lines: f64,
     smooth: bool, // glide on wheel / scrollbar paging, else jump
+    folded: bool, // the status bar's buttons folded away behind its ‹
     folder_color: bool, // folder names in the accent colour (off: plain text, like files)
     folder_icons: u8,   // View > Icons…: a tile of a folder of one kind of file shows 0 that kind's folder, 1 what's inside, 2 both
     link_arrow: u8,     // … the arrow on a shortcut's tile: an index into `ARROWS`
@@ -1563,6 +1565,7 @@ pub fn run() {
             thousands: thousands(),
             wheel_lines: lines.max(1) as f64,
             smooth: get("smooth") != "0",
+            folded: get("folded") == "1",
             folder_color: get("folder_color") == "1",
             folder_icons: get("folder_icons").parse().map_or(2, |v: u8| v.min(2)),
             link_arrow: get("link_arrow").parse().map_or(0, |v: u8| v.min(ARROWS.len() as u8 - 1)),
@@ -4318,6 +4321,7 @@ impl Ui {
             Hit::Sort => t("tip.sort").into(),
             Hit::Preview => t("tip.preview").into(),
             Hit::Smooth => t("tip.smooth").into(),
+            Hit::Fold => t(if self.folded { "tip.unfold_bar" } else { "tip.fold_bar" }).into(),
             Hit::Browse(_) => t("tip.browse").into(),
             Hit::Back => t("tip.back").into(),
             Hit::Fwd => t("tip.forward").into(),
@@ -5058,19 +5062,22 @@ impl Ui {
                 x = r.left - gap;
             };
             let seg = |s: &str| g.width(s, &g.f.reg) + px(20);
-            push(seg(t("toolbar.grid")), Hit::View(1), -1); // the two segments share a border
-            push(seg(t("toolbar.list")), Hit::View(0), px(10));
-            push(seg(t("toolbar.preview")), Hit::Preview, px(6));
-            push(seg(t("toolbar.smooth")), Hit::Smooth, px(6));
-            push(seg(t("toolbar.subfolders")), Hit::Browse(2), -1); // like List | Grid, but either can be switched off again
-            push(seg(t("toolbar.browse")), Hit::Browse(1), px(6));
-            push(seg(t("toolbar.sidebar")), Hit::Side, px(10));
-            if self.grid {
-                push(g.width("▲", &g.f.reg) + px(20), Hit::Dir, px(6));
-                push(select(&col_defs()), Hit::Sort, px(6));
-            }
-            if let Some(f) = filters().iter().find(|f| !f.1.is_empty() && f.1 == self.args.cat) {
-                push(g.width(f.0, &g.f.reg) + px(16), Hit::Tag, 0);
+            push(ctl_h, Hit::Fold, px(6));
+            if !self.folded {
+                push(seg(t("toolbar.grid")), Hit::View(1), -1); // the two segments share a border
+                push(seg(t("toolbar.list")), Hit::View(0), px(10));
+                push(seg(t("toolbar.preview")), Hit::Preview, px(6));
+                push(seg(t("toolbar.smooth")), Hit::Smooth, px(6));
+                push(seg(t("toolbar.subfolders")), Hit::Browse(2), -1); // like List | Grid, but either can be switched off again
+                push(seg(t("toolbar.browse")), Hit::Browse(1), px(6));
+                push(seg(t("toolbar.sidebar")), Hit::Side, px(10));
+                if self.grid {
+                    push(g.width("▲", &g.f.reg) + px(20), Hit::Dir, px(6));
+                    push(select(&col_defs()), Hit::Sort, px(6));
+                }
+                if let Some(f) = filters().iter().find(|f| !f.1.is_empty() && f.1 == self.args.cat) {
+                    push(g.width(f.0, &g.f.reg) + px(16), Hit::Tag, 0);
+                }
             }
             // column header (8px below the header; list view only), list, status bar; the preview pane at the right
             let lh_y = self.head_h + px(8);
@@ -5097,7 +5104,7 @@ impl Ui {
                 _ => {}
             }
             // the places panel, left of the list: it gives way first on a narrow window
-            let side_w = if self.show_side && wd >= px(760) { px(side::WIDTH) } else { 0 };
+            let side_w = if self.show_side && wd >= px(760) { px(side::width()) } else { 0 };
             MoveWindow(self.side, left, top, side_w.max(1), (bottom - top).max(1), 1);
             let left = left + side_w;
             ShowWindow(self.side, if side_w > 0 { SW_SHOWNA } else { SW_HIDE });
@@ -5209,6 +5216,7 @@ impl Ui {
             ("pvw", self.pv_w.to_string()),
             ("cols", { let (f, [s, t, m]) = self.colw; format!("{f:.4},{s},{t},{m}") }),
             ("smooth", (self.smooth as u8).to_string()),
+            ("folded", (self.folded as u8).to_string()),
             ("folder_color", (self.folder_color as u8).to_string()),
             ("folder_icons", self.folder_icons.to_string()),
             ("link_arrow", self.link_arrow.to_string()),
@@ -5387,6 +5395,11 @@ impl Ui {
                 self.smooth = !self.smooth;
                 self.save_settings();
             }
+            Hit::Fold => {
+                self.folded = !self.folded;
+                self.save_settings();
+                self.layout();
+            }
             Hit::View(k) => self.reshape(k == 1, self.size),
             Hit::Browse(k) => self.set_browse(if self.browse == k { 0 } else { k }),
             Hit::Col(id, k) => {
@@ -5463,6 +5476,15 @@ impl Ui {
                     }
                     let c = if !on { theme().line } else if hot(h) { theme().accent } else { theme().text };
                     cv.arrow((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0, rad(8.0), h == Hit::Fwd, c, rad(2.0));
+                }
+                Hit::Fold => {
+                    // › folds the buttons away to the right, ‹ brings them back
+                    if hot(h) {
+                        cv.rrect(&r, rad(4.0), Some(theme().hl), None);
+                    }
+                    let (cx, cy, d) = ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0, rad(3.5));
+                    let s = if self.folded { -1.0 } else { 1.0 };
+                    cv.lines(&[(cx - s * d / 2.0, cy - d), (cx + s * d / 2.0, cy), (cx - s * d / 2.0, cy + d)], tc, rad(1.4));
                 }
                 Hit::Dir => {
                     cv.rrect(&r, rad(4.0), Some(theme().card), Some(theme().line));

@@ -22,8 +22,9 @@ use super::{mix, png_pixels, put, shell, t, theme, wz, xy, MItem};
 
 const WM_ICON: u32 = WM_APP + 10;
 const WM_KIDS: u32 = WM_APP + 11; // lParam: a boxed (place, its rows)
-/// Width (CSS px) of the panel.
+/// Width (CSS px) of the panel, until its right edge is dragged; and how far it can be.
 pub const WIDTH: i32 = 200;
+const WIDTHS: (i32, i32) = (150, 480);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -58,10 +59,11 @@ pub struct Prefs {
     open_marks: bool,
     bookmarks: Vec<String>,
     open_places: [bool; 3], // This PC, Network, Linux unfolded
+    width: i32,             // CSS px, as dragged
 }
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { recent_files: true, recent_dirs: true, open_files: true, open_dirs: true, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new(), marks: true, open_marks: true, bookmarks: Vec::new(), open_places: [false; 3] }
+        Prefs { recent_files: true, recent_dirs: true, open_files: true, open_dirs: true, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new(), marks: true, open_marks: true, bookmarks: Vec::new(), open_places: [false; 3], width: WIDTH }
     }
 }
 impl Prefs {
@@ -113,6 +115,7 @@ struct Side {
     press: Option<usize>,
     tracking: bool,
     grab: Option<i32>, // dragging the scrollbar thumb: where it was grabbed, from its top
+    sizing: Option<i32>, // dragging the right edge: the pointer's offset from it
     cur: String,       // the place on screen, as an item's `target` (lowercased): marked
     cur_dir: Option<String>, // the folder on screen, as it's spelled
     prefs: Prefs,
@@ -363,6 +366,7 @@ pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
             press: None,
             tracking: false,
             grab: None,
+            sizing: None,
             cur: String::new(),
         };
         s.ask_kids();
@@ -440,6 +444,11 @@ pub fn sync() {
 }
 
 /// The panel's choices, for the settings file.
+/// The panel's width, CSS px.
+pub fn width() -> i32 {
+    with(|s| s.prefs.width.clamp(WIDTHS.0, WIDTHS.1)).unwrap_or(WIDTH)
+}
+
 pub fn prefs_json() -> String {
     with(|s| serde_json::to_string(&s.prefs).unwrap_or_default()).unwrap_or_default()
 }
@@ -522,8 +531,9 @@ impl Side {
 
     /// Ask the shell helper for every item's icon (once each).
     fn ask_icons(&mut self) {
-        let (size, hw) = (self.px(48), self.hwnd as isize); // 3x, box-filtered down to 16: sharper than the shell's own 16 px scaling
+        let hw = self.hwnd as isize;
         for it in self.items.iter().filter(|i| !i.target.is_empty()) {
+            let size = self.px(if it.kind == Kind::Drive { 96 } else { 48 }); // 3x, box-filtered down: sharper than the shell's own scaling
             if self.png.contains_key(&it.target) || !self.asked.insert(it.target.clone()) {
                 continue;
             }
@@ -545,8 +555,22 @@ impl Side {
         unsafe { InvalidateRect(self.hwnd, null(), 0) };
     }
 
+    fn client_w(&self) -> i32 {
+        let mut c: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetClientRect(self.hwnd, &mut c) };
+        c.right
+    }
+    /// The right edge's few px: dragged, they size the panel.
+    fn on_edge(&self, x: i32) -> bool {
+        x >= self.client_w() - self.px(5)
+    }
+
     fn row_h(&self) -> i32 {
         self.gfx.f.lh + self.px(if self.prefs.compact { 4 } else { 10 })
+    }
+    /// An item's icon size: a drive with its bar a large one, beside all three lines.
+    fn icon_px(&self, it: &Item) -> i32 {
+        self.px(if self.barred(it) { 32 } else { 16 })
     }
     /// A drive's row has its usage bar and free space under its name.
     fn barred(&self, it: &Item) -> bool {
@@ -613,7 +637,7 @@ impl Side {
         }
         let len = (h * h / total).max(self.px(24) as f32);
         let top = (h - len) * self.y / self.max_scroll().max(1.0);
-        let right = self.px(WIDTH) - self.px(3);
+        let right = self.client_w() - self.px(6);
         let w = self.px(if self.grab.is_some() { 7 } else { 4 });
         Some(RECT { left: right - w, top: top as i32, right, bottom: (top + len) as i32 })
     }
@@ -625,8 +649,13 @@ impl Side {
     }
 
     fn down(&mut self, x: i32, y: i32) {
+        if self.on_edge(x) {
+            self.sizing = Some(self.client_w() - x);
+            unsafe { SetCapture(self.hwnd) };
+            return;
+        }
         if let Some(t) = self.thumb() {
-            if x >= self.px(WIDTH) - self.px(16) {
+            if x >= self.client_w() - self.px(16) {
                 if y >= t.top && y < t.bottom {
                     self.grab = Some(y - t.top);
                     unsafe { SetCapture(self.hwnd) };
@@ -641,16 +670,23 @@ impl Side {
         self.press = self.item_at(x, y);
     }
 
-    fn moved(&mut self, x: i32, y: i32) {
+    /// True when the panel's width changed: the window lays out again.
+    fn moved(&mut self, x: i32, y: i32) -> bool {
+        if let Some(off) = self.sizing {
+            let w = (((x + off) as f64 / self.scale).round() as i32).clamp(WIDTHS.0, WIDTHS.1);
+            let changed = w != self.prefs.width;
+            self.prefs.width = w;
+            return changed;
+        }
         if let Some(grab) = self.grab {
             let (h, total) = (self.view_h() as f32, self.rows().1 as f32);
             let len = (h * h / total).max(self.px(24) as f32);
             let t = ((y - grab) as f32 / (h - len).max(1.0)).clamp(0.0, 1.0);
             self.y = t * self.max_scroll();
             unsafe { InvalidateRect(self.hwnd, null(), 0) };
-            return;
+            return false;
         }
-        let hot = self.item_at(x, y);
+        let hot = if self.on_edge(x) { None } else { self.item_at(x, y) };
         if hot != self.hot {
             self.hot = hot;
             unsafe { InvalidateRect(self.hwnd, null(), 0) };
@@ -662,11 +698,16 @@ impl Side {
             let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
             unsafe { TrackMouseEvent(&mut t) };
         }
+        false
     }
 
     /// The release of a press: what to open, if the pointer is still on the item pressed. A header's chevron
     /// folds or unfolds its rows instead (`Some(None)`: the settings changed).
     fn up(&mut self, x: i32, y: i32) -> Option<Option<(String, bool)>> {
+        if self.sizing.take().is_some() {
+            unsafe { ReleaseCapture() };
+            return Some(None); // saved
+        }
         if self.grab.take().is_some() {
             unsafe {
                 ReleaseCapture();
@@ -695,12 +736,13 @@ impl Side {
     fn paint(&mut self) {
         let (rows, _) = self.rows();
         // decode the icons on screen for this canvas (after a GPU reset, again)
-        let (gen, isz) = (self.cv.gen, self.px(16));
+        let gen = self.cv.gen;
         for &(i, a, b) in &rows {
             let tg = &self.items[i].target;
             if self.items[i].kind == Kind::Sep || (b as f32) < self.y || a as f32 > self.y + self.view_h() as f32 || self.bmp.get(tg).is_some_and(|x| x.1 == gen) {
                 continue;
             }
+            let isz = self.icon_px(&self.items[i]);
             if let Some((px, w, h)) = self.png.get(tg).and_then(|p| png_pixels(p, isz)) {
                 if let Some(bm) = self.cv.make_bitmap(&px, w, h) {
                     self.bmp.insert(tg.clone(), (bm, gen));
@@ -747,7 +789,8 @@ impl Side {
             let slh = self.small_lh();
             // a drive's name over its bar over its free space, the three centred together
             let ty = r.top + (r.bottom - r.top - lh - if drive { px(9) + slh } else { 0 }) / 2;
-            let ix = r.left + px(if matches!(it.kind, Kind::Child | Kind::Mark) { 36 } else { 24 });
+            let ix = r.left + px(if matches!(it.kind, Kind::Child | Kind::Mark) { 36 } else if drive { 14 } else { 24 });
+            let isz = self.icon_px(it);
             if let Kind::Head(k) = it.kind {
                 // its chevron, in the gutter: › folded, ⌄ open
                 let open = match k {
@@ -764,10 +807,10 @@ impl Side {
                 }
             }
             if let Some((bm, _)) = self.bmp.get(&it.target) {
-                let iy = if drive { ty + (lh - px(16)) / 2 } else { r.top + (r.bottom - r.top - px(16)) / 2 };
-                cv.bitmap(bm, &RECT { left: ix, top: iy, right: ix + px(16), bottom: iy + px(16) }, 1.0);
+                let iy = r.top + (r.bottom - r.top - isz) / 2;
+                cv.bitmap(bm, &RECT { left: ix, top: iy, right: ix + isz, bottom: iy + isz }, 1.0);
             }
-            let (tx, right) = (ix + px(16) + px(8), r.right - px(10));
+            let (tx, right) = (ix + isz + px(8), r.right - px(10));
             if let Some((free, total)) = it.space.filter(|_| drive) {
                 let sy = ty + lh + px(9);
                 put(g, cv, &t("side.free").replace("{n}", &super::fmt_size(free as i64)), &g.f.small, tx, sy, theme().muted);
@@ -855,7 +898,9 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_MOUSEMOVE => {
             let (x, y) = xy(l);
-            with(|s| s.moved(x, y));
+            if with(|s| s.moved(x, y)) == Some(true) {
+                super::with(|u| u.layout()); // outside `with`: moving the panel sizes it
+            }
             return 0;
         }
         WM_LBUTTONUP => {
@@ -886,11 +931,14 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_CAPTURECHANGED => {
-            with(|s| {
+            if with(|s| {
                 if s.grab.take().is_some() {
                     InvalidateRect(s.hwnd, null(), 0);
                 }
-            });
+                s.sizing.take().is_some()
+            }) == Some(true) {
+                save();
+            }
             return 0;
         }
         WM_MOUSELEAVE => {
@@ -901,6 +949,15 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 }
             });
             return 0;
+        }
+        WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|s| {
+            let mut p = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut p);
+            ScreenToClient(s.hwnd, &mut p);
+            s.sizing.is_some() || s.on_edge(p.x)
+        }) == Some(true) => {
+            SetCursor(LoadCursorW(null_mut(), IDC_SIZEWE));
+            return 1;
         }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|s| s.hot.is_some()) == Some(true) => {
             SetCursor(LoadCursorW(null_mut(), IDC_HAND));
