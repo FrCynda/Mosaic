@@ -79,6 +79,7 @@ Measured on a Windows 11 PC with a 1 TB NVMe system drive. The times are median 
 - Resizable sidebar; every section folds or hides
 - Drag and drop moves or copies like Explorer, with a thumbnail-sized drag image
 - Rename in place, the shell context menu, a **terminal** right where you are
+- **In place of Explorer**: folders on the desktop, drives and <kbd>Win</kbd>+<kbd>E</kbd> open in Mosaic (*Tools* menu, on by default)
 
 </td>
 <td valign="top">
@@ -129,6 +130,7 @@ Measured on a Windows 11 PC with a 1 TB NVMe system drive. The times are median 
 
 ### 🪶 Light on memory and your SSD
 - A native Win32 + Direct2D/DirectWrite window: no browser engine inside
+- Every window is a thread of one process, as Explorer's are: the GPU driver and DLLs are paid once
 - 24-byte index records; the on-disk cache is zstd-compressed and loads in one read
 - Index changes are **appended** to a small log every 5 minutes, only when something changed
 - Hash, metadata and recent-file caches append or write once at exit, never per file
@@ -223,10 +225,12 @@ flowchart LR
 
 ## 📦 Install
 
-1. Get **`MosaicSetup.exe`**: [build it](#%EF%B8%8F-build-from-source) with one command.
+1. Download **`MosaicSetup.exe`** from the [latest release](https://github.com/FrCynda/mosaic-search/releases/latest), or [build it](#%EF%B8%8F-build-from-source) with one command.
 2. Run it and pick an **icon preset**: 11 color themes, each in two styles.
 3. Accept the one admin prompt. It installs the background index service that reads the file table.
 4. Type. Name search is ready once the drive is read; content indexing then continues quietly in the background.
+
+Mosaic then opens your folders and Save/Open windows in place of Explorer's. Both switch off in the *Tools* menu, and uninstalling gives them back to Windows.
 
 ## 🛠️ Build from source
 
