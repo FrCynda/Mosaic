@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.svg" alt="Mosaic: every file on your PC, before you finish typing" width="100%">
+  <img src="docs/banner.svg" alt="Mosaic, a fast file explorer and instant file search for Windows: every file on your PC, before you finish typing" width="100%">
 </p>
 
 <p align="center">
@@ -10,7 +10,8 @@
 </p>
 
 <p align="center">
-  <b>Mosaic</b> is a file explorer built around a search engine. It reads your NTFS drives straight from the Master File Table,<br>
+  <b>Mosaic</b> is a fast file explorer for Windows 10 and 11, built around a search engine: an Explorer replacement and an alternative to Everything.<br>
+  It reads your NTFS drives straight from the Master File Table,
   keeps up with every change through the USN journal, and answers searches across <b>millions of files in milliseconds</b>.<br>
   Tabs, split panes, previews and full-text search, in a native window with no web view and no Electron.
 </p>
