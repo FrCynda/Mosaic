@@ -5250,7 +5250,8 @@ impl Ui {
                 _ => {}
             }
             // the places panel, left of the list: it gives way first on a narrow window
-            // (the list takes its new room at once; the panels slide over it, clipped to their own side)
+            // (opening, the list gives up its room at once and the panel slides into it; closing, the list's edge
+            // follows the panel out, as the lists would paint over a panel left on top of them)
             let side_w = if self.show_side && wd >= px(760) { px(side::width()) } else { 0 };
             self.side_sl.set(side_w > 0);
             let (sw, h) = (px(side::width()), (bottom - top).max(1));
@@ -5262,17 +5263,17 @@ impl Ui {
                 self.side_sl.off = off;
                 SetWindowRgn(self.side, if off > 0 { CreateRectRgn(off, 0, sw, h) } else { null_mut() }, 1);
             }
-            let left = left + side_w;
+            let left = left + side_w.max(sw - off);
             let max_pane = (wd - min_list - left - px(preview::GAP)).max(0);
             let auto = ((wd as f64 * 0.4) as i32).clamp(px(240), px(960)).min(wd / 2).min(max_pane);
             let show_pane = self.show_pv && max_pane >= px(160);
             let full = if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
             let pane_w = if show_pane { full } else { 0 };
-            let right = if show_pane { wd - pane_w - px(preview::GAP) } else { wd };
             // the pane's window takes in the divider: it draws its grip, which so moves with it
             self.pv_sl.set(show_pane);
             let pw = full.max(1) + px(preview::GAP);
             let shown = (pw as f64 * self.pv_sl.d).round() as i32;
+            let right = if show_pane { wd - pane_w - px(preview::GAP) } else { wd - shown };
             let z = if self.pv_sl.moving() { 0 } else { SWP_NOZORDER };
             let vis = if shown > 0 { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
             SetWindowPos(self.pane, HWND_TOP, wd - shown, top, pw, (bottom - top).max(1), SWP_NOACTIVATE | z | vis);
