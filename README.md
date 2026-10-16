@@ -39,8 +39,8 @@ Measured on a Windows 11 PC with a 1 TB NVMe system drive. The times are median 
 | **0** | rescans after startup: changes stream in from the USN journal |
 
 <p align="center">
-  <img src="docs/window.svg" alt="Mosaic window: search box, places sidebar, results list and preview pane (illustration with sample files)" width="100%">
-  <br><sub><i>Illustration with sample files</i></sub>
+  <img src="docs/window.svg" alt="Mosaic window: tabs, places sidebar, a photo folder in grid view and the preview pane (illustration with made-up files)" width="100%">
+  <br><sub><i>Illustration with made-up files</i></sub>
 </p>
 
 ## ✨ Features

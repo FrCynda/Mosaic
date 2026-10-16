@@ -1,119 +1,199 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" width="1400" height="900" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif">
-<defs><clipPath id="win"><rect width="1400" height="900" rx="8"/></clipPath></defs><g clip-path="url(#win)">
-<rect width="1400" height="900" fill="#0f1216"/>
-<rect width="1400" height="56" fill="#181c22"/><g transform="translate(9 6) scale(0.01758)">
-  <defs>
-    <linearGradient id="t-folder" x1="0" y1="0" x2="0.35" y2="1"><stop offset="0" stop-color="#2fa2ff"/><stop offset="0.55" stop-color="#2171e6"/><stop offset="1" stop-color="#1443b0"/></linearGradient>
-    <linearGradient id="t-sheet" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9bb3de"/><stop offset="1" stop-color="#e9f0fc"/></linearGradient>
-    <linearGradient id="t-p1" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#5fe3c4"/><stop offset="1" stop-color="#1ea0b2"/></linearGradient>
-    <linearGradient id="t-p2" x1="0.2" y1="0" x2="0.8" y2="1"><stop offset="0" stop-color="#ffe94f"/><stop offset="1" stop-color="#ff8620"/></linearGradient>
-    <linearGradient id="t-p3" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#a070ff"/><stop offset="1" stop-color="#5646ff"/></linearGradient>
-    <linearGradient id="t-p4" x1="0.2" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#45b4ff"/><stop offset="1" stop-color="#1368f5"/></linearGradient>
-    <filter id="t-soft" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/></filter>
-  </defs>
-  <g transform="translate(512 512) scale(1.4) translate(-544 -509.5)">  <path d="M 490 262 Q 500 257 520 257 H 780 Q 808 257 808 285 V 335 H 490 Z" fill="url(#t-sheet)" opacity="0.9"/>
-  <path d="M 270 222 H 430 Q 452 222 466 238 L 500 276 Q 512 293 534 293 H 745 Q 778 293 778 326 V 772 H 270 Q 218 772 218 720 V 274 Q 218 222 270 222 Z" fill="url(#t-folder)"/>
-  <g filter="url(#t-soft)"><path d="M 452 452 Q 452 436 466 428 L 612 345 Q 624 336 640 336 H 848 Q 870 336 870 358 V 772 Q 870 797 845 797 H 478 Q 452 797 452 772 Z" fill="#ffffff"/></g>
-  <g stroke-linejoin="round" stroke-width="16">
-    <polygon points="480,458 636,374 638,568 480,616" fill="url(#t-p1)" stroke="url(#t-p1)"/>
-    <polygon points="675,374 830,374 830,516 675,562" fill="url(#t-p2)" stroke="url(#t-p2)"/>
-    <polygon points="480,660 638,613 638,760 480,760" fill="url(#t-p3)" stroke="url(#t-p3)"/>
-    <polygon points="675,603 830,556 830,760 675,760" fill="url(#t-p4)" stroke="url(#t-p4)"/>
-  </g>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" font-family="'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif">
+<title>The Mosaic window (illustration with made-up files)</title>
+<defs><clipPath id="win"><rect width="1280" height="800" rx="10"/></clipPath><clipPath id="badge"><rect width="256" height="256" rx="57"/></clipPath></defs>
+<g clip-path="url(#win)">
+<rect width="1280" height="800" fill="#0f1216"/>
+<rect width="1280" height="70" fill="#0f1216"/>
+<g transform="translate(10 8) scale(.0625)"><g clip-path="url(#badge)">
+<rect x="0" y="0" width="71.68" height="71.68" fill="#6ABAF1"/>
+<rect x="71.68" y="0" width="112.64" height="71.68" fill="#317DCF"/>
+<rect x="184.32" y="0" width="71.68" height="71.68" fill="#2657AA"/>
+<rect x="0" y="71.68" width="71.68" height="112.64" fill="#2F9EB7"/>
+<rect x="71.68" y="71.68" width="112.64" height="112.64" fill="#183962"/>
+<rect x="184.32" y="71.68" width="71.68" height="112.64" fill="#2B9597"/>
+<rect x="0" y="184.32" width="71.68" height="71.68" fill="#3E69A2"/>
+<rect x="71.68" y="184.32" width="112.64" height="71.68" fill="#3380CA"/>
+<rect x="184.32" y="184.32" width="71.68" height="71.68" fill="#76C6AF"/>
+</g><circle cx="128" cy="128" r="44.8" fill="none" stroke="#fff" stroke-width="12.8"/><path d="M161 161l26.9 26.9" stroke="#fff" stroke-width="17" stroke-linecap="round"/></g>
+<text x="34" y="20.5" font-size="12" fill="#e6e8eb">Mosaic</text>
+<g stroke="#e6e8eb" stroke-width="1" fill="none"><path d="M1141 16.5h10"/><rect x="1189.5" y="11.5" width="9" height="9"/><path d="M1235 11.5l9 9m0-9l-9 9"/></g>
+<text x="28.19" y="56" font-size="12.5" fill="#e6e8eb" text-anchor="middle">File</text>
+<text x="69.5" y="56" font-size="12.5" fill="#e6e8eb" text-anchor="middle">Edit</text>
+<text x="113.94" y="56" font-size="12.5" fill="#e6e8eb" text-anchor="middle">View</text>
+<text x="166.38" y="56" font-size="12.5" fill="#e6e8eb" text-anchor="middle">Search</text>
+<text x="220.81" y="56" font-size="12.5" fill="#e6e8eb" text-anchor="middle">Tools</text>
+<text x="268.44" y="56" font-size="12.5" fill="#e6e8eb" text-anchor="middle">Help</text>
+<path d="M0 69.5H1280" stroke="#262b33"/>
+<path d="M311.25 70.5V45a8 8 0 0 1 8-8h155a8 8 0 0 1 8 8v25.5" fill="#181c22" stroke="#262b33"/>
+<g transform="translate(322.75 48.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><rect x="9.5" y="7" width="9" height="8" rx="1.2" fill="#2B74D8"/><path d="M10.5 14l2.7-3.2 1.9 2.1 1.2-1.2 2 2.3z" fill="#9FD3FF"/></g>
+<text x="348.75" y="60" font-size="12.5" fill="#e6e8eb">Trips</text>
+<path d="M460.75 52l6 6m0-6l-6 6" stroke="#8b93a0" stroke-width="1.3" stroke-linecap="round"/>
+<g fill="none" stroke="#7aa2ff" stroke-width="1.6" stroke-linecap="round"><circle cx="502.25" cy="54.5" r="4.6"/><path d="M505.75 58l3 3"/></g>
+<text x="520.75" y="60" font-size="12.5" fill="#8b93a0">invoice</text>
+<path d="M589.625.5 45v16" stroke="#262b33"/>
+<g transform="translate(603.62 48.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/></g>
+<text x="629.62" y="60" font-size="12.5" fill="#8b93a0">Projects</text>
+<path d="M704.0.5 45v16" stroke="#262b33"/>
+<g transform="translate(718 48.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><circle cx="14.5" cy="11.5" r="4.5" fill="#1FAE8C"/><path d="M14.5 9v4.6m-2-2l2 2 2-2" stroke="#fff" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="744" y="60" font-size="12.5" fill="#8b93a0">Downloads</text>
+<path d="M844.88 56h12M850.88 50v12" stroke="#8b93a0" stroke-width="1.5"/>
+<rect y="70" width="1280" height="44" fill="#181c22"/><path d="M0 113.5H1280" stroke="#262b33"/>
+<path d="M30 92H18M23.5 86.5L18 92l5.5 5.5" fill="none" stroke="#e6e8eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M54 92H66M60.5 86.5L66 92l-5.5 5.5" fill="none" stroke="#3a414c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="1120.5" y="78.5" width="150" height="27" rx="4" fill="#0f1216" stroke="#262b33"/>
+<text x="1129" y="96.5" font-size="12.5" fill="#e6e8eb">Everything</text>
+<path d="M1251 90l3.5 3.5 3.5-3.5" fill="none" stroke="#e6e8eb" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="1050.12" y="78.5" width="63.38" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="1081.81" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Content</text>
+<rect x="974.12" y="78.5" width="69" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="1008.62" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Metadata</text>
+<rect x="888.88" y="78.5" width="78.25" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="928" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Match case</text>
+<rect x="799.62" y="78.5" width="82.25" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="840.75" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Whole word</text>
+<rect x="739.38" y="78.5" width="53.25" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="766" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Regex</text>
+<rect x="664.5" y="78.5" width="67.88" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="698.44" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Diacritics</text>
+<rect x="570.5" y="78.5" width="87" height="27" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="614" y="96.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Timestamps</text>
+<rect x="88.5" y="78.5" width="476" height="27" rx="4" fill="#0f1216" stroke="#7aa2ff"/>
+<text x="97" y="96.5" font-size="13.5" fill="#e6e8eb" xml:space="preserve">child:"C:\Users\you\Pictures\Trips"<tspan font-weight="300">|</tspan></text>
+<rect y="114" width="200" height="650" fill="#181c22"/><path d="M199.5 114V764" stroke="#262b33"/>
+<g transform="translate(30 127)"><rect x="1" y="1" width="6.5" height="6.5" rx="1.5" fill="#6ABAF1"/><rect x="8.5" y="1" width="6.5" height="6.5" rx="1.5" fill="#317DCF"/><rect x="1" y="8.5" width="6.5" height="6.5" rx="1.5" fill="#2F9EB7"/><rect x="8.5" y="8.5" width="6.5" height="6.5" rx="1.5" fill="#76C6AF"/></g>
+<text x="54" y="139.5" font-size="12.5" fill="#e6e8eb">All</text>
+<g transform="translate(30 157)"><path d="M8 1.5l6.5 5.5V14a1 1 0 0 1-1 1H10v-4H6v4H2.5a1 1 0 0 1-1-1V7z" fill="#3B8EEA"/><path d="M8 .6L.4 7l1 1.2L8 2.6l6.6 5.6 1-1.2z" fill="#1E5FC0"/></g>
+<text x="54" y="169.5" font-size="12.5" fill="#e6e8eb">Home</text>
+<g transform="translate(30 187)"><rect x=".5" y="2" width="15" height="12" rx="2" fill="#2B74D8"/><path d="M2 12.5l3.6-4.4 2.6 3 1.8-1.9 3.6 3.3z" fill="#9FD3FF"/><circle cx="11.2" cy="5.6" r="1.5" fill="#FFE29A"/></g>
+<text x="54" y="199.5" font-size="12.5" fill="#e6e8eb">Gallery</text>
+<rect x="6" y="210" width="188" height="30" rx="6" fill="#1f2a44"/>
+<rect x="7" y="217.0" width="3" height="16" rx="1.5" fill="#7aa2ff"/>
+<g transform="translate(30 218.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/></g>
+<text x="54" y="229.5" font-size="12.5" fill="#e6e8eb">Trips</text>
+<path d="M14.5 253.2l3.5 3.5 3.5-3.5" fill="none" stroke="#8b93a0" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<g transform="translate(30 247)"><path d="M8 .9l2.1 4.4 4.8.6-3.5 3.3.9 4.8L8 11.7 3.7 14l.9-4.8L1.1 5.9l4.8-.6z" fill="#FCC419"/></g>
+<text x="54" y="259.5" font-size="12.5" fill="#e6e8eb">Bookmarks</text>
+<g transform="translate(43.5 276.5) scale(.75)"><path d="M2.5 0h8.5l7 7v12.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 0 19.5v-17A2.5 2.5 0 0 1 2.5 0z" fill="#E5484D"/><path d="M11 0v4.5A2.5 2.5 0 0 0 13.5 7H18z" fill="#fff" fill-opacity=".42"/><path d="M4 11h8M4 14.5h10M4 18h6" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></g>
+<text x="66" y="289.5" font-size="12.5" fill="#e6e8eb">Tax return 2025.pdf</text>
+<g transform="translate(42 308.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/></g>
+<text x="66" y="319.5" font-size="12.5" fill="#e6e8eb">Recipes</text>
+<path d="M16.2 341.5l3.5 3.5-3.5 3.5" fill="none" stroke="#8b93a0" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<g transform="translate(30 337)"><circle cx="8" cy="8" r="7" fill="#3B8EEA"/><path d="M8 4v4.3l2.8 1.7" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/></g>
+<text x="54" y="349.5" font-size="12.5" fill="#e6e8eb">Recent files</text>
+<path d="M16.2 371.5l3.5 3.5-3.5 3.5" fill="none" stroke="#8b93a0" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<g transform="translate(30 367)"><circle cx="8" cy="8" r="7" fill="#3B8EEA"/><path d="M8 4v4.3l2.8 1.7" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/></g>
+<text x="54" y="379.5" font-size="12.5" fill="#e6e8eb">Recent folders</text>
+<path d="M10 394.5h179" stroke="#262b33"/>
+<g transform="translate(30 406)"><rect x=".5" y="2" width="15" height="10" rx="1.5" fill="#2FA2FF"/><rect x="2" y="3.5" width="12" height="7" rx=".5" fill="#1468D8"/><path d="M5 14.5h6" stroke="#8B93A0" stroke-width="1.5" stroke-linecap="round"/></g>
+<text x="54" y="418.5" font-size="12.5" fill="#e6e8eb">Desktop</text>
+<g transform="translate(30 437.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><circle cx="14.5" cy="11.5" r="4.5" fill="#1FAE8C"/><path d="M14.5 9v4.6m-2-2l2 2 2-2" stroke="#fff" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="54" y="448.5" font-size="12.5" fill="#e6e8eb">Downloads</text>
+<g transform="translate(30 467.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><rect x="10" y="6.5" width="8" height="9.5" rx="1" fill="#E8EEF7"/><path d="M11.8 9.5h4.4M11.8 12h4.4M11.8 14.3h3" stroke="#7C8AA0" stroke-width="1" stroke-linecap="round"/></g>
+<text x="54" y="478.5" font-size="12.5" fill="#e6e8eb">Documents</text>
+<g transform="translate(30 497.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><rect x="9.5" y="7" width="9" height="8" rx="1.2" fill="#2B74D8"/><path d="M10.5 14l2.7-3.2 1.9 2.1 1.2-1.2 2 2.3z" fill="#9FD3FF"/></g>
+<text x="54" y="508.5" font-size="12.5" fill="#e6e8eb">Pictures</text>
+<g transform="translate(30 527.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><circle cx="14.5" cy="11.5" r="4.5" fill="#F0883E"/><path d="M13.4 13.6V9.2l3-.8v4.3" stroke="#fff" stroke-width="1.2" fill="none"/><circle cx="12.9" cy="13.7" r="1" fill="#fff"/><circle cx="15.9" cy="12.8" r="1" fill="#fff"/></g>
+<text x="54" y="538.5" font-size="12.5" fill="#e6e8eb">Music</text>
+<g transform="translate(30 557.6) scale(0.8)"><path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V6H0z" fill="#E9A70F"/><path d="M0 5h20v9a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/><rect x="9.5" y="7.5" width="9" height="7.5" rx="1.2" fill="#8A5CF6"/><path d="M13 9.5v3.6l3-1.8z" fill="#fff"/></g>
+<text x="54" y="568.5" font-size="12.5" fill="#e6e8eb">Videos</text>
+<path d="M10 583.5h179" stroke="#262b33"/>
+<path d="M16.2 599.5l3.5 3.5-3.5 3.5" fill="none" stroke="#8b93a0" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<g transform="translate(30 595)"><rect x=".5" y="1.5" width="15" height="10" rx="1.5" fill="#9AA7B6"/><rect x="2" y="3" width="12" height="7" fill="#3FA9F5"/><path d="M6 14.5h4M8 11.5v3" stroke="#9AA7B6" stroke-width="1.5" stroke-linecap="round"/></g>
+<text x="54" y="607.5" font-size="12.5" fill="#e6e8eb">This PC</text>
+<path d="M16.2 629.5l3.5 3.5-3.5 3.5" fill="none" stroke="#8b93a0" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<g transform="translate(30 625)"><rect x="2.5" y="1" width="11" height="8" rx="1.2" fill="#9AA7B6"/><rect x="3.8" y="2.2" width="8.4" height="5.6" fill="#3FA9F5"/><path d="M8 9v3M2 13.5h12" stroke="#1FAE8C" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="13.5" r="1.6" fill="#1FAE8C"/></g>
+<text x="54" y="637.5" font-size="12.5" fill="#e6e8eb">Network</text>
+<path d="M10 661.5h179" stroke="#262b33"/>
+<g transform="translate(20 670)"><rect x=".5" y="4" width="17" height="10" rx="2" fill="#9AA7B6"/><rect x="2.5" y="10" width="13" height="1.6" rx=".8" fill="#5C6673"/><g fill="#3FA9F5"><rect x="3" y="5.6" width="1.8" height="1.8"/><rect x="5.1" y="5.6" width="1.8" height="1.8"/><rect x="3" y="7.7" width="1.8" height="1.8"/><rect x="5.1" y="7.7" width="1.8" height="1.8"/></g></g>
+<text x="46" y="681" font-size="12.5" fill="#e6e8eb">Local Disk (C:)</text>
+<rect x="46" y="687" width="138" height="4" rx="2" fill="#262b33"/><rect x="46" y="687" width="93.84" height="4" rx="2" fill="#3B8EEA"/>
+<text x="46" y="704" font-size="11" fill="#8b93a0">297 GB free</text>
+<text x="184" y="704" font-size="11" fill="#8b93a0" text-anchor="end">931 GB</text>
+<g transform="translate(20 716)"><rect x=".5" y="4" width="17" height="10" rx="2" fill="#9AA7B6"/><rect x="2.5" y="10" width="13" height="1.6" rx=".8" fill="#5C6673"/><g fill="#3FA9F5"><rect x="3" y="5.6" width="1.8" height="1.8"/><rect x="5.1" y="5.6" width="1.8" height="1.8"/><rect x="3" y="7.7" width="1.8" height="1.8"/><rect x="5.1" y="7.7" width="1.8" height="1.8"/></g></g>
+<text x="46" y="727" font-size="12.5" fill="#e6e8eb">Data (D:)</text>
+<rect x="46" y="733" width="138" height="4" rx="2" fill="#262b33"/><rect x="46" y="733" width="56.58" height="4" rx="2" fill="#3B8EEA"/>
+<text x="46" y="750" font-size="11" fill="#8b93a0">1.08 TB free</text>
+<text x="184" y="750" font-size="11" fill="#8b93a0" text-anchor="end">1.81 TB</text>
+<svg x="200" y="122" width="664" height="642" overflow="hidden">
+<g transform="translate(21.5 23) scale(6)">
+<path d="M0 2.5A2 2 0 0 1 2 .5h5.2l2 2H18a2 2 0 0 1 2 2V14a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#D9930B"/>
+<g transform="rotate(-7 6 6)"><svg x="1.6" y="1.37" width="9.4" height="7.05" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#FDBA74"/><rect y="62" width="160" height="58" fill="#FB923C"/><circle cx="104" cy="58" r="18" fill="#FFF1C1"/><path d="M0 82l34-30 22 18 30-34 34 30 18-12 22 18v48H0z" fill="#C2410C"/><path d="M0 98l40-22 30 16 36-24 54 34v18H0z" fill="#7C2D12"/></g></svg></g>
+<g transform="rotate(6 14 6)"><svg x="9.2" y="1.77" width="9.4" height="7.05" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#BAE6FD"/><path d="M0 60l40-26 30 18 26-20 64 34v14H0z" fill="#94A3B8"/><rect y="72" width="160" height="48" fill="#38BDF8"/><path d="M0 72h160v6H0z" fill="#166534"/><g fill="#15803D"><path d="M14 74l9-26 9 26z"/><path d="M30 74l7-20 7 20z"/><path d="M118 74l9-28 9 28z"/><path d="M136 74l7-18 7 18z"/></g><path d="M20 92h40M88 100h44M40 108h30" stroke="#7DD3FC" stroke-width="2" stroke-linecap="round"/></g></svg></g>
+<path d="M0 7.5h20V14a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2z" fill="#F5B316"/>
 </g>
-<text x="30" y="19" font-size="12" fill="#e6e8eb">Mosaic</text>
-<path d="M1265 14.5h10" stroke="#e6e8eb"/><rect x="1310.5" y="9.5" width="9" height="9" fill="none" stroke="#e6e8eb"/><path d="M1356 9.5l9 9m0-9l-9 9" stroke="#e6e8eb"/>
-<text x="20" y="48" font-size="12.5" fill="#e6e8eb">File</text>
-<text x="58" y="48" font-size="12.5" fill="#e6e8eb">Edit</text>
-<text x="99" y="48" font-size="12.5" fill="#e6e8eb">View</text>
-<text x="145" y="48" font-size="12.5" fill="#e6e8eb">Search</text>
-<text x="201" y="48" font-size="12.5" fill="#e6e8eb">Tools</text>
-<text x="249" y="48" font-size="12.5" fill="#e6e8eb">Help</text>
-<path d="M0 55.5H1400" stroke="#262b33"/>
-<rect y="56" width="1400" height="41" fill="#181c22"/><path d="M0 96.5H1400" stroke="#262b33"/>
-<text x="10" y="84" font-size="20" font-weight="700" fill="#7aa2ff">Mosaic</text>
-<rect x="97" y="62" width="48" height="28" rx="6" fill="#1f2a44"/><text x="121" y="80" font-size="12" fill="#7aa2ff" text-anchor="middle">Files</text>
-<path d="M157 76h16m-6-6-6 6 6 6M192 76h16m-6-6 6 6-6 6" stroke="#454c57" stroke-width="1.6" fill="none"/>
-<rect x="231.5" y="62.5" width="442" height="27" rx="4" fill="#0f1216" stroke="#7aa2ff"/>
-<text x="240" y="80" font-size="12" fill="#e6e8eb">invoice</text><rect x="279.0" y="69" width="1" height="15" fill="#e6e8eb"/>
-<rect x="679.5" y="62.5" width="83" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="721.0" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Timestamps</text>
-<rect x="769.5" y="62.5" width="67" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="803.0" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Diacritics</text>
-<rect x="843.5" y="62.5" width="52" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="869.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Regex</text>
-<rect x="901.5" y="62.5" width="84" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="943.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Whole word</text>
-<rect x="992.5" y="62.5" width="79" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="1032.0" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Match case</text>
-<rect x="1078.5" y="62.5" width="70" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="1113.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Metadata</text>
-<rect x="1155.5" y="62.5" width="62" height="27" rx="3" fill="#181c22" stroke="#262b33"/><text x="1186.5" y="80.0" font-size="12" fill="#8b93a0" text-anchor="middle">Content</text>
-<rect x="1224.5" y="62.5" width="149" height="27" rx="3" fill="#0f1216" stroke="#262b33"/><text x="1233" y="80.0" font-size="12" fill="#e6e8eb">Everything</text><path d="M1357 74.0l4 4 4-4" stroke="#e6e8eb" fill="none" stroke-width="1.2"/>
-<rect x="10.5" y="105.5" width="200" height="753" rx="6" fill="#181c22" stroke="#262b33"/>
-<path d="M40 120.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#e9a70f"/><rect x="40" y="122" width="16" height="10" rx="1.5" fill="#fcc419"/>
-<text x="64" y="129" font-size="12" fill="#e6e8eb">All</text>
-<path d="M48 145l7.5 6.5h-2v8h-11v-8h-2z" fill="#f0883e"/><rect x="46" y="154" width="4" height="5.5" fill="#7a3e12"/>
-<text x="64" y="156" font-size="12" fill="#e6e8eb">Home</text>
-<rect x="41" y="172" width="14" height="14" rx="1.5" fill="#3b8eea"/><circle cx="51" cy="176" r="1.6" fill="#fff"/><path d="M41 184l5-5 4 4 2-2 3 3v1.5h-14z" fill="#e8f2ff"/>
-<text x="64" y="183" font-size="12" fill="#e6e8eb">Gallery</text>
-<path d="M20 196.5h180" stroke="#262b33"/>
-<rect x="40" y="210" width="16" height="10" rx="1.5" fill="#2d9bf0"/><rect x="40" y="210" width="16" height="3" rx="1" fill="#6cc0ff"/>
-<text x="64" y="219" font-size="12" fill="#e6e8eb">Desktop</text>
-<path d="M40 237.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#17876c"/><rect x="40" y="239" width="16" height="10" rx="1.5" fill="#1fae8c"/><path d="M48 241v5m-2.5-2.2 2.5 2.5 2.5-2.5" stroke="#fff" stroke-width="1.3" fill="none"/>
-<text x="64" y="246" font-size="12" fill="#e6e8eb">Downloads</text>
-<path d="M40 264.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#6c7888"/><rect x="40" y="266" width="16" height="10" rx="1.5" fill="#8d9aab"/><rect x="44" y="269" width="8" height="1.2" fill="#fff"/><rect x="44" y="271.5" width="5.5" height="1.2" fill="#fff"/>
-<text x="64" y="273" font-size="12" fill="#e6e8eb">Documents</text>
-<rect x="41" y="289" width="14" height="14" rx="1.5" fill="#3b8eea"/><circle cx="51" cy="293" r="1.6" fill="#fff"/><path d="M41 301l5-5 4 4 2-2 3 3v1.5h-14z" fill="#e8f2ff"/>
-<text x="64" y="300" font-size="12" fill="#e6e8eb">Pictures</text>
-<path d="M40 318.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#c4513f"/><rect x="40" y="320" width="16" height="10" rx="1.5" fill="#e5735f"/><path d="M47 327.5v-5l4-1v4.5" stroke="#fff" stroke-width="1.2" fill="none"/><circle cx="46" cy="327.5" r="1.3" fill="#fff"/>
-<text x="64" y="327" font-size="12" fill="#e6e8eb">Music</text>
-<path d="M40 345.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H40z" fill="#6a3fd8"/><rect x="40" y="347" width="16" height="10" rx="1.5" fill="#8a5cf6"/><path d="M46.5 349.5l4 2.5-4 2.5z" fill="#fff"/>
-<text x="64" y="354" font-size="12" fill="#e6e8eb">Videos</text>
-<path d="M20 367.5h180" stroke="#262b33"/>
-<rect x="40" y="379" width="16" height="11" rx="1.5" fill="#3fa9f5"/><rect x="45" y="391" width="6" height="1.6" fill="#9aa7b6"/>
-<text x="64" y="390" font-size="12" fill="#e6e8eb">This PC</text>
-<rect x="56" y="411" width="16" height="7" rx="1.5" fill="#a9b2bf"/><rect x="58" y="415" width="3" height="1.4" fill="#3fb950"/><path d="M59 407h3v4h-3z" fill="#3b8eea"/><path d="M62 407h3v4h-3z" fill="#5fe3c4"/>
-<text x="80" y="417" font-size="12" fill="#e6e8eb">Local Disk (C:)</text>
-<rect x="40" y="433" width="16" height="11" rx="1.5" fill="#3fa9f5"/><rect x="45" y="445" width="6" height="1.6" fill="#9aa7b6"/><circle cx="52" cy="443" r="3.5" fill="#1fae8c" stroke="#181c22"/>
-<text x="64" y="444" font-size="12" fill="#e6e8eb">Network</text>
-<ellipse cx="48" cy="467.5" rx="5" ry="7" fill="#1b1d21"/><ellipse cx="48" cy="469" rx="3.3" ry="4.5" fill="#f2f3f5"/><path d="M42.5 474h4.5l-1-2zM49 474h4.5l-3.5-2z" fill="#f5b316"/><path d="M46.8 464.5h2.4l-1.2 1.4z" fill="#f5b316"/>
-<text x="64" y="471" font-size="12" fill="#e6e8eb">Linux</text>
-<path d="M20 484.5h180" stroke="#262b33"/>
-<path d="M43 497h12l-3 12h-12z" fill="#2b74d8"/><path d="M44 500l4 3-5 3" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-<text x="64" y="507" font-size="12" fill="#e6e8eb">PowerShell</text>
-<path d="M43 524h12l-3 12h-12z" fill="#2b74d8"/><path d="M44 527l4 3-5 3" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-<text x="64" y="534" font-size="12" fill="#e6e8eb">PowerShell (Admin)</text>
-<rect x="40" y="551" width="16" height="12" rx="1" fill="#0c0c0c" stroke="#c8ccd2"/><rect x="40" y="551" width="16" height="2.5" fill="#c8ccd2"/>
-<text x="64" y="561" font-size="12" fill="#e6e8eb">Command Prompt</text>
-<rect x="40" y="578" width="16" height="12" rx="1" fill="#0c0c0c" stroke="#c8ccd2"/><rect x="40" y="578" width="16" height="2.5" fill="#c8ccd2"/>
-<text x="64" y="588" font-size="12" fill="#e6e8eb">Command Prompt (Adm…</text>
-<path d="M24 383l3.5 4 3.5-4z" fill="#8b93a0"/>
-<rect x="218.5" y="106.5" width="699" height="29" rx="6" fill="#181c22" stroke="#262b33"/><text x="228" y="125" font-size="12" fill="#8b93a0">Name</text><text x="392" y="125" font-size="12" fill="#8b93a0">Path</text><text x="548" y="125" font-size="12" fill="#8b93a0" text-anchor="end">Size</text><text x="558" y="125" font-size="12" fill="#8b93a0">Type</text><text x="718" y="125" font-size="12" fill="#8b93a0">Modified</text><text x="850" y="125" font-size="12" fill="#8b93a0">Attributes</text><path d="M265 124.5l3.5-6 3.5 6z" fill="#7aa2ff"/>
-<path d="M230 144.5q0-1.5 1.5-1.5h4.2l1.6 1.6h7.2q1.5 0 1.5 1.5v1H230z" fill="#e9a70f"/><rect x="230" y="146" width="16" height="10" rx="1.5" fill="#fcc419"/><text x="254" y="153" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">Invoice</tspan>s</text><text x="392" y="153" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="153" font-size="12" fill="#8b93a0" text-anchor="end"></text><text x="558" y="153" font-size="12" fill="#8b93a0">File folder</text><text x="718" y="153" font-size="12" fill="#8b93a0">02/10/2026 18:20</text><text x="850" y="153" font-size="12" fill="#8b93a0"></text>
-<path d="M232.5 169.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 169.5v4h4z" fill="#c4c9d1"/><rect x="231" y="177" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="181" font-size="12" fill="#e6e8eb" xml:space="preserve">camera-<tspan fill="#7aa2ff" font-weight="700">invoice</tspan>.pdf</text><text x="392" y="181" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="181" font-size="12" fill="#8b93a0" text-anchor="end">120 KB</text><text x="558" y="181" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="181" font-size="12" fill="#8b93a0">18/08/2026 14:03</text><text x="850" y="181" font-size="12" fill="#8b93a0">A</text>
-<path d="M232.5 197.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 197.5v4h4z" fill="#c4c9d1"/><rect x="231" y="205" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="209" font-size="12" fill="#e6e8eb" xml:space="preserve">hosting-<tspan fill="#7aa2ff" font-weight="700">invoice</tspan>.pdf</text><text x="392" y="209" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="209" font-size="12" fill="#8b93a0" text-anchor="end">92 KB</text><text x="558" y="209" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="209" font-size="12" fill="#8b93a0">21/05/2026 08:47</text><text x="850" y="209" font-size="12" fill="#8b93a0">A</text>
-<rect x="218" y="222" width="700" height="24" rx="4" fill="#243257"/><path d="M232.5 225.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 225.5v4h4z" fill="#c4c9d1"/><rect x="234.5" y="231.0" width="7" height="1" fill="#9aa1ac"/><rect x="234.5" y="233.5" width="5" height="1" fill="#9aa1ac"/><rect x="234.5" y="236.0" width="7" height="1" fill="#9aa1ac"/><text x="254" y="237" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-notes.txt</text><text x="392" y="237" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="237" font-size="12" fill="#8b93a0" text-anchor="end">1 KB</text><text x="558" y="237" font-size="12" fill="#8b93a0">Text Document</text><text x="718" y="237" font-size="12" fill="#8b93a0">10/10/2026 09:41</text><text x="850" y="237" font-size="12" fill="#8b93a0">A</text>
-<path d="M232.5 253.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 253.5v4h4z" fill="#c4c9d1"/><rect x="231" y="261" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="265" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-q1.pdf</text><text x="392" y="265" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="265" font-size="12" fill="#8b93a0" text-anchor="end">182 KB</text><text x="558" y="265" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="265" font-size="12" fill="#8b93a0">03/04/2026 10:12</text><text x="850" y="265" font-size="12" fill="#8b93a0">A</text>
-<path d="M232.5 281.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 281.5v4h4z" fill="#c4c9d1"/><rect x="231" y="289" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="293" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-q2.pdf</text><text x="392" y="293" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="293" font-size="12" fill="#8b93a0" text-anchor="end">176 KB</text><text x="558" y="293" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="293" font-size="12" fill="#8b93a0">02/07/2026 11:30</text><text x="850" y="293" font-size="12" fill="#8b93a0">A</text>
-<path d="M232.5 309.5h7l4 4v11h-11z" fill="#f2f3f5"/><path d="M239.5 309.5v4h4z" fill="#c4c9d1"/><rect x="231" y="317" width="9" height="5.5" rx="1" fill="#e5484d"/><text x="254" y="321" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-q3.pdf</text><text x="392" y="321" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="321" font-size="12" fill="#8b93a0" text-anchor="end">191 KB</text><text x="558" y="321" font-size="12" fill="#8b93a0">PDF Document</text><text x="718" y="321" font-size="12" fill="#8b93a0">01/10/2026 16:05</text><text x="850" y="321" font-size="12" fill="#8b93a0">A</text>
-<rect x="231" y="338" width="14" height="14" rx="2.5" fill="#2160c4"/><text x="238" y="349" font-size="10" font-weight="700" fill="#fff" text-anchor="middle">W</text><text x="254" y="349" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>-template.docx</text><text x="392" y="349" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="349" font-size="12" fill="#8b93a0" text-anchor="end">24 KB</text><text x="558" y="349" font-size="12" fill="#8b93a0">Microsoft Word Document</text><text x="718" y="349" font-size="12" fill="#8b93a0">15/04/2026 19:22</text><text x="850" y="349" font-size="12" fill="#8b93a0">A</text>
-<rect x="231" y="366" width="14" height="14" rx="2.5" fill="#1d7a46"/><text x="238" y="377" font-size="10" font-weight="700" fill="#fff" text-anchor="middle">X</text><text x="254" y="377" font-size="12" fill="#e6e8eb" xml:space="preserve"><tspan fill="#7aa2ff" font-weight="700">invoice</tspan>s-2026.xlsx</text><text x="392" y="377" font-size="12" fill="#8b93a0" xml:space="preserve">C:\Users\you\Do…</text><text x="548" y="377" font-size="12" fill="#8b93a0" text-anchor="end">38 KB</text><text x="558" y="377" font-size="12" fill="#8b93a0">Microsoft Excel Worksheet</text><text x="718" y="377" font-size="12" fill="#8b93a0">10/10/2026 09:38</text><text x="850" y="377" font-size="12" fill="#8b93a0">A</text>
-<rect x="938.5" y="105.5" width="436" height="753" rx="6" fill="#181c22" stroke="#262b33"/>
-<text x="956" y="137" font-size="13" font-weight="700" fill="#e6e8eb">invoice-notes.txt</text>
-<text x="956" y="156" font-size="12" fill="#8b93a0">1 KB · 10/10/2026 09:41 · C:\Users\you\Documents\Invoices</text>
-<text x="956" y="180" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Invoices 2026</text>
-<text x="956" y="194" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">=============</text>
-<text x="956" y="208" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve"></text>
-<text x="956" y="222" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Q1   182 KB   paid  03/04</text>
-<text x="956" y="236" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Q2   176 KB   paid  02/07</text>
-<text x="956" y="250" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">Q3   191 KB   due   15/10</text>
-<text x="956" y="264" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve"></text>
-<text x="956" y="278" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">To do</text>
-<text x="956" y="292" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">- send the Q3 reminder on the 10th</text>
-<text x="956" y="306" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">- hosting renews in November</text>
-<text x="956" y="320" font-family="Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace" font-size="12" fill="#e6e8eb" xml:space="preserve">- keep the camera receipt (warranty)</text>
-<rect y="862" width="1400" height="38" fill="#181c22"/><path d="M0 862.5H1400" stroke="#262b33"/>
-<text x="10" y="881" font-size="12" fill="#8b93a0">9 items | Size: 1 KB | Date Modified: 10/10/2026 09:41 | Path: C:\Users\you\Documents\Invoices</text>
-<rect x="828.5" y="866.5" width="109" height="23" rx="3" fill="#0f1216" stroke="#262b33"/><text x="837" y="882.0" font-size="12" fill="#e6e8eb">Names</text><path d="M921 876.0l4 4 4-4" stroke="#e6e8eb" fill="none" stroke-width="1.2"/>
-<rect x="948.5" y="866.5" width="60" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="978.5" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">Sidebar</text>
-<rect x="1014.5" y="866.5" width="134" height="22" rx="3" fill="#181c22" stroke="#262b33"/><rect x="1014.5" y="866.5" width="58" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="1043.5" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">Browse</text><text x="1110" y="882" font-size="12" fill="#8b93a0" text-anchor="middle">Subfolders</text>
-<rect x="1149.5" y="866.5" width="68" height="22" rx="3" fill="#181c22" stroke="#262b33"/><text x="1183.5" y="881.5" font-size="12" fill="#8b93a0" text-anchor="middle">Smooth</text>
-<rect x="1223.5" y="866.5" width="61" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="1254.0" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">Preview</text>
-<rect x="1294.5" y="866.5" width="79" height="22" rx="3" fill="#181c22" stroke="#262b33"/><rect x="1294.5" y="866.5" width="38" height="22" rx="3" fill="#1f2a44" stroke="#7aa2ff"/><text x="1313.5" y="881.5" font-size="12" fill="#7aa2ff" text-anchor="middle">List</text><text x="1353" y="882" font-size="12" fill="#8b93a0" text-anchor="middle">Grid</text>
-</g><rect x="0.5" y="0.5" width="1399" height="899" rx="8" fill="none" stroke="#2e343d"/></svg>
+<text x="21.5" y="150" font-size="12.5" fill="#e6e8eb">Edits</text>
+<rect x="180" y="6.5" width="129" height="169" rx="8" fill="#243257" stroke="#7aa2ff"/>
+<svg x="184.5" y="26" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#0B1530"/><path d="M0 50q30-30 60-10t50-6 50-16v26q-24 10-50 16t-50 6T0 70z" fill="#34D399" fill-opacity=".85"/><path d="M20 44q24-18 52-6t44-8 44-10v10q-20 8-44 12t-44 6-52 6z" fill="#A78BFA" fill-opacity=".6"/><g fill="#fff"><circle cx="18" cy="16" r="1"/><circle cx="62" cy="10" r="1.2"/><circle cx="104" cy="20" r="1"/><circle cx="140" cy="8" r="1"/><circle cx="84" cy="30" r=".8"/></g><path d="M0 92l30-22 22 14 30-26 34 30 22-14 22 16v30H0z" fill="#1E293B"/><path d="M0 104h160v16H0z" fill="#0F172A"/></g></svg>
+<text x="184.5" y="150" font-size="12.5" fill="#e6e8eb">Aurora.jpg</text>
+<svg x="347.5" y="26" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#DBEAFE"/><path d="M10 120l64-90 50 66 18-20 26 44z" fill="#64748B"/><path d="M74 30l-20 28 10-4 10 8 10-8 12 4z" fill="#F8FAFC"/><path d="M124 96l18-20 10 16-6-2-6 6-6-4z" fill="#F8FAFC"/><path d="M0 104q60-14 160 0v16H0z" fill="#E2E8F0"/></g></svg>
+<text x="347.5" y="150" font-size="12.5" fill="#e6e8eb">Summit.jpg</text>
+<svg x="510.5" y="26" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#BAE6FD"/><path d="M0 60l40-26 30 18 26-20 64 34v14H0z" fill="#94A3B8"/><rect y="72" width="160" height="48" fill="#38BDF8"/><path d="M0 72h160v6H0z" fill="#166534"/><g fill="#15803D"><path d="M14 74l9-26 9 26z"/><path d="M30 74l7-20 7 20z"/><path d="M118 74l9-28 9 28z"/><path d="M136 74l7-18 7 18z"/></g><path d="M20 92h40M88 100h44M40 108h30" stroke="#7DD3FC" stroke-width="2" stroke-linecap="round"/></g></svg>
+<text x="510.5" y="150" font-size="12.5" fill="#e6e8eb">Lake house.jpg</text>
+<svg x="21.5" y="208" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#FDBA74"/><rect y="62" width="160" height="58" fill="#FB923C"/><circle cx="104" cy="58" r="18" fill="#FFF1C1"/><path d="M0 82l34-30 22 18 30-34 34 30 18-12 22 18v48H0z" fill="#C2410C"/><path d="M0 98l40-22 30 16 36-24 54 34v18H0z" fill="#7C2D12"/></g></svg>
+<text x="21.5" y="332" font-size="12.5" fill="#e6e8eb">Alps sunset.jpg</text>
+<svg x="184.5" y="208" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#7DD3FC"/><circle cx="122" cy="30" r="13" fill="#FEF3C7"/><rect y="62" width="160" height="26" fill="#0EA5E9"/><path d="M0 66h160v4H0z" fill="#38BDF8"/><path d="M0 90q50-12 100-4t60 2v32H0z" fill="#FDE68A"/><path d="M36 92q-2-22 4-40" stroke="#92400E" stroke-width="3" fill="none"/><path d="M40 52q-14-4-22 6 10-4 22-6zm0 0q12-8 22 0-12-2-22 0zm0 0q-4-12 6-18-2 10-6 18z" fill="#15803D"/></g></svg>
+<text x="184.5" y="332" font-size="12.5" fill="#e6e8eb">Beach day.jpg</text>
+<svg x="347.5" y="208" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#1E1B4B"/><circle cx="128" cy="26" r="10" fill="#FEF3C7"/><circle cx="132" cy="23" r="9" fill="#1E1B4B"/><g fill="#312E81"><rect x="4" y="54" width="26" height="66"/><rect x="58" y="40" width="22" height="80"/><rect x="108" y="58" width="30" height="62"/></g><g fill="#4338CA"><rect x="28" y="70" width="32" height="50"/><rect x="78" y="62" width="32" height="58"/><rect x="136" y="76" width="24" height="44"/></g><g fill="#FDE047"><rect x="10" y="62" width="4" height="4"/><rect x="20" y="74" width="4" height="4"/><rect x="64" y="50" width="4" height="4"/><rect x="70" y="66" width="4" height="4"/><rect x="36" y="80" width="4" height="4"/><rect x="88" y="72" width="4" height="4"/><rect x="98" y="90" width="4" height="4"/><rect x="116" y="68" width="4" height="4"/><rect x="144" y="86" width="4" height="4"/></g></g></svg>
+<text x="347.5" y="332" font-size="12.5" fill="#e6e8eb">City lights.jpg</text>
+<svg x="510.5" y="208" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#FED7AA"/><circle cx="40" cy="34" r="14" fill="#FFF7ED"/><path d="M0 76q50-34 96-6t64 0v50H0z" fill="#F59E0B"/><path d="M0 96q40-24 84-4t76-6v34H0z" fill="#D97706"/><path d="M60 70q20-10 36 0" stroke="#FBBF24" stroke-width="2" fill="none"/></g></svg>
+<text x="510.5" y="332" font-size="12.5" fill="#e6e8eb">Dunes.jpg</text>
+<svg x="21.5" y="390" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#93C5FD"/><path d="M0 100q50-16 100-4t60-2v26H0z" fill="#4ADE80"/><circle cx="44" cy="40" r="16" fill="#F43F5E"/><path d="M38 56h12l-2 8h-8z" fill="#92400E"/><circle cx="104" cy="28" r="12" fill="#FBBF24"/><path d="M100 40h8l-1.5 6h-5z" fill="#92400E"/><circle cx="128" cy="64" r="9" fill="#8B5CF6"/><path d="M125 73h6l-1 5h-4z" fill="#92400E"/><path d="M44 24v32M28 40h32" stroke="#FB7185" stroke-width="2"/></g></svg>
+<text x="21.5" y="514" font-size="12.5" fill="#e6e8eb">Balloons.jpg</text>
+<svg x="184.5" y="390" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#A5F3FC"/><circle cx="130" cy="28" r="12" fill="#FEF9C3"/><path d="M0 78q40-30 90-6t70-8v56H0z" fill="#84CC16"/><path d="M0 98q60-26 110-4t50-2v28H0z" fill="#65A30D"/><path d="M50 80v-12" stroke="#78350F" stroke-width="2.5"/><circle cx="50" cy="64" r="8" fill="#166534"/></g></svg>
+<text x="184.5" y="514" font-size="12.5" fill="#e6e8eb">Green hills.jpg</text>
+<svg x="347.5" y="390" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#FDE68A"/><rect y="74" width="160" height="46" fill="#0369A1"/><path d="M84 74l14-40h12l14 40z" fill="#78716C" fill-opacity="0"/><path d="M0 74q30-14 60-6l10 6z" fill="#57534E"/><path d="M96 74l4-44h12l4 44z" fill="#F8FAFC"/><path d="M98.6 52h14.8l.8 9H97.8zM100 30h12l.6 8h-13.2z" fill="#DC2626"/><rect x="99" y="22" width="14" height="8" fill="#1F2937"/><path d="M113 25l40-10v20z" fill="#FEF9C3" fill-opacity=".8"/><path d="M84 74h44l6 8H78z" fill="#44403C"/></g></svg>
+<text x="347.5" y="514" font-size="12.5" fill="#e6e8eb">Lighthouse.jpg</text>
+<svg x="510.5" y="390" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#0F172A"/><g fill="#fff"><circle cx="20" cy="18" r="1"/><circle cx="56" cy="30" r="1"/><circle cx="98" cy="12" r="1.2"/><circle cx="138" cy="26" r="1"/><circle cx="120" cy="44" r=".8"/></g><path d="M0 84l40-28 30 20 34-30 56 38v36H0z" fill="#1E293B"/><path d="M0 98h160v22H0z" fill="#14532D"/><path d="M40 100l22-36 22 36z" fill="#F97316"/><path d="M62 64l-6 36h12z" fill="#7C2D12"/><path d="M110 100q-6-10 2-20 2 8 6 4 4 8-2 16z" fill="#FBBF24"/><path d="M104 102l16-4M104 98l16 4" stroke="#78350F" stroke-width="2.5"/></g></svg>
+<text x="510.5" y="514" font-size="12.5" fill="#e6e8eb">Campfire.jpg</text>
+<svg x="21.5" y="572" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#E0F2FE"/><rect y="70" width="160" height="50" fill="#0284C7"/><g fill="#F59E0B"><rect x="8" y="44" width="18" height="26"/></g><rect x="26" y="36" width="16" height="34" fill="#EF4444"/><rect x="42" y="50" width="20" height="20" fill="#10B981"/><rect x="62" y="42" width="14" height="28" fill="#6366F1"/><path d="M96 86h48l-8 10h-34z" fill="#F8FAFC"/><path d="M118 86V56l18 28z" fill="#F8FAFC"/><path d="M116 86V54" stroke="#334155" stroke-width="1.5"/><path d="M8 82h30M60 92h26M110 104h36" stroke="#7DD3FC" stroke-width="2" stroke-linecap="round"/></g></svg>
+<text x="21.5" y="696" font-size="12.5" fill="#e6e8eb">Harbour.jpg</text>
+<svg x="184.5" y="572" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#7DD3FC"/><circle cx="122" cy="30" r="13" fill="#FEF3C7"/><rect y="62" width="160" height="26" fill="#0EA5E9"/><path d="M0 66h160v4H0z" fill="#38BDF8"/><path d="M0 90q50-12 100-4t60 2v32H0z" fill="#FDE68A"/><path d="M36 92q-2-22 4-40" stroke="#92400E" stroke-width="3" fill="none"/><path d="M40 52q-14-4-22 6 10-4 22-6zm0 0q12-8 22 0-12-2-22 0zm0 0q-4-12 6-18-2 10-6 18z" fill="#15803D"/></g></svg>
+<text x="184.5" y="696" font-size="12.5" fill="#e6e8eb">Bay at noon.jpg</text>
+<svg x="347.5" y="572" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#DBEAFE"/><path d="M10 120l64-90 50 66 18-20 26 44z" fill="#64748B"/><path d="M74 30l-20 28 10-4 10 8 10-8 12 4z" fill="#F8FAFC"/><path d="M124 96l18-20 10 16-6-2-6 6-6-4z" fill="#F8FAFC"/><path d="M0 104q60-14 160 0v16H0z" fill="#E2E8F0"/></g></svg>
+<text x="347.5" y="696" font-size="12.5" fill="#e6e8eb">Ridge walk.jpg</text>
+<svg x="510.5" y="572" width="120" height="90" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#BAE6FD"/><path d="M0 60l40-26 30 18 26-20 64 34v14H0z" fill="#94A3B8"/><rect y="72" width="160" height="48" fill="#38BDF8"/><path d="M0 72h160v6H0z" fill="#166534"/><g fill="#15803D"><path d="M14 74l9-26 9 26z"/><path d="M30 74l7-20 7 20z"/><path d="M118 74l9-28 9 28z"/><path d="M136 74l7-18 7 18z"/></g><path d="M20 92h40M88 100h44M40 108h30" stroke="#7DD3FC" stroke-width="2" stroke-linecap="round"/></g></svg>
+<text x="510.5" y="696" font-size="12.5" fill="#e6e8eb">Morning lake.jpg</text>
+</svg>
+<rect x="856" y="128" width="4" height="210" rx="2" fill="#3a414c"/>
+<rect x="872" y="114" width="408" height="650" fill="#181c22"/><path d="M872.5 114V764" stroke="#262b33"/>
+<rect x="866" y="399" width="3" height="80" rx="1.5" fill="#3a414c"/>
+<text x="890" y="146" font-size="15" fill="#e6e8eb" font-weight="600">Aurora.jpg</text>
+<text x="890" y="168" font-size="12" fill="#8b93a0">4.2 MB · 03/02/2026 23:41 · C:\Users\you\Pictures\Trips</text>
+<clipPath id="pv"><rect x="890" y="186" width="372" height="279" rx="6"/></clipPath>
+<g clip-path="url(#pv)"><svg x="890" y="186" width="372" height="279" viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><g><rect width="160" height="120" fill="#0B1530"/><path d="M0 50q30-30 60-10t50-6 50-16v26q-24 10-50 16t-50 6T0 70z" fill="#34D399" fill-opacity=".85"/><path d="M20 44q24-18 52-6t44-8 44-10v10q-20 8-44 12t-44 6-52 6z" fill="#A78BFA" fill-opacity=".6"/><g fill="#fff"><circle cx="18" cy="16" r="1"/><circle cx="62" cy="10" r="1.2"/><circle cx="104" cy="20" r="1"/><circle cx="140" cy="8" r="1"/><circle cx="84" cy="30" r=".8"/></g><path d="M0 92l30-22 22 14 30-26 34 30 22-14 22 16v30H0z" fill="#1E293B"/><path d="M0 104h160v16H0z" fill="#0F172A"/></g></svg></g>
+<text x="890" y="499" font-size="12.5" fill="#8b93a0">Dimensions</text>
+<text x="1006" y="499" font-size="12.5" fill="#e6e8eb">4032 × 3024</text>
+<text x="890" y="525" font-size="12.5" fill="#8b93a0">Taken</text>
+<text x="1006" y="525" font-size="12.5" fill="#e6e8eb">03/02/2026 23:41</text>
+<text x="890" y="551" font-size="12.5" fill="#8b93a0">Exposure</text>
+<text x="1006" y="551" font-size="12.5" fill="#e6e8eb">1/4 s · f/1.8 · ISO 1600</text>
+<text x="890" y="577" font-size="12.5" fill="#8b93a0">Focal length</text>
+<text x="1006" y="577" font-size="12.5" fill="#e6e8eb">6 mm</text>
+<text x="890" y="603" font-size="12.5" fill="#8b93a0">Type</text>
+<text x="1006" y="603" font-size="12.5" fill="#e6e8eb">JPEG image</text>
+<rect y="764" width="1280" height="36" fill="#181c22"/><path d="M0 764.5H1280" stroke="#262b33"/>
+<path d="M1257 777.5l4 4.5-4 4.5" fill="none" stroke="#8b93a0" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="1094.75" y="771.5" width="146.75" height="21" rx="4" fill="#181c22" stroke="#262b33"/>
+<rect x="1200.12" y="771.5" width="41.38" height="21" rx="4" fill="#1f2a44" stroke="#7aa2ff"/>
+<text x="1220.81" y="786.5" font-size="12.5" fill="#7aa2ff" text-anchor="middle">Grid</text>
+<text x="1180.44" y="786.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">List</text>
+<text x="1127.75" y="786.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Windows</text>
+<rect x="1021" y="771.5" width="62.75" height="21" rx="4" fill="#1f2a44" stroke="#7aa2ff"/>
+<text x="1052.38" y="786.5" font-size="12.5" fill="#7aa2ff" text-anchor="middle">Preview</text>
+<rect x="950.5" y="771.5" width="63.5" height="21" rx="4" fill="#1f2a44" stroke="#7aa2ff"/>
+<text x="982.25" y="786.5" font-size="12.5" fill="#7aa2ff" text-anchor="middle">Smooth</text>
+<rect x="804.88" y="771.5" width="138.62" height="21" rx="4" fill="#181c22" stroke="#262b33"/>
+<text x="904" y="786.5" font-size="12.5" fill="#8b93a0" text-anchor="middle">Subfolders</text>
+<rect x="804.88" y="771.5" width="59.62" height="21" rx="4" fill="#1f2a44" stroke="#7aa2ff"/>
+<text x="834.69" y="786.5" font-size="12.5" fill="#7aa2ff" text-anchor="middle">Browse</text>
+<rect x="736" y="771.5" width="61.88" height="21" rx="4" fill="#1f2a44" stroke="#7aa2ff"/>
+<text x="766.94" y="786.5" font-size="12.5" fill="#7aa2ff" text-anchor="middle">Sidebar</text>
+<rect x="699.12" y="771.5" width="25.88" height="21" rx="4" fill="#181c22" stroke="#262b33"/>
+<path d="M708.06 784.5l4-5 4 5z" fill="#8b93a0"/>
+<rect x="583.12" y="771.5" width="109" height="21" rx="4" fill="#0f1216" stroke="#262b33"/>
+<text x="591.62" y="786.5" font-size="12.5" fill="#e6e8eb">Name</text>
+<path d="M672.62 780.5l3.5 3.5 3.5-3.5" fill="none" stroke="#e6e8eb" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="10" y="786.5" font-size="12.5" fill="#8b93a0">16 items | Size: 4.2 MB | Date Modified: 03/02/2026 23:41 | Path: C:\Users\you\Pictures\Trips</text>
+</g>
+<rect x=".5" y=".5" width="1279" height="799" rx="9.5" fill="none" stroke="#2c323c"/>
+</svg>
