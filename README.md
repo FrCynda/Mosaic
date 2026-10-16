@@ -225,7 +225,7 @@ flowchart LR
 
 ## 📦 Install
 
-1. Download **`MosaicSetup.exe`** from the [latest release](https://github.com/FrCynda/mosaic-search/releases/latest), or [build it](#%EF%B8%8F-build-from-source) with one command.
+1. Download **`MosaicSetup.exe`** from the [latest release](https://github.com/FrCynda/Mosaic/releases/latest), or [build it](#%EF%B8%8F-build-from-source) with one command.
 2. Run it and pick an **icon preset**: 11 color themes, each in two styles.
 3. Accept the one admin prompt. It installs the background index service that reads the file table.
 4. Type. Name search is ready once the drive is read; content indexing then continues quietly in the background.
@@ -237,8 +237,8 @@ Mosaic then opens your folders and Save/Open windows in place of Explorer's. Bot
 Requires **Rust** (stable, MSVC toolchain) and **[Inno Setup 6](https://jrsoftware.org/isinfo.php)**. [ImageMagick](https://imagemagick.org) is only needed to re-render the icon presets.
 
 ```powershell
-git clone https://github.com/FrCynda/mosaic-search.git
-cd mosaic-search
+git clone https://github.com/FrCynda/Mosaic.git
+cd Mosaic
 .\build.ps1                                    # release build + installer -> dist\MosaicSetup.exe
 cargo test --release --bin mosaic-wrapper      # the test suite
 .\tools\gen-presets.ps1                        # optional: re-render icons/presets from icons/presets-src/*.svg
