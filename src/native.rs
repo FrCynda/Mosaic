@@ -853,6 +853,38 @@ fn spring(x: &mut f64, v: &mut f64, to: f64, dt: f64, w: f64, snap: f64) -> bool
     true
 }
 
+/// A panel sliding in (fast, then settling: 0.3 s) or out (gathering speed: 0.22 s), as in the README's banner.
+/// `d` is how much of it shows; turned round mid-way it carries on from there.
+#[derive(Clone, Copy)]
+struct Slide {
+    d: f64,
+    p: f64, // progress of the current move, 0..1
+    on: bool,
+    off: i32, // the panel's hidden width last laid out, px
+}
+impl Slide {
+    fn new(on: bool) -> Self {
+        Slide { d: on as u8 as f64, p: 1.0, on, off: -1 }
+    }
+    fn set(&mut self, on: bool) {
+        if on != self.on {
+            self.on = on;
+            self.p = if on { 1.0 - (1.0 - self.d).powf(0.25) } else { (1.0 - self.d).cbrt() };
+        }
+    }
+    fn moving(&self) -> bool {
+        self.p < 1.0
+    }
+    fn step(&mut self, dt: f64) -> bool {
+        if !self.moving() {
+            return false;
+        }
+        self.p = (self.p + dt / if self.on { 0.3 } else { 0.22 }).min(1.0);
+        self.d = if self.on { 1.0 - (1.0 - self.p).powi(4) } else { 1.0 - self.p.powi(3) };
+        true
+    }
+}
+
 /// A tab: its panes, the one focused, where its button is drawn (`x`, springing at `v` toward its slot `to`), and
 /// when it opened, while it's still unfolding into its slot.
 struct Tab {
@@ -1021,6 +1053,8 @@ struct Ui {
     show_pv: bool,   // … shown
     side: HWND,      // the places panel left of the list
     show_side: bool, // … shown
+    side_sl: Slide,  // the places panel sliding in and out
+    pv_sl: Slide,    // … the preview pane
     pv_key: String,  // what it was last asked to show (a path, or the note)
     pv_w: i32,       // … its width (CSS px) as dragged; 0 = 40% of the window
     split: Option<i32>, // dragging the divider left of the pane: the pointer's offset from its left edge
@@ -1595,6 +1629,8 @@ pub fn run() {
             show_pv: get("preview") == "1",
             side,
             show_side: get("side") != "0", // on unless switched off
+            side_sl: Slide::new(get("side") != "0"),
+            pv_sl: Slide::new(get("preview") == "1"),
             pv_key: String::new(),
             pv_w: get("pvw").parse().unwrap_or(0),
             split: None,
@@ -2032,17 +2068,13 @@ fn go_place_tab(target: &str, mosaic: bool) {
 }
 
 unsafe fn toggle_preview() {
-    let on = with(|u| {
+    with(|u| {
         u.show_pv = !u.show_pv;
         u.pv_key.clear();
         u.save_settings();
         u.layout();
         u.want_preview();
-        u.show_pv
     });
-    if on == Some(false) {
-        preview::clear();
-    }
 }
 
 /// Searches run here, newest first: typing never waits on a search, and superseded ones are skipped.
@@ -3561,6 +3593,13 @@ impl Ui {
             self.layout();
             moved = true;
         }
+        if self.side_sl.step(dt) | self.pv_sl.step(dt) {
+            self.layout();
+            moved = true;
+            if !self.show_pv && !self.pv_sl.moving() {
+                preview::clear(); // slid out: let go of the file (and stop playback)
+            }
+        }
         if !self.dying.is_empty() {
             self.bury(false);
             moved = true;
@@ -3643,6 +3682,8 @@ impl Ui {
             || self.plus.0.is_finite() && (self.plus.0 != self.plus.2 || self.plus.1 != 0.0)
             || self.gut_lit.1 != if hot { 1.0 } else { 0.0 }
             || self.tabs[self.cur].root.moving()
+            || self.side_sl.moving()
+            || self.pv_sl.moving()
     }
 
     /// All: an empty search box.
@@ -4831,7 +4872,7 @@ impl Ui {
         let none = self.focus.is_none();
         let cols = self.ncols() as isize;
         let page = (self.list_size().1 / self.rh()).max(1) as isize * cols;
-        let side = !in_search || ctrl; // in the search box, ←/→ move the caret
+        let side = !in_search; // in the search box, ←/→ (and Ctrl+←/→, by word) move the caret
         let text_sel = in_search && {
             let (mut a, mut b) = (0u32, 0u32);
             unsafe { SendMessageW(self.edit, 0x00B0, &mut a as *mut _ as usize, &mut b as *mut _ as isize) }; // EM_GETSEL
@@ -5209,18 +5250,32 @@ impl Ui {
                 _ => {}
             }
             // the places panel, left of the list: it gives way first on a narrow window
+            // (the list takes its new room at once; the panels slide over it, clipped to their own side)
             let side_w = if self.show_side && wd >= px(760) { px(side::width()) } else { 0 };
-            MoveWindow(self.side, left, top, side_w.max(1), (bottom - top).max(1), 1);
+            self.side_sl.set(side_w > 0);
+            let (sw, h) = (px(side::width()), (bottom - top).max(1));
+            let off = (sw as f64 * (1.0 - self.side_sl.d)).round() as i32;
+            let z = if self.side_sl.moving() { 0 } else { SWP_NOZORDER };
+            let vis = if off < sw { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
+            SetWindowPos(self.side, HWND_TOP, left - off, top, sw, h, SWP_NOACTIVATE | z | vis);
+            if off != self.side_sl.off {
+                self.side_sl.off = off;
+                SetWindowRgn(self.side, if off > 0 { CreateRectRgn(off, 0, sw, h) } else { null_mut() }, 1);
+            }
             let left = left + side_w;
-            ShowWindow(self.side, if side_w > 0 { SW_SHOWNA } else { SW_HIDE });
             let max_pane = (wd - min_list - left - px(preview::GAP)).max(0);
             let auto = ((wd as f64 * 0.4) as i32).clamp(px(240), px(960)).min(wd / 2).min(max_pane);
             let show_pane = self.show_pv && max_pane >= px(160);
-            let pane_w = if !show_pane { 0 } else if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
+            let full = if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
+            let pane_w = if show_pane { full } else { 0 };
             let right = if show_pane { wd - pane_w - px(preview::GAP) } else { wd };
             // the pane's window takes in the divider: it draws its grip, which so moves with it
-            MoveWindow(self.pane, right, top, pane_w.max(1) + px(preview::GAP), (bottom - top).max(1), 1);
-            ShowWindow(self.pane, if show_pane { SW_SHOWNA } else { SW_HIDE });
+            self.pv_sl.set(show_pane);
+            let pw = full.max(1) + px(preview::GAP);
+            let shown = (pw as f64 * self.pv_sl.d).round() as i32;
+            let z = if self.pv_sl.moving() { 0 } else { SWP_NOZORDER };
+            let vis = if shown > 0 { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
+            SetWindowPos(self.pane, HWND_TOP, wd - shown, top, pw, (bottom - top).max(1), SWP_NOACTIVATE | z | vis);
             if show_pane {
                 let gap = RECT { left: right, top, right: right + px(preview::GAP), bottom };
                 let (mid, half) = ((gap.top + gap.bottom) / 2, (gap.bottom - gap.top) / 8);
