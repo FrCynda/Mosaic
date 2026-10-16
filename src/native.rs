@@ -1285,9 +1285,6 @@ fn with<R>(f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
 
 // ---- window identity: the two UIs get their own name, icon and taskbar button ---------------------------------
 macro_rules! icon_set {
-    ($n:literal) => {
-        icon_set!("../icons/", $n)
-    };
     ($dir:literal, $n:literal) => {
         [
             (16, &include_bytes!(concat!($dir, $n, "-16.png"))[..]),
@@ -1360,7 +1357,7 @@ pub fn set_icons(hwnd: HWND) {
 /// `mosaic.exe`: this exe with its own name and icon. Started without arguments it opens the window. A dev build
 /// (cargo's `mosaic-wrapper.exe`) makes or refreshes it beside itself on start.
 pub fn native_exe() -> std::io::Result<std::path::PathBuf> {
-    stamped_helper("mosaic.exe", "Mosaic", icon_set!("native"))
+    stamped_helper("mosaic.exe", "Mosaic", default_set("main"))
 }
 
 /// Copy `src` to `out` with `name` as its description and its own icons (via a temp file, so a failed update
