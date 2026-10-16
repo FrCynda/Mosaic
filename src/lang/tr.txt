@@ -393,3 +393,6 @@ save.open=Aç
 save.select=Klasör seç
 save.folder_label=Klasör:
 save.not_found={name} bulunamadı.
+menu.explorer=Gezgin yerine Mosaic kullan
+menu.file_windows=Kaydet ve Aç pencereleri için Mosaic kullan
+explorer.verb=Mosaic'te aç

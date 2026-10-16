@@ -393,3 +393,6 @@ save.open=Vula
 save.select=Khetha ifolda
 save.folder_label=Ifolda:
 save.not_found=I-{name} ayitholakalanga.
+menu.explorer=Sebenzisa i-Mosaic esikhundleni se-Explorer
+menu.file_windows=Sebenzisa i-Mosaic kumawindi okuLondoloza nokuVula
+explorer.verb=Vula ku-Mosaic

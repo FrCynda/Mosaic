@@ -394,3 +394,6 @@ save.open=Otvori
 save.select=Izaberi fasciklu
 save.folder_label=Fascikla:
 save.not_found={name} nije pronađen.
+menu.explorer=Koristi Mosaic umesto Explorera
+menu.file_windows=Koristi Mosaic za prozore Sačuvaj i Otvori
+explorer.verb=Otvori u Mosaicu

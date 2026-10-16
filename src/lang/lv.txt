@@ -394,3 +394,6 @@ save.open=Atvērt
 save.select=Izvēlēties mapi
 save.folder_label=Mape:
 save.not_found={name} netika atrasts.
+menu.explorer=Izmantot Mosaic Explorer vietā
+menu.file_windows=Izmantot Mosaic saglabāšanas un atvēršanas logos
+explorer.verb=Atvērt ar Mosaic

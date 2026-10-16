@@ -395,3 +395,6 @@ save.open=Odpri
 save.select=Izberi mapo
 save.folder_label=Mapa:
 save.not_found={name} ni bilo mogoče najti.
+menu.explorer=Uporabi Mosaic namesto Raziskovalca
+menu.file_windows=Uporabi Mosaic za okna Shrani in Odpri
+explorer.verb=Odpri v Mosaicu

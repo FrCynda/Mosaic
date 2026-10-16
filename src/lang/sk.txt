@@ -394,3 +394,6 @@ save.open=Otvoriť
 save.select=Vybrať priečinok
 save.folder_label=Priečinok:
 save.not_found={name} sa nenašiel.
+menu.explorer=Používať Mosaic namiesto Prieskumníka
+menu.file_windows=Používať Mosaic pre okná Uložiť a Otvoriť
+explorer.verb=Otvoriť v Mosaicu

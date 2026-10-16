@@ -393,3 +393,6 @@ save.open=Öffnen
 save.select=Ordner auswählen
 save.folder_label=Ordner:
 save.not_found={name} wurde nicht gefunden.
+menu.explorer=Mosaic statt Explorer verwenden
+menu.file_windows=Mosaic für Speichern- und Öffnen-Fenster verwenden
+explorer.verb=In Mosaic öffnen

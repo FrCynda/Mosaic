@@ -576,6 +576,13 @@ pub(super) unsafe fn copydata(h: HWND, l: LPARAM) -> bool {
 }
 /// A new window with these tabs (a session as JSON), at `at` on screen.
 pub(super) fn spawn_window(json: &str, at: Option<POINT>) -> bool {
+    let mut args = vec!["--tabs-json".to_string(), json.to_string()];
+    if let Some(p) = at {
+        args.extend(["--at".to_string(), format!("{},{}", p.x, p.y)]);
+    }
+    if super::open(args) {
+        return true; // a thread in this process (no file to pass it through)
+    }
     let f = std::env::temp_dir().join(format!("mosaic-tabs-{}.json", new_uid()));
     let Ok(exe) = std::env::current_exe() else { return false };
     if std::fs::write(&f, json).is_err() {
@@ -778,7 +785,7 @@ impl Ui {
     // -- sessions
     /// At start: the tabs sent from another window (`--tabs`), else the last session's, else the startup folders.
     pub(super) fn restore(&mut self) {
-        let args: Vec<String> = std::env::args().collect();
+        let args = super::args();
         let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
         if let Some((x, y)) = arg("--at").and_then(|s| {
             let (a, b) = s.split_once(',')?;
@@ -789,6 +796,12 @@ impl Ui {
         let s: Option<Session> = if let Some(d) = super::save::start_dir() {
             self.secondary = true; // a Save window: its own folder, not the session's
             Some(Session { tabs: vec![TabSpec::folder(&self.browse_q(&d))], ..Default::default() })
+        } else if let Some(d) = arg("--open") {
+            self.secondary = true; // a folder opened from the desktop or elsewhere, in place of Explorer
+            Some(Session { tabs: vec![TabSpec::folder(&self.browse_q(&d))], ..Default::default() })
+        } else if let Some(j) = arg("--tabs-json") {
+            self.secondary = true;
+            serde_json::from_str(&j).ok()
         } else if let Some(f) = arg("--tabs") {
             self.secondary = true;
             let s = std::fs::read_to_string(&f).ok().and_then(|s| serde_json::from_str(&s).ok());
@@ -1431,6 +1444,12 @@ impl Ui {
             let panel = RECT { left: 0, top: self.head_h, right: c.right, bottom: self.list_bottom() };
             cv.fill(&panel, theme().card, 1.0);
             cv.fill(&RECT { left: panel.right - 1, ..panel }, theme().line, 1.0);
+        }
+        // the strip's row (its column, down the side), + and arrows included
+        let (far, g2) = (i32::MAX / 2, px(2));
+        let lane = if vert { RECT { left: c.left - g2, right: c.right + g2, top: -far, bottom: far } } else { RECT { top: c.top - g2, bottom: c.bottom + g2, left: -far, right: far } };
+        if !cv.shows(&lane) {
+            return;
         }
         let hot = |h: Hit| self.hot == Some(h);
         let dragged = match &self.drag {

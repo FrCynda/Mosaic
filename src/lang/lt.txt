@@ -394,3 +394,6 @@ save.open=Atidaryti
 save.select=Pasirinkti aplanką
 save.folder_label=Aplankas:
 save.not_found={name} nerastas.
+menu.explorer=Naudoti Mosaic vietoj Naršyklės
+menu.file_windows=Naudoti Mosaic įrašymo ir atidarymo languose
+explorer.verb=Atidaryti su Mosaic

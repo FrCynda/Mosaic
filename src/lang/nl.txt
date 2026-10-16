@@ -393,3 +393,6 @@ save.open=Openen
 save.select=Map selecteren
 save.folder_label=Map:
 save.not_found={name} is niet gevonden.
+menu.explorer=Mosaic gebruiken in plaats van Verkenner
+menu.file_windows=Mosaic gebruiken voor Opslaan- en Openen-vensters
+explorer.verb=Openen in Mosaic

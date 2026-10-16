@@ -394,3 +394,6 @@ save.open=Deschide
 save.select=Alege dosarul
 save.folder_label=Dosar:
 save.not_found={name} nu a fost găsit.
+menu.explorer=Folosește Mosaic în locul Explorer
+menu.file_windows=Folosește Mosaic pentru ferestrele Salvare și Deschidere
+explorer.verb=Deschide în Mosaic

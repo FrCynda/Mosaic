@@ -393,3 +393,6 @@ save.open=کھولیں
 save.select=فولڈر منتخب کریں
 save.folder_label=فولڈر:
 save.not_found={name} نہیں ملا۔
+menu.explorer=ایکسپلورر کی بجائے Mosaic استعمال کریں
+menu.file_windows=محفوظ کریں اور کھولیں ونڈوز کے لیے Mosaic استعمال کریں
+explorer.verb=Mosaic میں کھولیں

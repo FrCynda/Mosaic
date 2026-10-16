@@ -392,3 +392,6 @@ save.open=Ubbi
 save.select=Tànn kaarbon
 save.folder_label=Kaarbon:
 save.not_found=Gisuñu {name}.
+menu.explorer=Jëfandikoo Mosaic ci barab Explorer
+menu.file_windows=Jëfandikoo Mosaic ngir palanteeri Denc ak Ubbi
+explorer.verb=Ubbi ci Mosaic

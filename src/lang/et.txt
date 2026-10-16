@@ -393,3 +393,6 @@ save.open=Ava
 save.select=Vali kaust
 save.folder_label=Kaust:
 save.not_found={name} ei leitud.
+menu.explorer=Kasuta Exploreri asemel Mosaicut
+menu.file_windows=Kasuta Mosaicut salvestamis- ja avamisakendes
+explorer.verb=Ava Mosaicus

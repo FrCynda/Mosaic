@@ -393,3 +393,6 @@ save.open=Отваряне
 save.select=Избор на папка
 save.folder_label=Папка:
 save.not_found={name} не е намерен.
+menu.explorer=Използване на Mosaic вместо Explorer
+menu.file_windows=Използване на Mosaic за прозорците „Запис“ и „Отваряне“
+explorer.verb=Отвори в Mosaic

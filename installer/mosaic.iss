@@ -31,6 +31,12 @@ Source: "..\dist\prev\*.bmp"; DestDir: "{tmp}"; Flags: dontcopy
 [Registry]
 ; Tools > File windows… starts mosaic-dialogs.exe with Windows; gone with the app
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Mosaic Save window"; ValueType: none; Flags: uninsdeletevalue dontcreatekey
+; Tools > Use Mosaic instead of Explorer: folders, drives and Win+E open Mosaic; gone with the app
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\mosaic"; Flags: uninsdeletekey dontcreatekey
+Root: HKCU; Subkey: "Software\Classes\Drive\shell\mosaic"; Flags: uninsdeletekey dontcreatekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell"; ValueName: ""; ValueType: none; Flags: uninsdeletevalue dontcreatekey
+Root: HKCU; Subkey: "Software\Classes\Drive\shell"; ValueName: ""; ValueType: none; Flags: uninsdeletevalue dontcreatekey
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"; Flags: uninsdeletekey dontcreatekey
 
 [Icons]
 Name: "{autoprograms}\Mosaic"; Filename: "{app}\mosaic.exe"

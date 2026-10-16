@@ -393,3 +393,6 @@ save.open=Avaa
 save.select=Valitse kansio
 save.folder_label=Kansio:
 save.not_found=Kohdetta {name} ei löytynyt.
+menu.explorer=Käytä Mosaicia Resurssienhallinnan sijaan
+menu.file_windows=Käytä Mosaicia Tallenna- ja Avaa-ikkunoissa
+explorer.verb=Avaa Mosaicissa

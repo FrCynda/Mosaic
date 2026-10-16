@@ -393,3 +393,6 @@ save.open=খুলুন
 save.select=ফোল্ডার বেছে নিন
 save.folder_label=ফোল্ডার:
 save.not_found={name} পাওয়া যায়নি।
+menu.explorer=এক্সপ্লোরারের বদলে Mosaic ব্যবহার করুন
+menu.file_windows=সংরক্ষণ ও খোলার উইন্ডোর জন্য Mosaic ব্যবহার করুন
+explorer.verb=Mosaic-এ খুলুন

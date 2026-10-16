@@ -392,3 +392,6 @@ save.open=開啟
 save.select=選取資料夾
 save.folder_label=資料夾:
 save.not_found=找不到 {name}。
+menu.explorer=使用 Mosaic 取代檔案總管
+menu.file_windows=使用 Mosaic 開啟「儲存」和「開啟」視窗
+explorer.verb=在 Mosaic 中開啟

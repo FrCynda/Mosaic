@@ -393,3 +393,6 @@ save.open=Obre
 save.select=Tria la carpeta
 save.folder_label=Carpeta:
 save.not_found=No s'ha trobat {name}.
+menu.explorer=Utilitza Mosaic en lloc de l'Explorador
+menu.file_windows=Utilitza Mosaic per a les finestres de Desa i Obre
+explorer.verb=Obre amb Mosaic

@@ -393,3 +393,6 @@ save.open=Bani
 save.select=Kuusaa filadhu
 save.folder_label=Kuusaa:
 save.not_found={name} hin argamne.
+menu.explorer=Explorer bakka Mosaic fayyadami
+menu.file_windows=Foddaalee Olkaa'uu fi Banuuf Mosaic fayyadami
+explorer.verb=Mosaic keessatti bani

@@ -393,3 +393,6 @@ save.open=Ireki
 save.select=Hautatu karpeta
 save.folder_label=Karpeta:
 save.not_found=Ez da {name} aurkitu.
+menu.explorer=Erabili Mosaic Arakatzailearen ordez
+menu.file_windows=Erabili Mosaic Gorde eta Ireki leihoetarako
+explorer.verb=Ireki Mosaic-en

@@ -393,3 +393,6 @@ save.open=Megnyitás
 save.select=Mappa kiválasztása
 save.folder_label=Mappa:
 save.not_found={name} nem található.
+menu.explorer=Mosaic használata az Intéző helyett
+menu.file_windows=Mosaic használata a Mentés és Megnyitás ablakokhoz
+explorer.verb=Megnyitás a Mosaicban

@@ -394,3 +394,6 @@ save.open=Otevřít
 save.select=Vybrat složku
 save.folder_label=Složka:
 save.not_found={name} nebyl nalezen.
+menu.explorer=Používat Mosaic místo Průzkumníka
+menu.file_windows=Používat Mosaic pro okna Uložit a Otevřít
+explorer.verb=Otevřít v Mosaicu

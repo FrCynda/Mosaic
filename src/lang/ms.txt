@@ -392,3 +392,6 @@ save.open=Buka
 save.select=Pilih folder
 save.folder_label=Folder:
 save.not_found={name} tidak ditemui.
+menu.explorer=Guna Mosaic dan bukan Explorer
+menu.file_windows=Guna Mosaic untuk tetingkap Simpan dan Buka
+explorer.verb=Buka dalam Mosaic

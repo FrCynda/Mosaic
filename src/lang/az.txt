@@ -393,3 +393,6 @@ save.open=Aç
 save.select=Qovluğu seç
 save.folder_label=Qovluq:
 save.not_found={name} tapılmadı.
+menu.explorer=Explorer əvəzinə Mosaic istifadə et
+menu.file_windows=Saxla və Aç pəncərələri üçün Mosaic istifadə et
+explorer.verb=Mosaic-də aç

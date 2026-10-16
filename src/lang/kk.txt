@@ -393,3 +393,6 @@ save.open=Ашу
 save.select=Қалтаны таңдау
 save.folder_label=Қалта:
 save.not_found={name} табылмады.
+menu.explorer=Explorer орнына Mosaic пайдалану
+menu.file_windows=Сақтау және Ашу терезелері үшін Mosaic пайдалану
+explorer.verb=Mosaic-те ашу

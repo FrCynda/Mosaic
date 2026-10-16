@@ -393,3 +393,6 @@ save.open=Buɗe
 save.select=Zaɓi babban fayil
 save.folder_label=Babban fayil:
 save.not_found=Ba a sami {name} ba.
+menu.explorer=Yi amfani da Mosaic maimakon Explorer
+menu.file_windows=Yi amfani da Mosaic don tagogin Ajiye da Buɗe
+explorer.verb=Buɗe a Mosaic

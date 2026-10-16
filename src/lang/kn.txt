@@ -393,3 +393,6 @@ save.open=ತೆರೆ
 save.select=ಫೋಲ್ಡರ್ ಆಯ್ಕೆಮಾಡಿ
 save.folder_label=ಫೋಲ್ಡರ್:
 save.not_found={name} ಕಂಡುಬಂದಿಲ್ಲ.
+menu.explorer=ಎಕ್ಸ್‌ಪ್ಲೋರರ್ ಬದಲು Mosaic ಬಳಸಿ
+menu.file_windows=ಉಳಿಸು ಮತ್ತು ತೆರೆ ವಿಂಡೋಗಳಿಗೆ Mosaic ಬಳಸಿ
+explorer.verb=Mosaic ನಲ್ಲಿ ತೆರೆಯಿರಿ

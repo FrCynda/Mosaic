@@ -148,10 +148,10 @@ enum Bar {
     Thumb,
 }
 
-/// The media engine's event sink, by hand: a static object that only notes that the file failed to open
-/// (`MF_MEDIA_ENGINE_EVENT_ERROR`, from any thread); `tick` looks at the flag.
+/// The media engine's event sink, by hand: an object (one a window, never freed) that only notes that the file
+/// failed to open (`MF_MEDIA_ENGINE_EVENT_ERROR`, from any thread); `tick` looks at the flag.
 #[repr(C)]
-struct EngineNotify(*const NotifyVtbl);
+struct EngineNotify(*const NotifyVtbl, std::sync::atomic::AtomicBool);
 unsafe impl Sync for EngineNotify {}
 #[repr(C)]
 struct NotifyVtbl {
@@ -160,7 +160,12 @@ struct NotifyVtbl {
     release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
     event: unsafe extern "system" fn(*mut std::ffi::c_void, u32, usize, u32) -> windows::core::HRESULT,
 }
-static PLAY_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// This window's (each window has a thread of its own, and its own video playing).
+fn notify() -> &'static EngineNotify {
+    // ponytail: 16 bytes kept per window ever opened, for an object the engine may still call after it is shut down
+    thread_local!(static N: &'static EngineNotify = Box::leak(Box::new(EngineNotify(&NOTIFY_VTBL, std::sync::atomic::AtomicBool::new(false)))));
+    N.with(|n| *n)
+}
 unsafe extern "system" fn notify_query(this: *mut std::ffi::c_void, _: *const windows::core::GUID, out: *mut *mut std::ffi::c_void) -> windows::core::HRESULT {
     *out = this;
     windows::core::HRESULT(0)
@@ -168,39 +173,73 @@ unsafe extern "system" fn notify_query(this: *mut std::ffi::c_void, _: *const wi
 unsafe extern "system" fn notify_ref(_: *mut std::ffi::c_void) -> u32 {
     2 // a static: never freed
 }
-unsafe extern "system" fn notify_event(_: *mut std::ffi::c_void, event: u32, _: usize, _: u32) -> windows::core::HRESULT {
+unsafe extern "system" fn notify_event(this: *mut std::ffi::c_void, event: u32, _: usize, _: u32) -> windows::core::HRESULT {
     if event == 5 {
-        PLAY_FAILED.store(true, std::sync::atomic::Ordering::Relaxed); // MF_MEDIA_ENGINE_EVENT_ERROR
+        (*(this as *const EngineNotify)).1.store(true, std::sync::atomic::Ordering::Relaxed); // MF_MEDIA_ENGINE_EVENT_ERROR
     }
     windows::core::HRESULT(0)
 }
 static NOTIFY_VTBL: NotifyVtbl = NotifyVtbl { query: notify_query, add_ref: notify_ref, release: notify_ref, event: notify_event };
-static NOTIFY: EngineNotify = EngineNotify(&NOTIFY_VTBL);
 
 thread_local!(static PV: RefCell<Option<Preview>> = const { RefCell::new(None) });
 
-/// One D3D11 device for every media engine. Left to itself, each engine makes its own and the GPU driver never lets
-/// go of it (measured: ~13 driver threads and ~30 MB kept per video previewed).
+impl Drop for Preview {
+    /// The window closed with a video in it: one engine fewer (its own release does the rest).
+    fn drop(&mut self) {
+        if self.player.is_some() {
+            ENGINES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// One D3D11 device for every media engine, in every window of the process. Left to itself, each engine makes its
+/// own and the GPU driver never lets go of it (measured: ~13 driver threads and ~30 MB kept per video previewed).
 fn dxgi() -> Option<IMFDXGIDeviceManager> {
-    thread_local!(static M: std::cell::OnceCell<Option<IMFDXGIDeviceManager>> = const { std::cell::OnceCell::new() });
-    M.with(|m| {
-        m.get_or_init(|| unsafe {
-            let mut dev = None;
-            let flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, flags, None, D3D11_SDK_VERSION, Some(&mut dev), None, None).ok()?;
-            let dev = dev?;
-            // the engine's threads share it
-            if let Ok(mt) = dev.cast::<ID3D11Multithread>() {
-                let _ = mt.SetMultithreadProtected(true);
+    shared().map(|s| s.0.clone())
+}
+struct Shared(IMFDXGIDeviceManager, windows::Win32::Graphics::Direct3D11::ID3D11Device);
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {} // the manager is free-threaded, its device multithread-protected (below)
+fn shared() -> Option<&'static Shared> {
+    static M: std::sync::OnceLock<Option<Shared>> = std::sync::OnceLock::new();
+    M.get_or_init(|| unsafe { new_dxgi() }).as_ref()
+}
+/// Media engines alive in the process, and whether the device was trimmed since the last one went.
+static ENGINES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static TRIMMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// No video left playing anywhere: the driver hands back what it holds for the device, which stays (made again,
+/// it would leak).
+pub fn trim_video() {
+    use std::sync::atomic::Ordering::*;
+    if ENGINES.load(Relaxed) != 0 || TRIMMED.swap(true, Relaxed) {
+        return;
+    }
+    if let Some(Shared(_, dev)) = shared() {
+        unsafe {
+            if let Ok(cx) = dev.GetImmediateContext() {
+                cx.ClearState();
+                cx.Flush();
             }
-            let (mut token, mut mgr) = (0, None);
-            MFCreateDXGIDeviceManager(&mut token, &mut mgr).ok()?;
-            let mgr = mgr?;
-            mgr.ResetDevice(&dev, token).ok()?;
-            Some(mgr)
-        })
-        .clone()
-    })
+            if let Ok(d) = dev.cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice3>() {
+                d.Trim();
+            }
+        }
+    }
+}
+unsafe fn new_dxgi() -> Option<Shared> {
+    let mut dev = None;
+    let flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, flags, None, D3D11_SDK_VERSION, Some(&mut dev), None, None).ok()?;
+    let dev = dev?;
+    // the engines' threads share it
+    if let Ok(mt) = dev.cast::<ID3D11Multithread>() {
+        let _ = mt.SetMultithreadProtected(true);
+    }
+    let (mut token, mut mgr) = (0, None);
+    MFCreateDXGIDeviceManager(&mut token, &mut mgr).ok()?;
+    let mgr = mgr?;
+    mgr.ResetDevice(&dev, token).ok()?;
+    Some(Shared(mgr, dev))
 }
 
 /// Run `f` on the pane. `None` while it is busy further up the stack: a preview handler's cross-process call
@@ -343,6 +382,11 @@ pub fn release(paths: &[String]) -> bool {
 /// window's `InvalidateRect` never reaches it — a theme change needs this to show up without delay.
 pub fn invalidate() {
     with(|p| unsafe { InvalidateRect(p.hwnd, null(), 0) });
+}
+
+/// Its pixels go (the window minimized), made again when it's next drawn.
+pub fn release_pixels() {
+    with(|p| p.cv.release());
 }
 
 pub fn rescale(scale: f64) {
@@ -498,6 +542,7 @@ impl Preview {
         unsafe {
             if let Some(p) = self.player.take() {
                 let _ = p.Shutdown();
+                ENGINES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(h) = self.handler.take() {
                 let _ = h.Unload();
@@ -720,12 +765,12 @@ impl Preview {
             MF.call_once(|| {
                 let _ = MFStartup(0x0002_0070, 0); // MF_VERSION, MFSTARTUP_FULL
             });
-            PLAY_FAILED.store(false, std::sync::atomic::Ordering::Relaxed);
+            notify().1.store(false, std::sync::atomic::Ordering::Relaxed);
             let make = || -> windows::core::Result<IMFMediaEngine> {
                 let mut at = None;
                 MFCreateAttributes(&mut at, 3)?;
                 let at = at.ok_or_else(windows::core::Error::empty)?;
-                let notify = IMFMediaEngineNotify::from_raw(&NOTIFY as *const EngineNotify as *mut std::ffi::c_void);
+                let notify = IMFMediaEngineNotify::from_raw(notify() as *const EngineNotify as *mut std::ffi::c_void);
                 at.SetUnknown(&MF_MEDIA_ENGINE_CALLBACK, &notify)?;
                 at.SetUINT64(&MF_MEDIA_ENGINE_PLAYBACK_HWND, self.video as usize as u64)?;
                 if let Some(m) = dxgi() {
@@ -742,6 +787,8 @@ impl Preview {
             };
             let Ok(engine) = make() else { return false };
             self.player = Some(engine);
+            ENGINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            TRIMMED.store(false, std::sync::atomic::Ordering::Relaxed);
             self.body = Body::Media;
             self.started = Instant::now();
             SetTimer(self.hwnd, T_MEDIA, 250, None);
@@ -816,10 +863,11 @@ impl Preview {
             return;
         }
         match self.times() {
-            None if PLAY_FAILED.load(std::sync::atomic::Ordering::Relaxed) || self.started.elapsed() > Duration::from_secs(8) => {
+            None if notify().1.load(std::sync::atomic::Ordering::Relaxed) || self.started.elapsed() > Duration::from_secs(8) => {
                 if let Some(p) = self.player.take() {
                     unsafe {
                         let _ = p.Shutdown();
+                        ENGINES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         ShowWindow(self.video, SW_HIDE);
                     }
                 }

@@ -47,13 +47,27 @@ pub struct Gfx {
     pub f: Fonts,
 }
 
+/// The process's one Direct2D factory, for every window's targets (each window has a thread of its own): one
+/// factory, one GPU device under all of them, where each of its own costs ~15 MB.
+fn factory() -> Result<ID2D1Factory> {
+    struct Shared(ID2D1Factory);
+    unsafe impl Send for Shared {}
+    unsafe impl Sync for Shared {} // made multithreaded: Direct2D locks around each call
+    static F: std::sync::OnceLock<Option<Shared>> = std::sync::OnceLock::new();
+    let f = F.get_or_init(|| unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None).ok().map(Shared) });
+    match f {
+        Some(f) => Ok(f.0.clone()),
+        None => unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) },
+    }
+}
+
 impl Gfx {
     /// `rtl`: build every format with `DWRITE_READING_DIRECTION_RIGHT_TO_LEFT` set, so DirectWrite shapes and
     /// bidi-reorders text automatically wherever it's used — the caller still positions the text's box itself
     /// (see `native.rs`'s `col_positions`), this only fixes how glyphs flow *within* that box.
     pub fn new(scale: f64, rtl: bool) -> Result<Gfx> {
         unsafe {
-            let d2: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+            let d2 = factory()?;
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let f = fonts(&dw, scale as f32, rtl)?;
             Ok(Gfx { d2, dw, f })
@@ -143,13 +157,146 @@ pub struct Canvas {
     pub accent: Option<Brush>,
     round: Option<ID2D1StrokeStyle>,
     pub gen: u32,
+    kept: bool,                     // let go of (`release`): the next target keeps `gen`, so the bitmaps stand
+    pub banded: bool,               // drawn a piece at a time ([`Canvas::banded`])
+    clip: RECT,                     // the piece being drawn ([`Canvas::shows`])
+    mem: Option<Mem>,               // what a banded canvas draws into, `dc_rt` bound to it
+}
+
+/// A memory DC with a bitmap of its own, `w`×`h`: a banded canvas's pieces are drawn there, then copied out.
+/// Bound once: binding a DC render target costs its next `BeginDraw` ~2 ns a pixel (it reads the DC in), and a
+/// window's paint DC is new at every paint.
+struct Mem {
+    dc: windows_sys::Win32::Graphics::Gdi::HDC,
+    bmp: windows_sys::Win32::Graphics::Gdi::HBITMAP,
+    old: windows_sys::Win32::Graphics::Gdi::HGDIOBJ,
+    w: i32,
+    h: i32,
+}
+
+impl Drop for Mem {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Graphics::Gdi::*;
+        unsafe {
+            SelectObject(self.dc, self.old);
+            DeleteObject(self.bmp);
+            DeleteDC(self.dc);
+        }
+    }
 }
 
 impl Canvas {
     pub fn new(hwnd: *mut c_void, gfx: &Gfx) -> Canvas {
         let props = D2D1_STROKE_STYLE_PROPERTIES { startCap: D2D1_CAP_STYLE_ROUND, endCap: D2D1_CAP_STYLE_ROUND, lineJoin: D2D1_LINE_JOIN_ROUND, ..Default::default() };
         let round = unsafe { gfx.d2.CreateStrokeStyle(&props, None).ok() };
-        Canvas { hwnd, d2: gfx.d2.clone(), rt: None, dc_rt: None, brush: None, accent: None, round, gen: 0 }
+        Canvas { hwnd, d2: gfx.d2.clone(), rt: None, dc_rt: None, brush: None, accent: None, round, gen: 0, kept: false, banded: false, clip: RECT { left: i32::MIN, top: i32::MIN, right: i32::MAX, bottom: i32::MAX }, mem: None }
+    }
+
+    /// A canvas for a window mostly covered by its child windows (the main window): drawn one piece of what's
+    /// left at a time ([`Canvas::begin_band`]), into a buffer the biggest piece's size. A whole-window target would
+    /// hold a window-sized buffer (8 MB at 1920x1080) for the header, status bar and gaps between the panes.
+    pub fn banded(hwnd: *mut c_void, gfx: &Gfx) -> Canvas {
+        Canvas { banded: true, ..Canvas::new(hwnd, gfx) }
+    }
+
+    /// The pieces of the window `dc` (from `BeginPaint`) paints: its update region, less the child windows.
+    pub fn bands(&self, dc: *mut c_void, paint: &RECT) -> Vec<RECT> {
+        use windows_sys::Win32::Graphics::Gdi::*;
+        let mut out = Vec::new();
+        unsafe {
+            let rgn = CreateRectRgn(0, 0, 0, 0);
+            if GetRandomRgn(dc, rgn, 4) == 1 {
+                // SYSRGN: screen coordinates
+                let mut o = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+                ClientToScreen(self.hwnd, &mut o);
+                OffsetRgn(rgn, -o.x, -o.y);
+                let n = GetRegionData(rgn, 0, std::ptr::null_mut());
+                let mut buf = vec![0u64; (n as usize).div_ceil(8)];
+                if n > 0 && GetRegionData(rgn, n, buf.as_mut_ptr().cast()) == n {
+                    let d = &*(buf.as_ptr() as *const RGNDATA);
+                    let rects = std::slice::from_raw_parts(d.Buffer.as_ptr() as *const RECT, d.rdh.nCount as usize);
+                    out.extend(rects.iter().filter(|r| r.right > r.left && r.bottom > r.top));
+                }
+            }
+            DeleteObject(rgn);
+        }
+        if out.is_empty() && paint.right > paint.left && paint.bottom > paint.top {
+            out.push(*paint);
+        }
+        // Each piece costs a bind and a copy (~0.6 ms, what painting ~300k pixels costs): pieces near each other
+        // are drawn as one, as long as that spares more than it paints over (the children cut it from the screen).
+        let area = |r: &RECT| (r.right - r.left) as i64 * (r.bottom - r.top) as i64;
+        let mut merged: Vec<RECT> = Vec::new();
+        for r in out {
+            if let Some(m) = merged.last_mut() {
+                let u = RECT { left: m.left.min(r.left), top: m.top.min(r.top), right: m.right.max(r.right), bottom: m.bottom.max(r.bottom) };
+                if area(&u) - area(m) - area(&r) <= 1 << 18 {
+                    *m = u;
+                    continue;
+                }
+            }
+            merged.push(r);
+        }
+        merged
+    }
+
+    /// Draw the piece `r` (client coordinates) of the window, with the window's own coordinates; then
+    /// [`Self::end_band`] puts it on the window's paint DC.
+    pub fn begin_band(&mut self, r: &RECT) -> bool {
+        use windows_sys::Win32::Graphics::Gdi::*;
+        if !self.ensure() {
+            return false;
+        }
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if self.mem.as_ref().is_none_or(|m| m.w < w || m.h < h) {
+            // grows to hold every piece (the header, the status bar: wide and short), unless that's much bigger
+            // than any one (a wide header and a tall side strip): then it's this piece's own size, bound anew.
+            // Goes with the target when idle.
+            let a = |w: i32, h: i32| w as i64 * h as i64;
+            let (w, h) = match &self.mem {
+                Some(m) if a(m.w.max(w), m.h.max(h)) <= 2 * a(m.w, m.h).max(a(w, h)) => (m.w.max(w), m.h.max(h)),
+                _ => (w, h),
+            };
+            self.mem = None;
+            unsafe {
+                let screen = GetDC(std::ptr::null_mut());
+                let (dc, bmp) = (CreateCompatibleDC(screen), CreateCompatibleBitmap(screen, w, h));
+                ReleaseDC(std::ptr::null_mut(), screen);
+                if dc.is_null() || bmp.is_null() {
+                    if !dc.is_null() { DeleteDC(dc); }
+                    if !bmp.is_null() { DeleteObject(bmp); }
+                    return false;
+                }
+                let m = Mem { dc, bmp, old: SelectObject(dc, bmp), w, h };
+                let b = windows61::Win32::Foundation::RECT { left: 0, top: 0, right: w, bottom: h };
+                if self.dc_rt.as_ref().unwrap().BindDC(windows61::Win32::Graphics::Gdi::HDC(m.dc), &b).is_err() {
+                    return false;
+                }
+                self.mem = Some(m);
+            }
+        }
+        let rt = self.dc_rt.as_ref().unwrap();
+        unsafe {
+            rt.SetTransform(&windows_numerics::Matrix3x2::translation(-r.left as f32, -r.top as f32));
+            rt.BeginDraw();
+        }
+        self.clip = *r;
+        true
+    }
+    /// Whether `r` reaches into the piece being drawn: what lies wholly outside is skipped, not laid out for nothing.
+    pub fn shows(&self, r: &RECT) -> bool {
+        r.left < self.clip.right && r.right > self.clip.left && r.top < self.clip.bottom && r.bottom > self.clip.top
+    }
+    pub fn end_band(&mut self, dc: *mut c_void) {
+        self.end_dc();
+        if let Some(m) = &self.mem {
+            let r = self.clip;
+            unsafe {
+                windows_sys::Win32::Graphics::Gdi::BitBlt(dc, r.left, r.top, r.right - r.left, r.bottom - r.top, m.dc, 0, 0, windows_sys::Win32::Graphics::Gdi::SRCCOPY);
+                // out now: GDI batches a BitBlt, and the frame could reach the screen a frame or more late
+                windows_sys::Win32::Graphics::Gdi::GdiFlush();
+            }
+        }
     }
 
     /// Draw into `dc`'s 32-bit premultiplied bitmap, `w`×`h` from its top left, cleared to transparent: a layered
@@ -187,8 +334,36 @@ impl Canvas {
         }
     }
 
+    /// Let go of the pixels (the target's buffer, as big as the window, on the CPU): made again at the next draw.
+    /// The bitmaps made on it stay good: a software target's draw on any other of the same factory.
+    pub fn release(&mut self) {
+        self.kept |= self.rt.is_some() || self.banded && self.dc_rt.is_some();
+        (self.rt, self.dc_rt, self.brush, self.accent, self.mem) = (None, None, None, None, None);
+    }
+
     /// Make (or resize) the render target. False when there is none to draw with.
     pub fn ensure(&mut self) -> bool {
+        if self.banded {
+            if self.dc_rt.is_none() {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                    pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    ..Default::default()
+                };
+                let Ok(rt) = (unsafe { self.d2.CreateDCRenderTarget(&props) }) else { return false };
+                unsafe { rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE) };
+                self.brush = unsafe { rt.CreateSolidColorBrush(&color(0, 1.0), None).ok() };
+                self.accent = unsafe { rt.CreateSolidColorBrush(&color(0x7aa2ff, 1.0), None).ok() };
+                self.dc_rt = Some(rt);
+                self.mem = None; // bound to the target gone
+                if !std::mem::take(&mut self.kept) {
+                    self.gen = GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            return true;
+        }
         let mut c: RECT = unsafe { std::mem::zeroed() };
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(self.hwnd, &mut c) };
         let size = D2D_SIZE_U { width: c.right.max(1) as u32, height: c.bottom.max(1) as u32 };
@@ -216,7 +391,9 @@ impl Canvas {
             self.brush = rt.CreateSolidColorBrush(&color(0, 1.0), None).ok();
             self.accent = rt.CreateSolidColorBrush(&color(0x7aa2ff, 1.0), None).ok();
             self.rt = Some(rt);
-            self.gen = GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if !std::mem::take(&mut self.kept) {
+                self.gen = GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         true
     }
@@ -476,4 +653,42 @@ impl Canvas {
         let props = D2D1_BITMAP_PROPERTIES { pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }, dpiX: 96.0, dpiY: 96.0 };
         unsafe { self.rt().CreateBitmap(D2D_SIZE_U { width: w as u32, height: h as u32 }, Some(px.as_ptr() as *const c_void), (w * 4) as u32, &props).ok() }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// `Canvas::release` keeps its bitmaps on this: one software target's bitmap draws on another of the factory.
+    #[test]
+    fn bitmap_outlives_its_software_target() {
+        unsafe {
+            use windows61::Win32::Graphics::Gdi::*;
+            let f = factory().unwrap();
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let dc = CreateCompatibleDC(None);
+            let bm = CreateCompatibleBitmap(GetDC(None), 64, 64);
+            SelectObject(dc, bm.into());
+            let r = windows61::Win32::Foundation::RECT { left: 0, top: 0, right: 64, bottom: 64 };
+            let a = f.CreateDCRenderTarget(&props).unwrap();
+            a.BindDC(dc, &r).unwrap();
+            let px = vec![255u8; 16 * 16 * 4];
+            let bp = D2D1_BITMAP_PROPERTIES { pixelFormat: props.pixelFormat, dpiX: 96.0, dpiY: 96.0 };
+            let b = a.CreateBitmap(D2D_SIZE_U { width: 16, height: 16 }, Some(px.as_ptr() as *const c_void), 64, &bp).unwrap();
+            drop(a);
+            let t = f.CreateDCRenderTarget(&props).unwrap();
+            t.BindDC(dc, &r).unwrap();
+            t.BeginDraw();
+            t.DrawBitmap(&b, None, 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+            let e = t.EndDraw(None, None);
+            assert!(e.is_ok());
+            assert_eq!((GetPixel(dc, 5, 5).0, GetPixel(dc, 40, 40).0), (0xffffff, 0));
+        }
+    }
+
 }

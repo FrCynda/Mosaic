@@ -392,3 +392,6 @@ save.open=開く
 save.select=フォルダーの選択
 save.folder_label=フォルダー:
 save.not_found={name} が見つかりません。
+menu.explorer=エクスプローラーの代わりに Mosaic を使う
+menu.file_windows=保存と開くのウィンドウに Mosaic を使う
+explorer.verb=Mosaic で開く

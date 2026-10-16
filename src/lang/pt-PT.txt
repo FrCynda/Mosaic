@@ -393,3 +393,6 @@ save.open=Abrir
 save.select=Selecionar pasta
 save.folder_label=Pasta:
 save.not_found={name} não foi encontrado.
+menu.explorer=Utilizar o Mosaic em vez do Explorador
+menu.file_windows=Utilizar o Mosaic nas janelas Guardar e Abrir
+explorer.verb=Abrir no Mosaic

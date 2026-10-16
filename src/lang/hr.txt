@@ -394,3 +394,6 @@ save.open=Otvori
 save.select=Odaberi mapu
 save.folder_label=Mapa:
 save.not_found={name} nije pronađen.
+menu.explorer=Koristi Mosaic umjesto Explorera
+menu.file_windows=Koristi Mosaic za prozore Spremi i Otvori
+explorer.verb=Otvori u Mosaicu

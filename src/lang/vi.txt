@@ -392,3 +392,6 @@ save.open=Mở
 save.select=Chọn thư mục
 save.folder_label=Thư mục:
 save.not_found=Không tìm thấy {name}.
+menu.explorer=Dùng Mosaic thay cho Explorer
+menu.file_windows=Dùng Mosaic cho cửa sổ Lưu và Mở
+explorer.verb=Mở trong Mosaic

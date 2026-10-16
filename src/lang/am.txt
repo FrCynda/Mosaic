@@ -393,3 +393,6 @@ save.open=ክፈት
 save.select=አቃፊ ምረጥ
 save.folder_label=አቃፊ:
 save.not_found={name} አልተገኘም።
+menu.explorer=ከExplorer ይልቅ Mosaicን ተጠቀም
+menu.file_windows=ለአስቀምጥ እና ክፈት መስኮቶች Mosaicን ተጠቀም
+explorer.verb=በMosaic ክፈት

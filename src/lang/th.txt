@@ -392,3 +392,6 @@ save.open=เปิด
 save.select=เลือกโฟลเดอร์
 save.folder_label=โฟลเดอร์:
 save.not_found=ไม่พบ {name}
+menu.explorer=ใช้ Mosaic แทน Explorer
+menu.file_windows=ใช้ Mosaic สำหรับหน้าต่างบันทึกและเปิด
+explorer.verb=เปิดใน Mosaic

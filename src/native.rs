@@ -72,6 +72,7 @@ const WM_INSTALLED: u32 = WM_APP + 3;
 const WM_THUMB: u32 = WM_APP + 4;
 const WM_PREVIEW: u32 = WM_APP + 5;
 const WM_KIND: u32 = WM_APP + 20;
+const WM_RETHEME: u32 = WM_APP + 50; // from another window of this process: the theme changed
 const WM_TAB_ICON: u32 = WM_APP + 6; // lParam: a boxed (icon source, its PNG)
 const WM_RENAME: u32 = WM_APP + 30; // to the list: rename the focused item in place (Explorer's menu asked, or a new item showed up)
 const WM_RENAME_END: u32 = WM_APP + 31; // … the field (wParam) lost the focus: keep what was typed
@@ -182,7 +183,16 @@ fn theme_now() -> Theme {
 /// The theme picker's choice, shown everywhere (not kept yet).
 fn theme_preview(name: &str) {
     fade_to(name);
-    with(|u| u.repaint_theme());
+    with(|u| {
+        u.repaint_theme();
+        // the process's other windows: the same theme now, so they fade too
+        for (h, _) in tabs::windows(u.main) {
+            let mut pid = 0;
+            if unsafe { GetWindowThreadProcessId(h, &mut pid) } != 0 && pid == std::process::id() {
+                unsafe { PostMessageW(h, WM_RETHEME, 0, 0) };
+            }
+        }
+    });
 }
 /// … and kept.
 fn theme_apply(name: &str) {
@@ -191,14 +201,21 @@ fn theme_apply(name: &str) {
     }
     with(|u| u.save_settings());
 }
-/// A frame of the theme cross-fade: true while it runs (every window is repainted meanwhile).
+/// A frame of the theme cross-fade: true while it runs, and once more for this window's last frame, at the end
+/// colours (every window of the process fades, each on its own thread).
 fn fading() -> bool {
-    let mut f = FADE.write().unwrap();
-    if f.is_some_and(|(_, _, t0)| t0.elapsed().as_secs_f64() >= FADE_S) {
-        *f = None;
-        return true; // one last frame, at the end colours
+    let due = fade_due();
+    if let Some((_, _, t0)) = *FADE.read().unwrap() {
+        if t0.elapsed().as_secs_f64() >= FADE_S {
+            FADE_ENDED.set(Some(t0)); // this frame is at the end colours: the last
+        }
     }
-    f.is_some()
+    due
+}
+thread_local!(static FADE_ENDED: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) });
+/// … as `fading`, without taking this window's last frame.
+fn fade_due() -> bool {
+    FADE.read().unwrap().is_some_and(|(_, _, t0)| t0.elapsed().as_secs_f64() < FADE_S || FADE_ENDED.get() != Some(t0))
 }
 /// Syncs the OS-drawn title bar (caption background/text, dark-mode caption-button glyphs) to the
 /// active theme — DWM doesn't pick this up on its own when the theme changes after the window exists.
@@ -209,6 +226,16 @@ unsafe fn apply_titlebar(main: HWND) {
     DwmSetWindowAttribute(main, 35, &caption as *const _ as *const c_void, 4); // DWMWA_CAPTION_COLOR: title bar = the tab strip
     let text = gdi(theme().text);
     DwmSetWindowAttribute(main, 36, &text as *const _ as *const c_void, 4); // DWMWA_TEXT_COLOR
+}
+/// WM_ERASEBKGND: the theme's background, so whatever shows before the first paint (a window uncovered, or
+/// restored after hours, its pages to read back first) is that, not black. Ordinary repaints don't erase.
+pub(super) unsafe fn erase(h: HWND, dc: WPARAM) -> LRESULT {
+    let mut r: RECT = zeroed();
+    GetClientRect(h, &mut r);
+    let b = CreateSolidBrush(gdi(theme().bg));
+    FillRect(dc as HDC, &r, b);
+    DeleteObject(b);
+    1
 }
 /// 0xRRGGBB as a GDI COLORREF
 const fn gdi(c: u32) -> u32 {
@@ -236,7 +263,7 @@ fn col_defs() -> [(&'static str, &'static str); 5] {
     [(t("col.name"), "name"), (t("col.path"), "path"), (t("col.size"), "size"), (t("col.type"), "type"), (t("col.modified"), "mtime")]
 }
 /// Columns' default widths: Name's share of what Name and Path have together, then Size, Type, Modified (CSS px).
-const COLS_DEFAULT: (f64, [i32; 3]) = (0.5, [85, 150, 150]);
+const COLS_DEFAULT: (f64, [i32; 3]) = (0.7539, [71, 76, 70]);
 /// The "cols" setting ("share,size,type,modified"); the defaults if it's missing or garbled.
 fn parse_cols(s: &str) -> (f64, [i32; 3]) {
     let v: Vec<f64> = s.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -375,6 +402,31 @@ fn load_kinds() -> HashMap<String, (u8, u64)> {
     // the text file of earlier versions (`kind<TAB>mtime<TAB>path` per line), replaced at the first save
     let old = kinds_path().with_extension("txt");
     std::fs::read_to_string(old).unwrap_or_default().lines().filter_map(|l| { let mut f = l.splitn(3, '\t'); let (k, m) = (f.next()?.parse().ok()?, f.next()?.parse().ok()?); Some((f.next()?.to_string(), (k, m))) }).collect()
+}
+
+/// What folders hold (`crate::folder_kind`; 0 = mixed), shared by every window of the process: loaded once.
+struct Kinds {
+    map: HashMap<String, (u8, u64)>, // folder path -> its kind, and its modified time when looked at
+    changed: Vec<String>,            // folders in `map` changed (or dropped) since the last save
+    saved: Instant,
+}
+fn kinds() -> std::sync::MutexGuard<'static, Kinds> {
+    static K: std::sync::LazyLock<std::sync::Mutex<Kinds>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Kinds { map: load_kinds(), changed: Vec::new(), saved: Instant::now() }));
+    K.lock().unwrap_or_else(|e| e.into_inner())
+}
+fn kind_of(path: &str) -> Option<(u8, u64)> {
+    kinds().map.get(path).copied()
+}
+fn save_kinds() {
+    let mut g = kinds();
+    if !g.changed.is_empty() {
+        g.saved = Instant::now();
+        let changed = std::mem::take(&mut g.changed);
+        // the first save writes it whole (there's no snapshot yet), so the old text file can go
+        if crate::kvlog::save(&kinds_path(), &g.map, &changed).is_ok() {
+            let _ = std::fs::remove_file(kinds_path().with_extension("txt"));
+        }
+    }
 }
 
 fn mtime_secs(p: &str) -> u64 {
@@ -553,6 +605,52 @@ unsafe fn place_of(h: HWND) -> String {
     }
     let r = wp.rcNormalPosition;
     format!("{},{},{},{},{}", r.left, r.top, r.right, r.bottom, (wp.showCmd == SW_SHOWMAXIMIZED as u32) as u8)
+}
+
+/// The topmost other window of this process, a step down and right: past the work area's bottom (the taskbar) it
+/// starts again at the top, past its right at the left.
+unsafe fn next_place(main: HWND) -> Option<WINDOWPLACEMENT> {
+    struct Find(HWND, u32, HWND);
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> BOOL {
+        let f = &mut *(l as *mut Find);
+        let mut b = [0u16; 16];
+        let n = GetClassNameW(h, b.as_mut_ptr(), 16);
+        let mut pid = 0;
+        GetWindowThreadProcessId(h, &mut pid);
+        if h != f.0 && pid == f.1 && IsWindowVisible(h) != 0 && IsIconic(h) == 0 && b[..n.max(0) as usize] == w("MosaicNative")[..] {
+            f.2 = h;
+            return 0;
+        }
+        1
+    }
+    let mut f = Find(main, windows_sys::Win32::System::Threading::GetCurrentProcessId(), null_mut());
+    EnumWindows(Some(each), &mut f as *mut Find as LPARAM); // front to back
+    let mut wp: WINDOWPLACEMENT = zeroed();
+    wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+    let mut mi: MONITORINFO = zeroed();
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    if f.2.is_null() || GetWindowPlacement(f.2, &mut wp) == 0 || GetMonitorInfoW(MonitorFromWindow(f.2, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+        return None;
+    }
+    let r = &mut wp.rcNormalPosition;
+    // the placement is in workspace coordinates (off screen ones by the taskbar, when that is at the top or left)
+    let mut sr: RECT = zeroed();
+    let (dx, dy) = if wp.showCmd == SW_SHOWNORMAL as u32 && GetWindowRect(f.2, &mut sr) != 0 { (r.left - sr.left, r.top - sr.top) } else { (0, 0) };
+    let wa = mi.rcWork;
+    let step = (30 * GetDpiForWindow(f.2) / 96) as i32;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    r.left += step;
+    r.top += step;
+    if r.top + h > wa.bottom + dy {
+        r.top = wa.top + dy;
+    }
+    if r.left + w > wa.right + dx {
+        r.left = wa.left + dx;
+    }
+    r.right = r.left + w;
+    r.bottom = r.top + h;
+    wp.showCmd = if wp.showCmd == SW_SHOWMAXIMIZED as u32 { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL } as u32;
+    Some(wp)
 }
 
 /// [`place_of`]'s text back into a placement.
@@ -853,38 +951,6 @@ fn spring(x: &mut f64, v: &mut f64, to: f64, dt: f64, w: f64, snap: f64) -> bool
     true
 }
 
-/// A panel sliding in (fast, then settling: 0.3 s) or out (gathering speed: 0.22 s), as in the README's banner.
-/// `d` is how much of it shows; turned round mid-way it carries on from there.
-#[derive(Clone, Copy)]
-struct Slide {
-    d: f64,
-    p: f64, // progress of the current move, 0..1
-    on: bool,
-    off: i32, // the panel's hidden width last laid out, px
-}
-impl Slide {
-    fn new(on: bool) -> Self {
-        Slide { d: on as u8 as f64, p: 1.0, on, off: -1 }
-    }
-    fn set(&mut self, on: bool) {
-        if on != self.on {
-            self.on = on;
-            self.p = if on { 1.0 - (1.0 - self.d).powf(0.25) } else { (1.0 - self.d).cbrt() };
-        }
-    }
-    fn moving(&self) -> bool {
-        self.p < 1.0
-    }
-    fn step(&mut self, dt: f64) -> bool {
-        if !self.moving() {
-            return false;
-        }
-        self.p = (self.p + dt / if self.on { 0.3 } else { 0.22 }).min(1.0);
-        self.d = if self.on { 1.0 - (1.0 - self.p).powi(4) } else { 1.0 - self.p.powi(3) };
-        true
-    }
-}
-
 /// A tab: its panes, the one focused, where its button is drawn (`x`, springing at `v` toward its slot `to`), and
 /// when it opened, while it's still unfolding into its slot.
 struct Tab {
@@ -1053,8 +1119,6 @@ struct Ui {
     show_pv: bool,   // … shown
     side: HWND,      // the places panel left of the list
     show_side: bool, // … shown
-    side_sl: Slide,  // the places panel sliding in and out
-    pv_sl: Slide,    // … the preview pane
     pv_key: String,  // what it was last asked to show (a path, or the note)
     pv_w: i32,       // … its width (CSS px) as dragged; 0 = 40% of the window
     split: Option<i32>, // dragging the divider left of the pane: the pointer's offset from its left edge
@@ -1188,12 +1252,9 @@ struct Ui {
     thumb_bytes: usize,
     thumb_pending: HashSet<String>,
     link_ov: HashMap<i32, Option<Pic>>, // the shortcut arrow, made at each size it's drawn at
-    kinds: HashMap<String, (u8, u64)>,      // folder path -> what its files all are (see `crate::folder_kind`); 0 = mixed
     kind_pending: HashSet<String>,
     special: HashSet<String>,        // Desktop, Downloads, Documents, Pictures, Music, Videos: they keep their own shell icon
     kind_checked: HashSet<String>,   // folders whose cached kind was compared with their modified time this run
-    kinds_changed: Vec<String>,      // folders in `kinds` changed (or dropped) since the last save
-    kinds_saved: std::time::Instant,
     kind_dirs: Vec<Option<String>>,  // the Windows folder whose icon each kind wears (Pictures, Videos, Music, Documents)
     jumbo_png: HashMap<String, Vec<u8>>,            // type key → the shell's 256 px icon
     jumbo: HashMap<(String, i32), Option<Pic>>,     // (type key, px) → decoded at tile size
@@ -1533,16 +1594,13 @@ pub fn run() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         dark_menus();
-        std::thread::spawn(shell::menu_warm); // the right-click menu's process, so the first one is quick too
         let inst = GetModuleHandleW(null());
-        let cursor = LoadCursorW(null_mut(), IDC_ARROW);
-        let icon = LoadIconW(inst, 32512 as *const u16); // the exe's icon (tauri-build embeds it under 32512)
-        let (cm, cl) = (wz("MosaicNative"), wz("MosaicList"));
+        let (cm, cl, ch) = (wz("MosaicNative"), wz("MosaicList"), wz(HOST_CLASS));
         let mut wc: WNDCLASSEXW = zeroed();
         wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
         wc.hInstance = inst;
-        wc.hCursor = cursor;
-        wc.hIcon = icon;
+        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+        wc.hIcon = LoadIconW(inst, 32512 as *const u16); // the exe's icon (tauri-build embeds it under 32512)
         wc.lpfnWndProc = Some(main_proc);
         wc.lpszClassName = cm.as_ptr();
         wc.style = CS_DBLCLKS; // main: double-clicking the status bar's filter turns it off, as in Everything
@@ -1551,7 +1609,129 @@ pub fn run() {
         wc.lpfnWndProc = Some(list_proc);
         wc.lpszClassName = cl.as_ptr();
         RegisterClassExW(&wc);
+        wc.lpfnWndProc = Some(host_proc);
+        wc.lpszClassName = ch.as_ptr();
+        RegisterClassExW(&wc);
+        // Every plain window lives in one process, a thread each, as Explorer's do: the GPU driver's share
+        // (~22 MB a process), the DLLs, the right-click menu's helper and the video decoder are paid once, not
+        // per window. A Save dialog's window, File windows… and the like keep a process of their own.
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let hostable = hostable(&args);
+        if hostable && forward(&args) {
+            return;
+        }
+        std::thread::spawn(shell::menu_warm); // the right-click menu's process, so the first one is quick too
+        if hostable {
+            host(args);
+        } else {
+            window(args);
+        }
+    }
+}
 
+const HOST_CLASS: &str = "MosaicHost";
+const DATA_OPEN: usize = 0x4D4F; // WM_COPYDATA to the host: open a window (its command line, as JSON)
+const WM_LAST: u32 = WM_APP + 51; // to the host: a window closed, maybe the last
+static HOST: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local!(static ARGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) });
+/// This window's command line (each window thread has its own).
+pub(super) fn args() -> Vec<String> {
+    ARGS.with(|a| a.borrow().clone())
+}
+/// A command line for a window like any other: no options but where it opens and with what tabs.
+fn hostable(args: &[String]) -> bool {
+    let mut i = args.iter();
+    while let Some(a) = i.next() {
+        match a.as_str() {
+            "--native" => {}
+            "--tabs" | "--tabs-json" | "--at" | "--open" => drop(i.next()),
+            _ => return false,
+        }
+    }
+    true
+}
+/// The host window's title: this exe (a dev build never sends its windows to the installed Mosaic, nor back).
+fn host_title() -> Vec<u16> {
+    wz(&std::env::current_exe().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default())
+}
+/// Hand the window to a Mosaic already running from this exe. False: none (or it didn't answer); open it here.
+unsafe fn forward(args: &[String]) -> bool {
+    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+    let h = FindWindowExW(HWND_MESSAGE, null_mut(), wz(HOST_CLASS).as_ptr(), host_title().as_ptr());
+    if h.is_null() {
+        return false;
+    }
+    let mut pid = 0;
+    GetWindowThreadProcessId(h, &mut pid);
+    AllowSetForegroundWindow(pid); // ours to give: we were just started, so the window it opens comes up in front
+    let json = serde_json::to_string(args).unwrap_or_default();
+    let cd = COPYDATASTRUCT { dwData: DATA_OPEN, cbData: json.len() as u32, lpData: json.as_ptr() as *mut c_void };
+    let mut r = 0usize;
+    SendMessageTimeoutW(h, WM_COPYDATA, 0, &cd as *const _ as LPARAM, SMTO_ABORTIFHUNG, 5000, &mut r) != 0 && r == 1
+}
+/// Host this process's windows: open the first, then more as asked (`open`, `forward`), until the last closes.
+unsafe fn host(args: Vec<String>) {
+    let h = CreateWindowExW(0, wz(HOST_CLASS).as_ptr(), host_title().as_ptr(), 0, 0, 0, 0, 0, HWND_MESSAGE, null_mut(), GetModuleHandleW(null()), null());
+    HOST.store(h as isize, std::sync::atomic::Ordering::SeqCst);
+    if h.is_null() {
+        return window(args);
+    }
+    if !open(args) {
+        return;
+    }
+    let mut msg: MSG = zeroed();
+    while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+        DispatchMessageW(&msg);
+    }
+}
+unsafe extern "system" fn host_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
+    use std::sync::atomic::Ordering::SeqCst;
+    match m {
+        WM_COPYDATA => {
+            let cd = &*(l as *const windows_sys::Win32::System::DataExchange::COPYDATASTRUCT);
+            if cd.dwData != DATA_OPEN || cd.lpData.is_null() {
+                return 0;
+            }
+            let args: Vec<String> = serde_json::from_slice(std::slice::from_raw_parts(cd.lpData as *const u8, cd.cbData as usize)).unwrap_or_default();
+            (hostable(&args) && open(args)) as LRESULT
+        }
+        // here, not in the window's thread: a window asked for meanwhile (WM_COPYDATA, above) still opens
+        WM_LAST if OPEN.load(SeqCst) == 0 => {
+            HOST.store(0, SeqCst);
+            DestroyWindow(h);
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(h, m, wp, l),
+    }
+}
+/// A window in this process, on a thread of its own. False when this process doesn't host windows (or the
+/// thread couldn't start): start a process for it instead.
+pub(super) fn open(args: Vec<String>) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    if HOST.load(SeqCst) == 0 {
+        return false;
+    }
+    OPEN.fetch_add(1, SeqCst);
+    let t = std::thread::Builder::new().stack_size(8 << 20).spawn(move || unsafe {
+        window(args);
+        if OPEN.fetch_sub(1, SeqCst) == 1 {
+            PostMessageW(HOST.load(SeqCst) as HWND, WM_LAST, 0, 0);
+        }
+    });
+    if t.is_err() {
+        OPEN.fetch_sub(1, SeqCst);
+    }
+    t.is_ok()
+}
+
+/// One window (`args`, its command line), till it closes.
+unsafe fn window(args: Vec<String>) {
+    ARGS.with(|a| *a.borrow_mut() = args);
+    {
+        let inst = GetModuleHandleW(null());
+        let (cm, cl) = (wz("MosaicNative"), wz("MosaicList"));
         let s = GetDpiForSystem() as f64 / 96.0;
         let main = CreateWindowExW(0, cm.as_ptr(), wz("Mosaic").as_ptr(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, (1400.0 * s) as i32, (900.0 * s) as i32, null_mut(), null_mut(), inst, null());
         set_icons(main);
@@ -1610,13 +1790,13 @@ pub fn run() {
             sort: "name".into(),
             dir: "asc".into(),
             meta: String::new(), // names only (the Names / type dropdown is gone)
-            tags: get("tags") == "1",
+            tags: get("tags") != "0",
             content: get("content") == "1",
             match_case: get("match_case") == "1",
             whole_word: get("whole_word") == "1",
             regex: get("regex") == "1",
             diacritics: get("diacritics") == "1",
-            hidden: get("hidden") == "1",
+            hidden: get("hidden") != "0",
             system: get("system") == "1",
         };
         let mut lines: u32 = 3;
@@ -1626,13 +1806,11 @@ pub fn run() {
             edit,
             list,
             pane,
-            show_pv: get("preview") == "1",
+            show_pv: get("preview") != "0",
             side,
             show_side: get("side") != "0", // on unless switched off
-            side_sl: Slide::new(get("side") != "0"),
-            pv_sl: Slide::new(get("preview") == "1"),
             pv_key: String::new(),
-            pv_w: get("pvw").parse().unwrap_or(0),
+            pv_w: get("pvw").parse().unwrap_or(240),
             split: None,
             split_x: None,
             grip: zeroed(),
@@ -1694,12 +1872,12 @@ pub fn run() {
             isz: 16,
             thousands: thousands(),
             wheel_lines: lines.max(1) as f64,
-            smooth: get("smooth") != "0",
-            folded: get("folded") == "1",
+            smooth: get("smooth") == "1",
+            folded: get("folded") != "0",
             folder_color: get("folder_color") == "1",
             folder_icons: get("folder_icons").parse().map_or(2, |v: u8| v.min(2)),
             link_arrow: get("link_arrow").parse().map_or(0, |v: u8| v.min(ARROWS.len() as u8 - 1)),
-            link_size: get("link_size").parse().map_or(100, |v: u8| v.clamp(*ARROW_SIZES.start(), *ARROW_SIZES.end())),
+            link_size: get("link_size").parse().map_or(70, |v: u8| v.clamp(*ARROW_SIZES.start(), *ARROW_SIZES.end())),
             hist: Default::default(),
             tabs: vec![Tab::new(0)],
             ghosts: Vec::new(),
@@ -1726,16 +1904,16 @@ pub fn run() {
             gut_to: None,
             gut_lit: (usize::MAX, 0.0),
             tick: Instant::now(),
-            browse: get("browse").parse().unwrap_or(0).min(2),
+            browse: get("browse").parse().unwrap_or(1).min(2),
             timestamps: get("timestamps") == "1",
             rtl,
             colw: parse_cols(&get("cols")),
             col_drag: None,
             col_gen: 0,
-            grid: get("view") == "grid",
-            size: get("size").parse().unwrap_or(128).clamp(MIN_SIZE, MAX_SIZE),
-            def_view: (get("view") == "grid", get("size").parse().unwrap_or(128).clamp(MIN_SIZE, MAX_SIZE)),
-            windows: get("windows_view") != "0",
+            grid: get("view") != "list",
+            size: get("size").parse().unwrap_or(70).clamp(MIN_SIZE, MAX_SIZE),
+            def_view: (get("view") != "list", get("size").parse().unwrap_or(70).clamp(MIN_SIZE, MAX_SIZE)),
+            windows: get("windows_view") == "1",
             per: 1, // set by layout
             zoom_acc: 0,
             step_acc: 0,
@@ -1759,15 +1937,12 @@ pub fn run() {
             thumb_bytes: 0,
             thumb_pending: HashSet::new(),
             link_ov: HashMap::new(),
-            kinds: load_kinds(),
             kind_pending: HashSet::new(),
             special: side::special_dirs(),
             live_at: Instant::now(),
             live_cost: Duration::ZERO,
             poll_y: 0.0,
             kind_checked: HashSet::new(),
-            kinds_changed: Vec::new(),
-            kinds_saved: std::time::Instant::now(),
             kind_dirs: (0..5).map(|k| if k == 0 { None } else { side::kind_dir(k) }).collect(),
             jumbo_png: HashMap::new(),
             jumbo: HashMap::new(),
@@ -1811,9 +1986,15 @@ pub fn run() {
         }
         with(|u| u.layout());
         SetTimer(main, T_POLL, 500, None);
-        // where and how big it was when last closed (not a window torn off another: that one opens at the cursor)
-        // (a Save/Open window keeps its own)
-        let wp = if save::active() { st.get("save_place") } else { st.get("place").filter(|_| with(|u| !u.secondary) == Some(true)) }.and_then(|s| placement(s));
+        // a step down and right of the window in front, else where and how big the last one was when closed (not
+        // a window torn off another: that one opens at the cursor) (a Save/Open window keeps its own)
+        let wp = if save::active() {
+            st.get("save_place").and_then(|s| placement(s))
+        } else if file_windows || self::args().iter().any(|a| a == "--at") {
+            None
+        } else {
+            next_place(main).or_else(|| st.get("place").and_then(|s| placement(s)))
+        };
         cloak(main, true);
         match wp {
             Some(wp) => {
@@ -1837,7 +2018,9 @@ unsafe fn pump() {
     let mut msg: MSG = zeroed();
     loop {
         if with(|u| u.animating()).unwrap_or(false) {
-            while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
+            // all but paints, which come once a frame below: taken as they came, the queue emptied between two
+            // thumbnails landing, and the list was repainted for each, up to 30 times in one frame
+            while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE | PM_QS_INPUT | PM_QS_POSTMESSAGE | PM_QS_SENDMESSAGE) != 0 {
                 if msg.message == WM_QUIT {
                     return;
                 }
@@ -1855,6 +2038,13 @@ unsafe fn pump() {
                     UpdateWindow(w);
                 }
                 UpdateWindow(main);
+            }
+            // whatever else wants painting (a popup, a tooltip): once each
+            for _ in 0..32 {
+                if PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE | PM_QS_PAINT) == 0 {
+                    break;
+                }
+                dispatch(&msg);
             }
             if DwmFlush() < 0 {
                 std::thread::sleep(Duration::from_millis(7));
@@ -2068,13 +2258,17 @@ fn go_place_tab(target: &str, mosaic: bool) {
 }
 
 unsafe fn toggle_preview() {
-    with(|u| {
+    let on = with(|u| {
         u.show_pv = !u.show_pv;
         u.pv_key.clear();
         u.save_settings();
         u.layout();
         u.want_preview();
+        u.show_pv
     });
+    if on == Some(false) {
+        preview::clear();
+    }
 }
 
 /// Searches run here, newest first: typing never waits on a search, and superseded ones are skipped.
@@ -3593,13 +3787,6 @@ impl Ui {
             self.layout();
             moved = true;
         }
-        if self.side_sl.step(dt) | self.pv_sl.step(dt) {
-            self.layout();
-            moved = true;
-            if !self.show_pv && !self.pv_sl.moving() {
-                preview::clear(); // slid out: let go of the file (and stop playback)
-            }
-        }
         if !self.dying.is_empty() {
             self.bury(false);
             moved = true;
@@ -3682,8 +3869,6 @@ impl Ui {
             || self.plus.0.is_finite() && (self.plus.0 != self.plus.2 || self.plus.1 != 0.0)
             || self.gut_lit.1 != if hot { 1.0 } else { 0.0 }
             || self.tabs[self.cur].root.moving()
-            || self.side_sl.moving()
-            || self.pv_sl.moving()
     }
 
     /// All: an empty search box.
@@ -4168,6 +4353,22 @@ impl Ui {
         }
         ok
     }
+    /// Every half second. Minimized, every canvas lets go of its buffer (~10 MB a window at 1400×900, all canvases
+    /// together), made again at its next paint, its pictures kept. Not when merely idle: the first frames of a tab
+    /// closing or a pane coming back would make them again, a visible hitch (measured: 50 ms).
+    fn idle(&mut self) {
+        if unsafe { IsIconic(self.main) } != 0 {
+            self.cm.release();
+            for id in 0..self.panes.len() {
+                if id == self.id || self.panes[id].is_some() {
+                    self.with_pane(id, |u| u.cl.release());
+                }
+            }
+            side::release_pixels();
+            preview::release_pixels();
+        }
+        preview::trim_video();
+    }
     fn forget_pics(&mut self) {
         self.texts.clear();
         self.sys_pics.clear();
@@ -4256,7 +4457,7 @@ impl Ui {
         if !is_dir || list_of(&self.args.q).is_some() || self.special.contains(&path.to_lowercase()) {
             return None;
         }
-        self.kinds.get(path).and_then(|&(k, _)| self.kind_dirs.get(k as usize)).cloned().flatten()
+        kind_of(path).and_then(|(k, _)| self.kind_dirs.get(k as usize)).cloned().flatten()
     }
 
     /// The path whose shell icon a row wears: its own, or the Windows folder matching what the folder holds (a
@@ -4274,7 +4475,7 @@ impl Ui {
         if !self.grid || self.folder_icons != 2 {
             return None;
         }
-        Some((self.kind_icon(path, is_dir)?, self.kinds.get(path)?.0))
+        Some((self.kind_icon(path, is_dir)?, kind_of(path)?.0))
     }
 
     /// View > Icons… changed: every pane's pictures made again.
@@ -4312,28 +4513,21 @@ impl Ui {
         Some((bmp, RECT { left: x, top: y + h - s, right: x + s, bottom: y + h }))
     }
 
-    fn save_kinds(&mut self) {
-        if !self.kinds_changed.is_empty() {
-            self.kinds_saved = std::time::Instant::now();
-            let changed = std::mem::take(&mut self.kinds_changed);
-            // the first save writes it whole (there's no snapshot yet), so the old text file can go
-            if crate::kvlog::save(&kinds_path(), &self.kinds, &changed).is_ok() {
-                let _ = std::fs::remove_file(kinds_path().with_extension("txt"));
-            }
-        }
-    }
-
     fn got_kind(&mut self, (p, k, m): (String, u8, u64)) {
         self.kind_pending.remove(&p);
-        if self.kinds.len() > 200_000 {
-            self.kinds_changed.extend(self.kinds.drain().map(|(p, _)| p));
-        }
-        if self.kinds.insert(p.clone(), (k, m)) != Some((k, m)) {
-            self.kinds_changed.push(p);
-        }
+        let due = {
+            let g = &mut *kinds();
+            if g.map.len() > 200_000 {
+                g.changed.extend(g.map.drain().map(|(p, _)| p));
+            }
+            if g.map.insert(p.clone(), (k, m)) != Some((k, m)) {
+                g.changed.push(p);
+            }
+            g.saved.elapsed() > Duration::from_secs(300)
+        };
         // saved while browsing at most every 5 minutes; the rest lands on exit
-        if self.kind_pending.is_empty() && self.kinds_saved.elapsed() > std::time::Duration::from_secs(300) {
-            self.save_kinds();
+        if self.kind_pending.is_empty() && due {
+            save_kinds();
         }
         if k != 0 {
             self.each_visible(|u| {
@@ -4543,7 +4737,7 @@ impl Ui {
         self.sync_scroll();
     }
     fn animating(&mut self) -> bool {
-        if self.split_x.is_some() || self.grip_a != self.grip_want() || self.ui_moving() || FADE.read().unwrap().is_some() || themes::moving() {
+        if self.split_x.is_some() || self.grip_a != self.grip_want() || self.ui_moving() || fade_due() || themes::moving() {
             return true;
         }
         let mut any = false;
@@ -4919,30 +5113,6 @@ impl Ui {
                 }
             }
             VK_DELETE if !in_search => return Some(Some(if shift { Act::DelNow } else { Act::Del })),
-            VK_BACK if in_search && ctrl => unsafe {
-                // stock EDIT control has no word-delete of its own: Ctrl+Backspace otherwise just inserts a raw DEL char
-                let (mut a, mut b) = (0u32, 0u32);
-                SendMessageW(self.edit, 0x00B0, &mut a as *mut _ as usize, &mut b as *mut _ as isize); // EM_GETSEL
-                let (mut start, end) = (a.min(b), a.max(b));
-                if start == end {
-                    let len = SendMessageW(self.edit, WM_GETTEXTLENGTH, 0, 0) as usize;
-                    let mut buf = vec![0u16; len + 1];
-                    SendMessageW(self.edit, WM_GETTEXT, buf.len(), buf.as_mut_ptr() as isize);
-                    let text = &buf[..len];
-                    let ws = |c: u16| matches!(c, 0x20 | 0x09 | 0x0A | 0x0D);
-                    let mut i = start as usize;
-                    while i > 0 && ws(text[i - 1]) {
-                        i -= 1;
-                    }
-                    while i > 0 && !ws(text[i - 1]) {
-                        i -= 1;
-                    }
-                    start = i as u32;
-                }
-                SendMessageW(self.edit, 0x00B1, start as usize, end as isize); // EM_SETSEL
-                let repl: Vec<u16> = std::iter::once(0).collect();
-                SendMessageW(self.edit, 0x00C2, 1, repl.as_ptr() as isize); // EM_REPLACESEL
-            },
             0xBB | 0x6B if ctrl => self.zoom(true),  // Ctrl + (= key or numpad)
             0xBD | 0x6D if ctrl => self.zoom(false), // Ctrl −
             0x41 if ctrl && !in_search => self.select_all(),
@@ -5250,33 +5420,18 @@ impl Ui {
                 _ => {}
             }
             // the places panel, left of the list: it gives way first on a narrow window
-            // (opening, the list gives up its room at once and the panel slides into it; closing, the list's edge
-            // follows the panel out, as the lists would paint over a panel left on top of them)
             let side_w = if self.show_side && wd >= px(760) { px(side::width()) } else { 0 };
-            self.side_sl.set(side_w > 0);
-            let (sw, h) = (px(side::width()), (bottom - top).max(1));
-            let off = (sw as f64 * (1.0 - self.side_sl.d)).round() as i32;
-            let z = if self.side_sl.moving() { 0 } else { SWP_NOZORDER };
-            let vis = if off < sw { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
-            SetWindowPos(self.side, HWND_TOP, left - off, top, sw, h, SWP_NOACTIVATE | z | vis);
-            if off != self.side_sl.off {
-                self.side_sl.off = off;
-                SetWindowRgn(self.side, if off > 0 { CreateRectRgn(off, 0, sw, h) } else { null_mut() }, 1);
-            }
-            let left = left + side_w.max(sw - off);
+            MoveWindow(self.side, left, top, side_w.max(1), (bottom - top).max(1), 1);
+            let left = left + side_w;
+            ShowWindow(self.side, if side_w > 0 { SW_SHOWNA } else { SW_HIDE });
             let max_pane = (wd - min_list - left - px(preview::GAP)).max(0);
             let auto = ((wd as f64 * 0.4) as i32).clamp(px(240), px(960)).min(wd / 2).min(max_pane);
             let show_pane = self.show_pv && max_pane >= px(160);
-            let full = if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
-            let pane_w = if show_pane { full } else { 0 };
+            let pane_w = if !show_pane { 0 } else if self.pv_w > 0 { px(self.pv_w).min(max_pane).max(px(160)) } else { auto };
+            let right = if show_pane { wd - pane_w - px(preview::GAP) } else { wd };
             // the pane's window takes in the divider: it draws its grip, which so moves with it
-            self.pv_sl.set(show_pane);
-            let pw = full.max(1) + px(preview::GAP);
-            let shown = (pw as f64 * self.pv_sl.d).round() as i32;
-            let right = if show_pane { wd - pane_w - px(preview::GAP) } else { wd - shown };
-            let z = if self.pv_sl.moving() { 0 } else { SWP_NOZORDER };
-            let vis = if shown > 0 { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
-            SetWindowPos(self.pane, HWND_TOP, wd - shown, top, pw, (bottom - top).max(1), SWP_NOACTIVATE | z | vis);
+            MoveWindow(self.pane, right, top, pane_w.max(1) + px(preview::GAP), (bottom - top).max(1), 1);
+            ShowWindow(self.pane, if show_pane { SW_SHOWNA } else { SW_HIDE });
             if show_pane {
                 let gap = RECT { left: right, top, right: right + px(preview::GAP), bottom };
                 let (mid, half) = ((gap.top + gap.bottom) / 2, (gap.bottom - gap.top) / 8);
@@ -5360,12 +5515,12 @@ impl Ui {
     fn save_settings(&self) {
         let p = settings_path();
         let _ = std::fs::create_dir_all(p.parent().unwrap());
-        // the main window's place and a Save/Open window's, each written only by its own kind of window
+        // a window's place (the next one opens there) and a Save/Open window's, each written only by its own kind
         let keep = |k: &str| load_settings().remove(k).unwrap_or_default();
         let here = || unsafe { place_of(self.main) };
         let (place, save_place) = if save::active() {
             (keep("place"), here())
-        } else if self.secondary {
+        } else if std::env::args().any(|a| a == "--file-windows" || a == "--icons") {
             (keep("place"), keep("save_place"))
         } else {
             (here(), keep("save_place"))
@@ -5399,6 +5554,7 @@ impl Ui {
             ("tabs", serde_json::to_string(&self.tp).unwrap_or_default()),
             ("sidebar", side::prefs_json()),
             ("save_dialog", (save::on() as u8).to_string()),
+            ("explorer", (save::explorer_on() as u8).to_string()),
             ("dialog_apps", save::rules_json()),
             ("save_dir", save::last_dir()),
             ("place", place),
@@ -5657,11 +5813,24 @@ impl Ui {
     }
 
     // -- painting
-    fn paint_main(&mut self) {
+    fn paint_main(&mut self, dc: HDC, paint: &RECT) {
         self.tab_icons();
-        if !self.cm.begin() {
+        if !self.cm.banded {
+            if self.cm.begin() {
+                self.paint_band();
+                self.cm.end();
+            }
             return;
         }
+        for band in self.cm.bands(dc, paint) {
+            if self.cm.begin_band(&band) {
+                self.paint_band();
+                self.cm.end_band(dc);
+            }
+        }
+    }
+    /// One piece of what [`Self::paint_main`] paints: all of it, clipped to that piece.
+    fn paint_band(&mut self) {
         let (g, cv, lh) = (&self.gfx, &self.cm, self.gfx.f.lh);
         let px = |v: i32| (v as f64 * self.scale).round() as i32;
         let rad = |v: f64| (v * self.scale) as f32;
@@ -5678,6 +5847,9 @@ impl Ui {
         self.paint_save(c.right);
         let hot = |h: Hit| self.hot == Some(h);
         for &(r, h) in &self.hits {
+            if !cv.shows(&r) {
+                continue;
+            }
             if let Hit::Menu(i) = h {
                 if hot(h) {
                     cv.rrect(&r, rad(4.0), Some(theme().hl), None);
@@ -5691,6 +5863,9 @@ impl Ui {
         cv.rrect(&sb, rad(4.0), Some(theme().bg), Some(if focused { theme().accent } else { theme().line }));
         // filter dropdown, status bar filter and view controls
         for &(r, h) in &self.hits {
+            if !cv.shows(&r) {
+                continue;
+            }
             let ty = r.top + (r.bottom - r.top - lh) / 2;
             let tc = if hot(h) { theme().text } else { theme().muted };
             match h {
@@ -5758,6 +5933,9 @@ impl Ui {
         // Browse | Subfolders: neither, one, never both
         for pass in [false, true] {
             for &(r, h) in &self.hits {
+                if !cv.shows(&r) {
+                    continue;
+                }
                 let Hit::Browse(k) = h else { continue };
                 let on = self.browse == k;
                 if on != pass {
@@ -5773,6 +5951,9 @@ impl Ui {
         let segs: Vec<(RECT, usize)> = self.hits.iter().filter_map(|&(r, h)| if let Hit::View(k) = h { Some((r, k)) } else { None }).collect();
         for pass in [false, true] {
             for &(r, k) in &segs {
+                if !cv.shows(&r) {
+                    continue;
+                }
                 let on = if k == 2 { self.windows } else { !self.windows && self.grid == (k == 1) };
                 if on != pass {
                     continue;
@@ -5794,7 +5975,8 @@ impl Ui {
         }
         // status text: left of the status bar's controls, cut with "…" where they begin
         let stop = self.hits.iter().filter(|x| x.0.top >= self.status_top && x.0.top < self.status_bot).map(|x| x.0.left).min().unwrap_or(c.right);
-        if let Some(t) = g.layout(&w(&self.status()), &g.f.reg, (stop - px(20)) as f32, lh as f32) {
+        let shown = cv.shows(&RECT { top: self.status_top, bottom: self.status_bot, ..c });
+        if let Some(t) = shown.then(|| g.layout(&w(&self.status()), &g.f.reg, (stop - px(20)) as f32, lh as f32)).flatten() {
             cv.text(&t, px(10), self.status_top + 1 + (self.status_bot - self.status_top - 1 - lh) / 2, theme().muted);
         }
         // each pane's caption and column header
@@ -5825,7 +6007,6 @@ impl Ui {
                 self.cm.rrect_a(&r, th as f32 / 2.0, Some(c), None, a);
             }
         }
-        self.cm.end();
     }
 
     /// This pane's caption (when its tab is split: its place, and × to close it) and column header (list view),
@@ -5836,7 +6017,7 @@ impl Ui {
         let rad = |v: f64| (v * self.scale) as f32;
         let hot = |h: Hit| self.hot == Some(h);
         let c = self.cap;
-        if c.right > c.left {
+        if c.right > c.left && cv.shows(&c) {
             // the focused pane's caption stands out (a card, its name in full colour, an accent dot); the others are
             // quiet until pointed at
             let on = !self.guest;
@@ -5868,6 +6049,9 @@ impl Ui {
             (lh - size * 2724.0 / 2048.0) / 2.0 + size * 2210.0 / 2048.0
         };
         for &(r, h) in &self.hits {
+            if !cv.shows(&r) {
+                continue;
+            }
             let Hit::Col(id, k) = h else { continue };
             if id != self.id {
                 continue;
@@ -5920,7 +6104,7 @@ impl Ui {
         let todo: Vec<(String, Option<(u8, u64)>)> = (i0..i1)
             .filter_map(|i| self.get(i))
             .filter(|r| r.is_dir && list_of(&self.args.q).is_none() && !self.kind_checked.contains(&r.path))
-            .map(|r| (r.path.clone(), self.kinds.get(&r.path).copied()))
+            .map(|r| (r.path.clone(), kind_of(&r.path)))
             .collect();
         if !todo.is_empty() {
             for (p, _) in &todo {
@@ -7078,12 +7262,17 @@ unsafe fn delete_word(h: HWND) {
         let mut b = vec![0u16; n as usize + 1];
         GetWindowTextW(h, b.as_mut_ptr(), n + 1);
         let s = String::from_utf16_lossy(&b[..a as usize]);
-        let t = s.trim_end();
-        let w = t.trim_end_matches(char::is_alphanumeric);
-        let k = if w.len() < t.len() { w.len() } else { t.len() - t.chars().last().map_or(0, char::len_utf8) }; // a lone mark: just it
-        SendMessageW(h, 0x00B1, s[..k].encode_utf16().count(), a as isize);
+        SendMessageW(h, 0x00B1, s[..word_start(&s)].encode_utf16().count(), a as isize);
     }
     SendMessageW(h, 0x00C2, 1, wz("").as_ptr() as isize); // EM_REPLACESEL, undoable
+}
+
+/// Where Ctrl+Backspace at the end of `s` deletes from: a word and the marks after it (`you\`, `.jpg"`), so a path
+/// goes a folder at a time, as Firefox and Explorer do; marks alone go on their own.
+fn word_start(s: &str) -> usize {
+    let p = s.trim_end().trim_end_matches(|c: char| !c.is_alphanumeric() && !c.is_whitespace());
+    let w = p.trim_end_matches(char::is_alphanumeric);
+    if w.len() < p.len() { w.len() } else { p.len() }
 }
 
 unsafe extern "system" fn field_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM, _: usize, _: usize) -> LRESULT {
@@ -7669,7 +7858,13 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             ]
         })
         .unwrap_or_default(),
-        4 => vec![(t("menu.language").into(), String::new(), false), sep(), (format!("{}…", t("apps.title")), String::new(), false)],
+        4 => vec![
+            (t("menu.language").into(), String::new(), false),
+            sep(),
+            (t("menu.explorer").into(), String::new(), save::explorer_on()),
+            (t("menu.file_windows").into(), String::new(), save::on()),
+            (format!("{}…", t("apps.title")), String::new(), false),
+        ],
         _ => vec![(t("menu.about").into(), String::new(), false)],
     };
     let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2..=4), items, false) else { return };
@@ -7754,7 +7949,15 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             });
         }
         (4, 0) => drop_menu(main, Hit::Lang),
-        (4, 2) => apps::open(main),
+        (4, 2) => {
+            save::set_explorer(!save::explorer_on());
+            with(|u| u.save_settings()); // turned off, it stays off
+        }
+        (4, 3) => {
+            save::set_on(!save::on());
+            save::set_rules(save::rules()); // saves the on/off
+        }
+        (4, 4) => apps::open(main),
         (5, 0) => show_about(main),
         _ => {}
     }
@@ -7782,11 +7985,11 @@ unsafe fn offer_install(main: HWND) {
 // ---- window procedures ---------------------------------------------------------------------------------------
 unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
     match m {
-        WM_ERASEBKGND => return 1,
+        WM_ERASEBKGND => return erase(h, wp),
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             BeginPaint(h, &mut ps);
-            with(|u| u.paint_main());
+            with(|u| u.paint_main(ps.hdc, &ps.rcPaint));
             EndPaint(h, &ps);
             if CLOAKED.get() {
                 // the panes are windows of their own: drawn now, then the whole shows at once
@@ -7796,7 +7999,13 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_SIZE => {
-            with(|u| u.layout());
+            with(|u| {
+                if wp == 1 {
+                    u.idle(); // SIZE_MINIMIZED: its pixels can go at once
+                } else {
+                    u.layout();
+                }
+            });
             return 0;
         }
         WM_DEVICECHANGE if matches!(wp, 0x8000 | 0x8004) => {
@@ -7858,6 +8067,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 }
                 T_UNCLOAK => cloak(h, false),
                 T_POLL => {
+                    with(|u| u.idle());
                     if with(|u| u.poll()) == Some(true) {
                         offer_install(h);
                     }
@@ -7956,6 +8166,10 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         }
         WM_COPYDATA => {
             return copydata(h, l) as LRESULT;
+        }
+        WM_RETHEME => {
+            with(|u| u.repaint_theme());
+            return 0;
         }
         WM_TABS_IN => {
             let json = *Box::from_raw(l as *mut String);
@@ -8283,7 +8497,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         WM_DESTROY => {
             with(|u| {
                 u.save_settings(); // the window's place
-                u.save_kinds();
+                save_kinds();
                 u.autosave(true);
             });
             crate::recent::save();
@@ -8303,7 +8517,7 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         return 0;
     }
     match m {
-        WM_ERASEBKGND => return 1,
+        WM_ERASEBKGND => return erase(h, wp),
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             BeginPaint(h, &mut ps);
@@ -8365,8 +8579,10 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             let (x, y) = xy(l);
             let r = withp(h, |u| u.mmove(x, y));
             // paint now: queued, the list's paint waits behind the main window's (the status bar), which a drag
-            // invalidates again on every move, so the band trailed the pointer
-            UpdateWindow(h);
+            // invalidates again on every move, so the band trailed the pointer (animating, the frame paints it)
+            if with(|u| u.animating()) != Some(true) {
+                UpdateWindow(h);
+            }
             if let Some(Some(paths)) = r {
                 if !paths.is_empty() {
                     // the first item's thumbnail at the grid's tile size (in the list too), from a shell worker (its
@@ -8510,6 +8726,24 @@ mod tests {
         assert_eq!(m.get("c:\\users\\me\\pictures").cloned(), v(true, 160, "mtime", true, 3));
         assert_eq!(m.get("d:\\a\tb").cloned(), v(false, 128, "name", false, 4)); // a tab in a name: the path is the rest
         assert_eq!(m.len(), 2); // a line of the old kind, dropped
+    }
+
+    #[test]
+    fn only_plain_windows_join_the_running_process() {
+        let v = |a: &[&str]| super::hostable(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(v(&[]) && v(&["--native"]) && v(&["--native", "--tabs", "x.json", "--at", "1,2"]) && v(&["--tabs-json", "{}"]) && v(&["--open", "C:\\"]));
+        assert!(!v(&["--save"]) && !v(&["--file-windows"]) && !v(&["--icons"]) && !v(&["--switch-help=1"]) && !v(&[r"C:\Users\you"]));
+    }
+
+    #[test]
+    fn ctrl_backspace_takes_a_path_a_folder_at_a_time() {
+        let mut s = String::from(r#"child:"C:\Users\you\Pictures""#);
+        let mut seen = vec![];
+        while !s.is_empty() {
+            s.truncate(super::word_start(&s));
+            seen.push(s.clone());
+        }
+        assert_eq!(seen, [r#"child:"C:\Users\you\"#, r#"child:"C:\Users\"#, r#"child:"C:\"#, "child:\"", ""]);
     }
 
     #[test]

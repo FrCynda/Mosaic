@@ -393,3 +393,6 @@ save.open=Maak oop
 save.select=Kies gids
 save.folder_label=Gids:
 save.not_found={name} is nie gevind nie.
+menu.explorer=Gebruik Mosaic in plaas van Explorer
+menu.file_windows=Gebruik Mosaic vir Stoor- en Oopmaak-vensters
+explorer.verb=Maak oop in Mosaic

@@ -393,3 +393,6 @@ save.open=തുറക്കുക
 save.select=ഫോൾഡർ തിരഞ്ഞെടുക്കുക
 save.folder_label=ഫോൾഡർ:
 save.not_found={name} കണ്ടെത്തിയില്ല.
+menu.explorer=എക്സ്പ്ലോററിന് പകരം Mosaic ഉപയോഗിക്കുക
+menu.file_windows=സേവ്, ഓപ്പൺ വിൻഡോകൾക്ക് Mosaic ഉപയോഗിക്കുക
+explorer.verb=Mosaic-ൽ തുറക്കുക

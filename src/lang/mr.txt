@@ -393,3 +393,6 @@ save.open=उघडा
 save.select=फोल्डर निवडा
 save.folder_label=फोल्डर:
 save.not_found={name} सापडले नाही.
+menu.explorer=एक्सप्लोररऐवजी Mosaic वापरा
+menu.file_windows=जतन करा आणि उघडा विंडोसाठी Mosaic वापरा
+explorer.verb=Mosaic मध्ये उघडा

@@ -393,3 +393,6 @@ save.open=Åpne
 save.select=Velg mappe
 save.folder_label=Mappe:
 save.not_found=Fant ikke {name}.
+menu.explorer=Bruk Mosaic i stedet for Utforsker
+menu.file_windows=Bruk Mosaic for Lagre- og Åpne-vinduer
+explorer.verb=Åpne i Mosaic

@@ -393,3 +393,6 @@ save.open=გახსნა
 save.select=საქაღალდის არჩევა
 save.folder_label=საქაღალდე:
 save.not_found={name} ვერ მოიძებნა.
+menu.explorer=Explorer-ის ნაცვლად Mosaic-ის გამოყენება
+menu.file_windows=Mosaic-ის გამოყენება შენახვისა და გახსნის ფანჯრებისთვის
+explorer.verb=Mosaic-ში გახსნა

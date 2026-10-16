@@ -397,3 +397,6 @@ save.open=فتح
 save.select=اختيار المجلد
 save.folder_label=المجلد:
 save.not_found=لم يُعثر على {name}.
+menu.explorer=استخدام Mosaic بدلاً من المستكشف
+menu.file_windows=استخدام Mosaic لنوافذ الحفظ والفتح
+explorer.verb=فتح في Mosaic

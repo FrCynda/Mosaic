@@ -434,6 +434,11 @@ pub(super) fn load(st: &HashMap<String, String>) {
     *RULES.lock().unwrap() = rules_from(st);
     ON.store(st.get("save_dialog").is_none_or(|v| v == "1"), Ordering::Relaxed); // on until turned off
     *DIR.lock().unwrap() = st.get("save_dir").cloned().unwrap_or_default();
+    // folders and Win+E to Mosaic until turned off; only the installed app, not a build elsewhere
+    let installed = std::env::var_os("ProgramFiles").is_some_and(|pf| std::env::current_exe().is_ok_and(|p| p.starts_with(pf)));
+    if !st.contains_key("explorer") && installed && !active() {
+        set_explorer(true);
+    }
     if ON.load(Ordering::Relaxed) && !active() {
         register(); // the first time
         start(); // after an update, or if it was ended
@@ -1020,6 +1025,9 @@ impl Ui {
     }
 
     pub(super) fn paint_save(&self, wd: i32) {
+        if !self.cm.shows(&RECT { left: 0, top: self.save_top, right: wd, bottom: self.save_top + 100_000 }) {
+            return;
+        }
         let Some((e, types, ty, kind)) = pick(|p| (p.edit, p.types.clone(), p.ty, p.kind)) else { return };
         let Some(&(name_r, _)) = self.hits.iter().find(|x| x.1 == Hit::SaveName) else { return };
         let (g, cv, lh) = (&self.gfx, &self.cm, self.gfx.f.lh);
@@ -1123,4 +1131,57 @@ mod tests {
             assert!(!reserved(n), "{n}");
         }
     }
+}
+
+// ---- folders opened in Mosaic instead of Explorer (Tools menu) ----------------------------------------------
+
+const VERB: &str = "mosaic";
+const FOLDER_KEYS: [&str; 2] = [r"Software\Classes\Directory\shell", r"Software\Classes\Drive\shell"];
+const WIN_E: &str = r"Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"; // This PC's "open new window": Win+E
+
+/// On when a folder's default action (a double-click on the desktop, a program opening one) is Mosaic's.
+pub(super) fn explorer_on() -> bool {
+    ours(FOLDER_KEYS[0])
+}
+
+fn ours(key: &str) -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+    let mut b = [0u16; 64];
+    let mut n = (b.len() * 2) as u32;
+    let got = unsafe { RegGetValueW(HKEY_CURRENT_USER, wz(key).as_ptr(), null(), RRF_RT_REG_SZ, null_mut(), b.as_mut_ptr() as *mut c_void, &mut n) == 0 };
+    got && String::from_utf16_lossy(&b[..(n as usize / 2).saturating_sub(1)]) == VERB
+}
+
+/// Per user, nothing needing admin; off takes back only what on wrote (the installer does too, on uninstall).
+pub(super) fn set_explorer(v: bool) {
+    use windows_sys::Win32::System::Registry::RegDeleteTreeW;
+    use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+    let set = |key: &str, name: Option<&str>, val: &str| unsafe {
+        let (k, n, v) = (wz(key), name.map(wz), wz(val));
+        RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ref().map_or(null(), |n| n.as_ptr()), REG_SZ, v.as_ptr() as *const c_void, (v.len() * 2) as u32);
+    };
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = exe.display().to_string();
+    for k in FOLDER_KEYS {
+        if v {
+            set(&format!("{k}\\{VERB}"), None, &t("explorer.verb"));
+            set(&format!("{k}\\{VERB}"), Some("Icon"), &exe);
+            set(&format!("{k}\\{VERB}\\command"), None, &format!("\"{exe}\" --open \"%1\""));
+            set(k, None, VERB);
+        } else {
+            unsafe {
+                RegDeleteTreeW(HKEY_CURRENT_USER, wz(&format!("{k}\\{VERB}")).as_ptr());
+                if ours(k) {
+                    RegDeleteKeyValueW(HKEY_CURRENT_USER, wz(k).as_ptr(), null()); // the default back to Explorer's
+                }
+            }
+        }
+    }
+    if v {
+        set(&format!("{WIN_E}\\shell\\opennewwindow\\command"), None, &format!("\"{exe}\""));
+        set(&format!("{WIN_E}\\shell\\opennewwindow\\command"), Some("DelegateExecute"), "");
+    } else {
+        unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, wz(WIN_E).as_ptr()) };
+    }
+    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, null(), null()) };
 }

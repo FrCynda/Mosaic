@@ -393,3 +393,6 @@ save.open=ਖੋਲ੍ਹੋ
 save.select=ਫੋਲਡਰ ਚੁਣੋ
 save.folder_label=ਫੋਲਡਰ:
 save.not_found={name} ਨਹੀਂ ਮਿਲਿਆ।
+menu.explorer=ਐਕਸਪਲੋਰਰ ਦੀ ਥਾਂ Mosaic ਵਰਤੋ
+menu.file_windows=ਸੇਵ ਅਤੇ ਖੋਲ੍ਹੋ ਵਿੰਡੋਜ਼ ਲਈ Mosaic ਵਰਤੋ
+explorer.verb=Mosaic ਵਿੱਚ ਖੋਲ੍ਹੋ

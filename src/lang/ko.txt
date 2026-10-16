@@ -392,3 +392,6 @@ save.open=열기
 save.select=폴더 선택
 save.folder_label=폴더:
 save.not_found={name}을(를) 찾을 수 없습니다.
+menu.explorer=탐색기 대신 Mosaic 사용
+menu.file_windows=저장 및 열기 창에 Mosaic 사용
+explorer.verb=Mosaic에서 열기

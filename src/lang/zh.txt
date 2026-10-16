@@ -392,3 +392,6 @@ save.open=打开
 save.select=选择文件夹
 save.folder_label=文件夹:
 save.not_found=找不到 {name}。
+menu.explorer=使用 Mosaic 代替资源管理器
+menu.file_windows=使用 Mosaic 打开“保存”和“打开”窗口
+explorer.verb=在 Mosaic 中打开

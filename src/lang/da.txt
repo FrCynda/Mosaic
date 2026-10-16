@@ -393,3 +393,6 @@ save.open=Åbn
 save.select=Vælg mappe
 save.folder_label=Mappe:
 save.not_found={name} blev ikke fundet.
+menu.explorer=Brug Mosaic i stedet for Stifinder
+menu.file_windows=Brug Mosaic til Gem- og Åbn-vinduer
+explorer.verb=Åbn i Mosaic

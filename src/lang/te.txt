@@ -393,3 +393,6 @@ save.open=తెరువు
 save.select=ఫోల్డర్‌ను ఎంచుకో
 save.folder_label=ఫోల్డర్:
 save.not_found={name} కనుగొనబడలేదు.
+menu.explorer=ఎక్స్‌ప్లోరర్ బదులు Mosaic ఉపయోగించు
+menu.file_windows=సేవ్, ఓపెన్ విండోలకు Mosaic ఉపయోగించు
+explorer.verb=Mosaic లో తెరువు

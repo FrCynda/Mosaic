@@ -12,3 +12,6 @@ tip.back=Atrás (Alt+Izquierda o el botón Atrás del mouse)
 tip.forward=Adelante (Alt+Derecha o el botón Adelante del mouse)
 theme.apply=Aplicar
 theme.cancel=Cancelar
+menu.explorer=Usar Mosaic en lugar del Explorador
+menu.file_windows=Usar Mosaic para las ventanas Guardar y Abrir
+explorer.verb=Abrir en Mosaic

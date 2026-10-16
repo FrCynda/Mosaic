@@ -393,3 +393,6 @@ save.open=Fur
 save.select=Dooro galka
 save.folder_label=Galka:
 save.not_found={name} lama helin.
+menu.explorer=Isticmaal Mosaic halkii Explorer
+menu.file_windows=Isticmaal Mosaic daaqadaha Kaydi iyo Fur
+explorer.verb=Ku fur Mosaic

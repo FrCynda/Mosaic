@@ -9,3 +9,6 @@ ap.color_style=Colour style
 ap.drive=Colour by drive
 ap.rules=Colour rules
 color.grey=Grey
+menu.explorer=Use Mosaic instead of Explorer
+menu.file_windows=Use Mosaic for Save and Open windows
+explorer.verb=Open in Mosaic

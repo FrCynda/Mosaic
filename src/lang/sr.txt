@@ -394,3 +394,6 @@ save.open=Отвори
 save.select=Изабери фасциклу
 save.folder_label=Фасцикла:
 save.not_found={name} није пронађен.
+menu.explorer=Користи Mosaic уместо Explorer-а
+menu.file_windows=Користи Mosaic за прозоре Сачувај и Отвори
+explorer.verb=Отвори у Mosaic-у

@@ -393,3 +393,6 @@ save.open=Ouvrir
 save.select=Choisir le dossier
 save.folder_label=Dossier :
 save.not_found={name} est introuvable.
+menu.explorer=Utiliser Mosaic à la place de l'Explorateur
+menu.file_windows=Utiliser Mosaic pour les fenêtres Enregistrer et Ouvrir
+explorer.verb=Ouvrir dans Mosaic

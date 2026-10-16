@@ -393,3 +393,6 @@ save.open=Opna
 save.select=Velja möppu
 save.folder_label=Mappa:
 save.not_found={name} fannst ekki.
+menu.explorer=Nota Mosaic í stað Explorer
+menu.file_windows=Nota Mosaic fyrir Vista- og Opna-glugga
+explorer.verb=Opna í Mosaic

@@ -393,3 +393,6 @@ save.open=திற
 save.select=கோப்புறையைத் தேர்ந்தெடு
 save.folder_label=கோப்புறை:
 save.not_found={name} கிடைக்கவில்லை.
+menu.explorer=எக்ஸ்ப்ளோரருக்குப் பதிலாக Mosaic-ஐப் பயன்படுத்து
+menu.file_windows=சேமி, திற சாளரங்களுக்கு Mosaic-ஐப் பயன்படுத்து
+explorer.verb=Mosaic-இல் திற

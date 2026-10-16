@@ -392,3 +392,6 @@ save.open=Mepee
 save.select=Họrọ folda
 save.folder_label=Folda:
 save.not_found=Ahụghị {name}.
+menu.explorer=Jiri Mosaic kama Explorer
+menu.file_windows=Jiri Mosaic maka windo Chekwaa na Mepee
+explorer.verb=Mepee na Mosaic

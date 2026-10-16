@@ -393,3 +393,6 @@ save.open=Fungua
 save.select=Chagua folda
 save.folder_label=Folda:
 save.not_found={name} haikupatikana.
+menu.explorer=Tumia Mosaic badala ya Explorer
+menu.file_windows=Tumia Mosaic kwa madirisha ya Hifadhi na Fungua
+explorer.verb=Fungua katika Mosaic

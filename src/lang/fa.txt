@@ -393,3 +393,6 @@ save.open=باز کردن
 save.select=انتخاب پوشه
 save.folder_label=پوشه:
 save.not_found={name} پیدا نشد.
+menu.explorer=استفاده از Mosaic به جای اکسپلورر
+menu.file_windows=استفاده از Mosaic برای پنجره‌های ذخیره و باز کردن
+explorer.verb=باز کردن در Mosaic

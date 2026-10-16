@@ -393,3 +393,6 @@ save.open=Apri
 save.select=Seleziona cartella
 save.folder_label=Cartella:
 save.not_found={name} non trovato.
+menu.explorer=Usa Mosaic al posto di Esplora file
+menu.file_windows=Usa Mosaic per le finestre Salva e Apri
+explorer.verb=Apri in Mosaic

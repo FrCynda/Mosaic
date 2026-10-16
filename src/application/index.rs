@@ -205,7 +205,9 @@ pub struct SearchIndex {
     names: Vec<u8>,
     /// Retired slots in `recs` (their names stay in the arena until the next rebuild).
     dead: usize,
-    /// `recs[..sorted]` is covered by `by_name`; later slots are the unsorted tail of new names.
+    /// `recs[..sorted]` is in name order (lowercased; retired slots included, skipped when read): laid out so by
+    /// each rebuild, which saves a name-order array beside it (4 bytes an entry). Later slots are the unsorted tail
+    /// of new names.
     sorted: usize,
     /// Bumped by every rebuild: positions from before it point at other entries.
     epoch: u64,
@@ -214,8 +216,6 @@ pub struct SearchIndex {
     /// Further positions of hardlinked records: one MFT record with several names appears once per name, and
     /// the live update/delete paths must touch every link. Rare, hence a side map.
     more: HashMap<u32, Vec<u32>>,
-    /// Positions of `recs[..sorted]` ordered by lowercased name (retired ones included, skipped when read).
-    by_name: Vec<u32>,
     drive: char,
     /// The journal position this index has applied every change up to (set by the live watcher). The cache is
     /// saved with it, so the next start replays exactly what the saved copy is missing.
@@ -414,7 +414,6 @@ impl SearchIndex {
             epoch: 0,
             first: Vec::new(),
             more: HashMap::new(),
-            by_name: Vec::new(),
             drive,
             usn: None,
             dirs: Default::default(),
@@ -585,25 +584,17 @@ impl SearchIndex {
         RebuildPlan { order, names, name_at }
     }
 
-    /// Drop retired slots and their names, and install a [`Self::rebuild_plan`]. O(n) copying; the caller guarantees
-    /// no mutation happened since the plan was made.
+    /// Drop retired slots and their names, and install a [`Self::rebuild_plan`]: the entries laid out in name order.
+    /// O(n) copying; the caller guarantees no mutation happened since the plan was made.
     pub fn rebuild(&mut self, plan: RebuildPlan) {
         let RebuildPlan { order, names, name_at } = plan;
         let live = self.len();
-        let mut new_pos = vec![NONE; self.recs.len()];
         // room for the entries that arrive until the next rebuild: a Vec growing by doubling would reserve a
         // second copy of the whole index (~100 MB for 2M files) on the first file created after startup
         let mut recs = Vec::with_capacity(live + REBUILD_AT);
-        for i in 0..self.recs.len() {
-            if self.is_live(i) {
-                new_pos[i] = recs.len() as u32;
-                recs.push(Rec { name: name_at[i], ..self.recs[i] });
-            }
-        }
-        drop(name_at);
-        self.by_name = order.into_iter().map(|i| new_pos[i as usize]).collect();
-        debug_assert_eq!(self.by_name.len(), live);
-        drop(new_pos);
+        recs.extend(order.iter().map(|&i| Rec { name: name_at[i as usize], ..self.recs[i as usize] }));
+        debug_assert_eq!(recs.len(), live);
+        drop((name_at, order));
         self.recs = recs;
         self.names = names;
         self.dead = 0;
@@ -818,7 +809,7 @@ impl SearchIndex {
         let mut m: Vec<u32>;
         if matches!(sort, SortKey::Name) {
             // Name order without a full sort: filter the presorted view, then slot in the (small) sorted tail.
-            m = self.by_name.par_iter().copied().filter(|&i| keep(i)).collect();
+            m = (0..self.sorted as u32).into_par_iter().filter(|&i| keep(i)).collect();
             let mut tail: Vec<u32> = (self.sorted as u32..self.recs.len() as u32).into_par_iter().filter(|&i| keep(i)).collect();
             tail.par_sort_unstable_by(|&a, &b| self.lower(a as usize).cmp(self.lower(b as usize)));
             m = self.merge_by_name(m, tail);
@@ -1359,12 +1350,17 @@ mod tests {
     fn names_round_trip_through_the_arena() {
         let all = ["readme.txt", "ReadMe.TXT", "ÃœnÃ¯cÃ¶dÃ© FÃ¯lÃ©.PDF", "Ã¼nÃ¯cÃ¶dÃ©", "a", "ABCDEFGHIJKLMNOPQRSTUVWXYZ.X", "Ä°stanbul"];
         let idx = index(all.iter().enumerate().map(|(k, n)| raw(10 + k as u64, 5, n)).collect());
-        assert_eq!(names(&idx), all);
-        for (i, n) in all.iter().enumerate() {
+        // laid out in name order: each looked up by name
+        let got = names(&idx);
+        let mut want = all.map(String::from);
+        want.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(got, want);
+        for (i, n) in got.iter().enumerate() {
             assert_eq!(idx.lower(i), n.to_lowercase());
         }
-        assert_eq!(idx.build_path(1, false), "C:\\ReadMe.TXT");
-        assert_eq!(idx.build_path(1, true), "c:\\readme.txt");
+        let at = got.iter().position(|n| n == "ReadMe.TXT").unwrap();
+        assert_eq!(idx.build_path(at, false), "C:\\ReadMe.TXT");
+        assert_eq!(idx.build_path(at, true), "c:\\readme.txt");
     }
 
     #[test]
@@ -1823,7 +1819,7 @@ mod tests {
         drop_orphans(&mut recs);
         let idx = SearchIndex::from_parts(s.drive, recs, snap.names);
         let build = t.elapsed();
-        let heap = idx.recs.capacity() * size_of::<Rec>() + idx.names.capacity() + idx.first.capacity() * 4 + idx.by_name.capacity() * 4;
+        let heap = idx.recs.capacity() * size_of::<Rec>() + idx.names.capacity() + idx.first.capacity() * 4;
         println!("BENCH load_ms={} from_parts_ms={} entries={} index_heap_mb={:.1}", load.as_millis(), build.as_millis(), idx.len(), heap as f64 / 1048576.0);
         let mut cat = Catalog::default();
         cat.upsert_volume(idx);
@@ -1899,7 +1895,7 @@ mod tests {
         idx.rebuild(plan);
         println!("BENCH rebuild plan_ms={} (read lock) install_ms={} (write lock)", planned.as_millis(), t.elapsed().as_millis());
         let n = |c: usize, s: usize| c as f64 * s as f64 / 1048576.0;
-        println!("BENCH parts entries={} recs_mb={:.1} names_mb={:.1} first_mb={:.1} by_name_mb={:.1}", idx.len(), n(idx.recs.capacity(), size_of::<Rec>()), n(idx.names.capacity(), 1), n(idx.first.capacity(), 4), n(idx.by_name.capacity(), 4));
+        println!("BENCH parts entries={} recs_mb={:.1} names_mb={:.1} first_mb={:.1}", idx.len(), n(idx.recs.capacity(), size_of::<Rec>()), n(idx.names.capacity(), 1), n(idx.first.capacity(), 4));
         mb("indexed");
         let mut seen = std::collections::HashSet::new();
         let unique: usize = (0..idx.recs.len()).filter(|&i| idx.is_live(i)).map(|i| { let s = idx.recs[i].name as usize; &idx.names[s..s + idx.stored_len(i)] }).filter(|b| seen.insert(*b)).map(|b| b.len()).sum();

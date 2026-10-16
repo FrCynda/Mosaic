@@ -393,3 +393,6 @@ save.open=Öppna
 save.select=Välj mapp
 save.folder_label=Mapp:
 save.not_found={name} hittades inte.
+menu.explorer=Använd Mosaic i stället för Utforskaren
+menu.file_windows=Använd Mosaic för Spara- och Öppna-fönster
+explorer.verb=Öppna i Mosaic

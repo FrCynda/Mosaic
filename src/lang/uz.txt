@@ -393,3 +393,6 @@ save.open=Ochish
 save.select=Jildni tanlash
 save.folder_label=Jild:
 save.not_found={name} topilmadi.
+menu.explorer=Explorer o‘rniga Mosaic ishlatish
+menu.file_windows=Saqlash va Ochish oynalari uchun Mosaic ishlatish
+explorer.verb=Mosaic’da ochish

@@ -23,7 +23,7 @@ use super::{mix, png_pixels, put, shell, t, theme, wz, xy, MItem};
 const WM_ICON: u32 = WM_APP + 10;
 const WM_KIDS: u32 = WM_APP + 11; // lParam: a boxed (place, its rows)
 /// Width (CSS px) of the panel, until its right edge is dragged; and how far it can be.
-pub const WIDTH: i32 = 200;
+pub const WIDTH: i32 = 186;
 const WIDTHS: (i32, i32) = (150, 480);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -63,7 +63,7 @@ pub struct Prefs {
 }
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { recent_files: true, recent_dirs: true, open_files: true, open_dirs: true, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new(), marks: true, open_marks: true, bookmarks: Vec::new(), open_places: [false; 3], width: WIDTH }
+        Prefs { recent_files: true, recent_dirs: true, open_files: false, open_dirs: false, recent_n: 5, folders: true, places: true, terminals: true, drives: true, bars: true, compact: false, hidden: Vec::new(), pins: Vec::new(), marks: false, open_marks: true, bookmarks: Vec::new(), open_places: [false; 3], width: WIDTH }
     }
 }
 impl Prefs {
@@ -379,6 +379,11 @@ pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
 /// Redraw now: a theme change doesn't reach this window through the main window's repaint.
 pub fn invalidate() {
     with(|s| unsafe { InvalidateRect(s.hwnd, null(), 0) });
+}
+
+/// Its pixels go (the window minimized), made again when it's next drawn.
+pub fn release_pixels() {
+    with(|s| s.cv.release());
 }
 
 /// The focused pane shows search `q`: mark its place (a folder listed, All, Home), or none.
@@ -848,7 +853,7 @@ impl Side {
 
 unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
     match m {
-        WM_ERASEBKGND => return 1,
+        WM_ERASEBKGND => return super::erase(h, wp),
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             BeginPaint(h, &mut ps);

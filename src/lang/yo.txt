@@ -392,3 +392,6 @@ save.open=Ṣí
 save.select=Yan fódà
 save.folder_label=Fódà:
 save.not_found=A kò rí {name}.
+menu.explorer=Lo Mosaic dípò Explorer
+menu.file_windows=Lo Mosaic fún àwọn fèrèsé Fipamọ́ àti Ṣí
+explorer.verb=Ṣí nínú Mosaic

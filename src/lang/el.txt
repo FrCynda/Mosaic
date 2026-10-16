@@ -393,3 +393,6 @@ save.open=Άνοιγμα
 save.select=Επιλογή φακέλου
 save.folder_label=Φάκελος:
 save.not_found=Το {name} δεν βρέθηκε.
+menu.explorer=Χρήση του Mosaic αντί της Εξερεύνησης
+menu.file_windows=Χρήση του Mosaic για τα παράθυρα Αποθήκευσης και Ανοίγματος
+explorer.verb=Άνοιγμα στο Mosaic

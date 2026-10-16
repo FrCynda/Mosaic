@@ -393,3 +393,6 @@ save.open=Բացել
 save.select=Ընտրել թղթապանակը
 save.folder_label=Թղթապանակ՝
 save.not_found={name}-ը չի գտնվել։
+menu.explorer=Օգտագործել Mosaic-ը Explorer-ի փոխարեն
+menu.file_windows=Օգտագործել Mosaic-ը Պահպանել և Բացել պատուհանների համար
+explorer.verb=Բացել Mosaic-ում

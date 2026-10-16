@@ -393,3 +393,6 @@ save.open=Hap
 save.select=Zgjidh dosjen
 save.folder_label=Dosja:
 save.not_found={name} nuk u gjet.
+menu.explorer=Përdor Mosaic në vend të Explorer
+menu.file_windows=Përdor Mosaic për dritaret Ruaj dhe Hap
+explorer.verb=Hape në Mosaic

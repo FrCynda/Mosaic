@@ -392,3 +392,6 @@ save.open=Buksan
 save.select=Piliin ang folder
 save.folder_label=Folder:
 save.not_found=Hindi nakita ang {name}.
+menu.explorer=Gamitin ang Mosaic sa halip na Explorer
+menu.file_windows=Gamitin ang Mosaic para sa mga window ng Save at Open
+explorer.verb=Buksan sa Mosaic

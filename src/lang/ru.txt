@@ -395,3 +395,6 @@ save.open=Открыть
 save.select=Выбрать папку
 save.folder_label=Папка:
 save.not_found={name} не найден.
+menu.explorer=Использовать Mosaic вместо Проводника
+menu.file_windows=Использовать Mosaic для окон сохранения и открытия
+explorer.verb=Открыть в Mosaic
