@@ -393,7 +393,7 @@ struct FolderView {
     size: i32,
     sort: String,
     desc: bool,
-    n: u64,
+    n: u64, // when set: seconds since 1970, to weigh against Explorer's own
 }
 type Views = HashMap<String, FolderView>; // by lowercased path
 static FOLDER_VIEWS: std::sync::Mutex<Option<(Views, bool)>> = std::sync::Mutex::new(None); // … and changed since written
@@ -418,10 +418,9 @@ fn folder_views<R>(f: impl FnOnce(&mut Views, &mut bool) -> R) -> R {
     f(m, dirty)
 }
 /// `dir`'s view set to `v`; written a second later.
-fn set_folder_view(main: HWND, dir: &str, v: FolderView) {
+fn set_folder_view(main: HWND, dir: &str, kind: &'static str, v: FolderView) {
     folder_views(|m, dirty| {
-        let n = m.values().map(|v| v.n).max().unwrap_or(0) + 1;
-        m.insert(dir.trim_end_matches('\\').to_lowercase(), FolderView { n, ..v });
+        m.insert(dir.trim_end_matches('\\').to_lowercase(), FolderView { n: now_secs(), ..v.clone() });
         if m.len() > MAX_VIEWS {
             // ponytail: O(n) scan per overflow; fine at 1000
             if let Some(old) = m.iter().min_by_key(|v| v.1.n).map(|v| v.0.clone()) {
@@ -430,7 +429,40 @@ fn set_folder_view(main: HWND, dir: &str, v: FolderView) {
         }
         *dirty = true;
     });
+    let mut q = BAGS_DUE.lock().unwrap_or_else(|e| e.into_inner());
+    q.retain(|b| !b.0.eq_ignore_ascii_case(dir));
+    q.push((dir.to_string(), kind.into(), v));
     unsafe { SetTimer(main, T_VIEWS, 1000, None) };
+}
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+fn places() -> &'static crate::shellbags::Places {
+    static PLACES: std::sync::OnceLock<crate::shellbags::Places> = std::sync::OnceLock::new();
+    PLACES.get_or_init(crate::shellbags::places)
+}
+/// Explorer's view of `dir`, if it has one, as a folder's view.
+fn bag_view(dir: &str) -> Option<FolderView> {
+    let at = places();
+    let b = crate::shellbags::read(crate::shellbags::BASE, dir, at)?;
+    let (sort, desc) = b.sort.unwrap_or(("name", false));
+    Some(FolderView { grid: b.grid, size: if b.grid { crate::shellbags::tile_of(b.icon) } else { 0 }, sort: sort.into(), desc, n: b.when })
+}
+/// The folders whose view Explorer is to be told, with their folder type: at the next write.
+static BAGS_DUE: std::sync::Mutex<Vec<(String, &'static str, FolderView)>> = std::sync::Mutex::new(Vec::new());
+/// Explorer told each view set since: into the bags it keeps; a folder it never kept, by a helper (the shell parses its path).
+fn write_bags() {
+    let at = places();
+    for (dir, kind, v) in std::mem::take(&mut *BAGS_DUE.lock().unwrap_or_else(|e| e.into_inner())) {
+        let set = crate::shellbags::Set { grid: v.grid, icon: if v.grid { crate::shellbags::icon_of(v.size) } else { 16 }, sort: v.sort, desc: v.desc, kind: kind.into() };
+        if !crate::shellbags::update(crate::shellbags::BASE, &dir, at, &set) {
+            if let Ok(exe) = std::env::current_exe() {
+                use std::os::windows::process::CommandExt;
+                let (g, i, d) = (if set.grid { "grid" } else { "list" }, set.icon.to_string(), if set.desc { "desc" } else { "asc" });
+                let _ = std::process::Command::new(exe).args(["--bag-write", g, &i, &set.sort, d, kind, &dir]).creation_flags(0x0800_0000).spawn();
+            }
+        }
+    }
 }
 fn write_views() {
     folder_views(|m, dirty| {
@@ -5376,7 +5408,7 @@ impl Ui {
     /// The folder listed keeps its view and sort as they are now.
     fn remember(&self) {
         if let Some(d) = listed_dir(&self.args.q).filter(|_| self.windows) {
-            set_folder_view(self.main, &d, FolderView { grid: self.grid, size: self.size, sort: self.args.sort.clone(), desc: self.args.dir == "desc", n: 0 });
+            set_folder_view(self.main, &d, self.kind_of(&d), FolderView { grid: self.grid, size: self.size, sort: self.args.sort.clone(), desc: self.args.dir == "desc", n: 0 });
         }
     }
     /// The user's sort: kept as the folder's own, and listed again.
@@ -5386,15 +5418,35 @@ impl Ui {
     }
     /// The sort a listing opens in: its folder's own, else by name as Explorer's. A search keeps the one it has.
     fn sort_for(&self, q: &str) -> Option<(String, bool)> {
-        let k = listed_dir(q)?.trim_end_matches('\\').to_lowercase();
-        Some(folder_views(|m, _| m.get(&k).map(|v| (v.sort.clone(), v.desc))).unwrap_or_else(|| ("name".into(), false)))
+        Some(self.own_view(&listed_dir(q)?).map(|v| (v.sort, v.desc)).unwrap_or_else(|| ("name".into(), false)))
+    }
+    /// A folder's own view: Mosaic's or Explorer's, whichever was set last.
+    fn own_view(&self, d: &str) -> Option<FolderView> {
+        let mine = folder_views(|m, _| m.get(&d.trim_end_matches('\\').to_lowercase()).cloned());
+        let theirs = bag_view(d).map(|v| FolderView { size: if v.grid { v.size } else { mine.as_ref().map_or(self.def_view.1, |m| m.size) }, ..v });
+        match (mine, theirs) {
+            // the same view, as Mosaic wrote it there: Mosaic's exact tile size
+            (Some(a), Some(b)) if a.grid == b.grid && a.sort == b.sort && a.desc == b.desc && (!a.grid || crate::shellbags::icon_of(a.size) == crate::shellbags::icon_of(b.size)) => Some(a),
+            (a, b) => [a, b].into_iter().flatten().max_by_key(|v| v.n),
+        }
+    }
+    /// The folder type Explorer files `d` under: of the kind folder it is in, else generic.
+    fn kind_of(&self, d: &str) -> &'static str {
+        let k = d.trim_end_matches('\\').to_lowercase();
+        let i = self.kind_dirs.iter().position(|p| {
+            p.as_ref().is_some_and(|p| {
+                let p = p.trim_end_matches('\\').to_lowercase();
+                k == p || k.starts_with(&format!("{p}\\"))
+            })
+        });
+        ["Generic", "Pictures", "Videos", "Music", "Documents"][i.unwrap_or(0)]
     }
     /// The view a listing opens in: its folder's own, else large icons in Pictures and Videos, else the default.
     fn view_for(&self, q: &str) -> (bool, i32) {
         let Some(d) = listed_dir(q) else { return self.def_view };
         let k = d.trim_end_matches('\\').to_lowercase();
-        if let Some(v) = folder_views(|m, _| m.get(&k).map(|v| (v.grid, v.size))) {
-            return v;
+        if let Some(v) = self.own_view(&d) {
+            return (v.grid, v.size);
         }
         let under = |p: &Option<String>| {
             p.as_ref().is_some_and(|p| {
@@ -5403,7 +5455,7 @@ impl Ui {
             })
         };
         if self.kind_dirs.iter().skip(1).take(2).any(under) {
-            return (true, 160);
+            return (true, 96); // Explorer's large icons, as it opens these
         }
         self.def_view
     }
@@ -7779,6 +7831,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 T_VIEWS => {
                     KillTimer(h, T_VIEWS);
                     write_views();
+                    write_bags();
                 }
                 T_CARD => {
                     with(|u| u.card_due());

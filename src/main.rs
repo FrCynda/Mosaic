@@ -15,6 +15,7 @@ mod metadata;
 mod recent;
 mod native;
 mod shell;
+mod shellbags;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -612,6 +613,10 @@ fn main() {
     if std::env::args().any(|a| a == "--shell-menu") {
         shell::menu_main();
         return;
+    }
+    if let Some(k) = std::env::args().position(|a| a == "--bag-read" || a == "--bag-write") {
+        let args: Vec<String> = std::env::args().skip(k).collect();
+        std::process::exit(shellbags::cli(&args));
     }
     if std::env::args().any(|a| a == "--shell-helper") {
         shell::helper_main();
