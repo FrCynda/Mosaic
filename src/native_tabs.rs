@@ -1537,6 +1537,14 @@ impl Ui {
                     let d = if right { s / 2.0 } else { -s / 2.0 };
                     cv.lines(&[(cx - d, cy - s), (cx + d, cy), (cx - d, cy + s)], col, rad(1.4));
                 }
+                Hit::Update => {
+                    // a green download arrow, lighter pointed at
+                    let (cx, cy, k) = ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0, self.scale as f32);
+                    let c = if hot(h) { mix(crate::update::GREEN, 0xffffff, 0.3) } else { crate::update::GREEN };
+                    cv.lines(&[(cx, cy - 6.0 * k), (cx, cy + 3.5 * k)], c, 2.0 * k);
+                    cv.lines(&[(cx - 4.5 * k, cy - 1.0 * k), (cx, cy + 3.5 * k), (cx + 4.5 * k, cy - 1.0 * k)], c, 2.0 * k);
+                    cv.lines(&[(cx - 6.0 * k, cy + 7.0 * k), (cx + 6.0 * k, cy + 7.0 * k)], c, 2.0 * k);
+                }
                 Hit::TabList => {
                     if hot(h) {
                         cv.rrect(&r, rad(6.0), Some(theme().hl), None);

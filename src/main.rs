@@ -16,6 +16,7 @@ mod recent;
 mod native;
 mod shell;
 mod shellbags;
+mod update;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;

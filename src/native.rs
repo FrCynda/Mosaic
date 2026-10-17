@@ -22,6 +22,8 @@ mod apps;
 mod icons;
 #[path = "native_help.rs"]
 mod help;
+#[path = "native_update.rs"]
+mod upd;
 use tabs::*;
 
 use std::cell::RefCell;
@@ -75,6 +77,7 @@ const WM_KIND: u32 = WM_APP + 20;
 const WM_RETHEME: u32 = WM_APP + 50; // from another window of this process: the theme changed
 const WM_TAB_ICON: u32 = WM_APP + 6; // lParam: a boxed (icon source, its PNG)
 const WM_RENAME: u32 = WM_APP + 30; // to the list: rename the focused item in place (Explorer's menu asked, or a new item showed up)
+const WM_UPDATE: u32 = WM_APP + 60; // from the update check: wParam 0 the icon may need to come or go; 1 newer found, 2 up to date, 3 couldn't look (Help > Check for updates)
 const WM_RENAME_END: u32 = WM_APP + 31; // … the field (wParam) lost the focus: keep what was typed
 const T_TYPE: usize = 1;
 const T_POLL: usize = 2;
@@ -782,6 +785,7 @@ enum Hit {
     Tab(usize),  // the tabs, along the menu strip
     TabClose(usize), // … the × on one
     NewTab,      // … the + after them
+    Update,      // the tab row's right end: a newer Mosaic is out
     Pane(usize),      // a split pane's caption: click to focus it, drag it elsewhere or onto the tab strip
     PaneClose(usize), // … the × on it
     Gutter(usize),    // the gap between two split panes (the split's id): drag to resize
@@ -2007,6 +2011,9 @@ unsafe fn window(args: Vec<String>) {
         }
         SetFocus(edit);
         save::shown();
+        if !save::active() && !std::env::args().any(|a| a == "--file-windows" || a == "--icons") {
+            crate::update::start(main as isize, WM_UPDATE);
+        }
         pump();
     }
 }
@@ -2085,7 +2092,7 @@ fn open_item(p: &str) {
 }
 
 unsafe fn dispatch(msg: &MSG) {
-    if themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).or(help::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
+    if themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).or(help::hwnd()).or(upd::hwnd()).is_some_and(|h| h == msg.hwnd || IsChild(h, msg.hwnd) != 0) {
         // the theme or file windows dialog: the window behind waits, its shortcuts with it
         TranslateMessage(msg);
         DispatchMessageW(msg);
@@ -4689,6 +4696,7 @@ impl Ui {
             Hit::NewTab => format!("{} (Ctrl+T)", t("tab.new")),
             Hit::Group(_) => String::new(),
             Hit::TabList => t("tab.recent").into(),
+            Hit::Update => t("update.tip").replace("{v}", &crate::update::pending().map_or(String::new(), |i| i.version)),
             Hit::Scroll(_) => String::new(),
             Hit::TreePane(_, p) => self.qname(&self.pane_q(p)),
         }
@@ -5304,8 +5312,15 @@ impl Ui {
             // bar; or down the left side
             let pos = self.tp.pos;
             self.menu_h = lh + px(20);
+            // a newer Mosaic: its icon ends the menu row, the tabs stopping short of it
+            let mut right = wd - px(16);
+            if crate::update::pending().is_some() {
+                let s = lh + px(10);
+                hits.push((RECT { left: wd - px(10) - s, top: px(6), right: wd - px(10), bottom: px(6) + s }, Hit::Update));
+                right = wd - px(10) - s - px(8);
+            }
             if pos == 0 {
-                let area = RECT { left: mx + px(20), top: px(6), right: wd - px(16), bottom: ht };
+                let area = RECT { left: mx + px(20), top: px(6), right, bottom: ht };
                 let sh = self.place_strip(area, &mut hits);
                 self.menu_h = self.menu_h.max(px(6) + sh);
             }
@@ -5739,7 +5754,7 @@ impl Ui {
             Hit::PaneClose(id) => self.close_pane(id),
             Hit::Gutter(_) | Hit::ColEdge(..) => {}
             Hit::NewTab => self.new_tab("home:", self.cur + 1),
-            Hit::TabList => return Some(hit),
+            Hit::TabList | Hit::Update => return Some(hit),
             Hit::Group(g) => {
                 if let Some(x) = self.groups.iter_mut().find(|x| x.id == g) {
                     x.folded = !x.folded;
@@ -7865,9 +7880,9 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
             (t("menu.file_windows").into(), String::new(), save::on()),
             (format!("{}…", t("apps.title")), String::new(), false),
         ],
-        _ => vec![(t("menu.about").into(), String::new(), false)],
+        _ => vec![(t("menu.about").into(), String::new(), false), (format!("{}…", t("menu.check_updates")), String::new(), false), (t("menu.auto_updates").into(), String::new(), crate::update::prefs().check)],
     };
-    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2..=4), items, false) else { return };
+    let Some(k) = popup(main, p.x, p.y, top.y, r.right - r.left, matches!(menu, 2..=5), items, false) else { return };
     match (menu, k) {
         (0, 0) => act(Act::Open),
         (0, 1) => act(Act::Reveal),
@@ -7959,8 +7974,39 @@ unsafe fn menu_bar_once(main: HWND, menu: usize) {
         }
         (4, 4) => apps::open(main),
         (5, 0) => show_about(main),
+        (5, 1) => check_updates(main),
+        (5, 2) => {
+            // a toggle: off, no look and no icon; on, a look now
+            if crate::update::prefs().check {
+                crate::update::set_prefs(|p| p.check = false);
+                with(|u| {
+                    u.layout();
+                    u.invalidate();
+                });
+            } else {
+                check_updates(main);
+            }
+        }
         _ => {}
     }
+}
+
+/// Help > Check for updates: looks now (and turns checking back on); the answer comes as WM_UPDATE.
+unsafe fn check_updates(main: HWND) {
+    crate::update::set_prefs(|p| {
+        p.check = true;
+        p.skip.clear();
+        p.snooze_until = 0;
+    });
+    let hw = main as isize;
+    std::thread::spawn(move || {
+        let found = match crate::update::check() {
+            crate::update::Found::Newer => 1,
+            crate::update::Found::Current => 2,
+            crate::update::Found::Failed => 3,
+        };
+        crate::update::post(hw, WM_UPDATE, found);
+    });
 }
 
 /// Help > About: just the version, like any small utility's about box.
@@ -8216,6 +8262,19 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             preview::got_pic(&p, png);
             return 0;
         }
+        WM_UPDATE => {
+            with(|u| {
+                u.layout();
+                u.invalidate();
+            });
+            match wp {
+                1 => upd::open(h),
+                2 => _ = MessageBoxW(h, wz(&t("update.current").replace("{v}", &crate::update::current())).as_ptr(), wz("Mosaic").as_ptr(), MB_OK | MB_ICONINFORMATION),
+                3 => _ = MessageBoxW(h, wz(t("update.unreachable")).as_ptr(), wz("Mosaic").as_ptr(), MB_OK | MB_ICONINFORMATION),
+                _ => {}
+            }
+            return 0;
+        }
         WM_INSTALLED => {
             with(|u| {
                 u.backend = SearchBackend::detect();
@@ -8244,6 +8303,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 Some(Hit::SaveOk) => save::commit(h),
                 Some(Hit::SaveCancel) => save::cancel(h),
                 Some(Hit::SaveWin) => save::give_back(h),
+                Some(Hit::Update) => upd::open(h),
                 Some(Hit::TabList) => {
                     if let Some(r) = with(|u| u.hits.iter().find(|x| x.1 == Hit::TabList).map(|x| x.0)).flatten() {
                         tab_list_menu(h, r);
@@ -8420,12 +8480,13 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         // menu does, and the click goes no further (no beep)
         WM_SETCURSOR if (l & 0xffff) as u16 == HTERROR as u16
             && matches!((l >> 16) as u32 & 0xffff, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
-            && themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).or(help::hwnd()).is_some() =>
+            && themes::hwnd().or(apps::hwnd()).or(icons::hwnd()).or(help::hwnd()).or(upd::hwnd()).is_some() =>
         {
             themes::dismiss();
             apps::dismiss();
             icons::dismiss();
             help::dismiss();
+            upd::dismiss();
             return 1;
         }
         WM_SETCURSOR if (l & 0xffff) as u32 == HTCLIENT && with(|u| {
@@ -8673,22 +8734,24 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 1;
         }
         WM_CHAR if wp >= 32 => {
-            // typing while the list has focus goes to the search box, at the end of what's there. With one item
-            // selected it looks inside that folder (or the selected file's): the folder goes into the box first.
-            let Some((edit, dir)) = withp(h, |u| {
-                let one = (u.sel.count() == 1).then(|| u.sel.iter().next().and_then(|i| u.get(i))).flatten();
-                let dir = one.and_then(|r| if r.is_dir { Some(r.path.clone()) } else { std::path::Path::new(&r.path).parent().map(|d| d.to_string_lossy().into_owned()) });
-                (u.edit, dir)
-            }) else {
+            // typing while the list has focus goes to the search box, whatever is selected:
+            //  - All / a search: at the end of what's there
+            //  - a folder listing (`child:"D"`): after it, as a word narrowing that folder (not descending into subfolders)
+            //  - Home, Recent, This PC… (`home:` takes no words): replaces it, so it becomes a search of everything
+            let Some((edit, list, folder)) = withp(h, |u| (u.edit, list_of(&u.args.q).is_some(), u.here().is_some())) else {
                 return 0;
             };
-            match dir {
-                Some(d) => {
-                    withp(h, |u| u.search_in(&d));
-                }
-                None => {
-                    SetFocus(edit);
-                    SendMessageW(edit, 0x00B1, GetWindowTextLengthW(edit) as usize, GetWindowTextLengthW(edit) as isize); // EM_SETSEL: caret at the end
+            if list {
+                SetWindowTextW(edit, wz("").as_ptr());
+            }
+            SetFocus(edit);
+            let n = GetWindowTextLengthW(edit);
+            SendMessageW(edit, 0x00B1, n as usize, n as isize); // EM_SETSEL: caret at the end
+            if folder && !list {
+                let mut b = vec![0u16; n as usize + 1];
+                GetWindowTextW(edit, b.as_mut_ptr(), n + 1);
+                if b[..n as usize].last() == Some(&(b'"' as u16)) {
+                    SendMessageW(edit, WM_CHAR, ' ' as usize, 1); // `child:"D"` + word needs a gap
                 }
             }
             SendMessageW(edit, WM_CHAR, wp, l);

@@ -1,7 +1,7 @@
 ﻿; Mosaic installer. Build everything with ..\build.ps1 (it runs cargo, then ISCC on this file).
 ; One UAC prompt at install: the app goes to Program Files and the background index service is installed and
 ; started by the installer itself, so nothing is left for the user to set up.
-#define Version "1.0.0"
+#define Version "1.1.0"
 
 [Setup]
 AppId={{6B0A8E52-3F0B-4C57-9B7E-7E5D2A1C4F10}
@@ -59,6 +59,8 @@ Filename: "{app}\mosaic.exe"; Parameters: "--svc-setup"; Flags: runhidden waitun
 ; keep a taskbar pin from the old install working
 Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -Command ""$l=Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'; Get-ChildItem $l -Filter 'Mosaic*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {{ $s=(New-Object -ComObject WScript.Shell).CreateShortcut($_.FullName); $s.TargetPath='{app}\mosaic.exe'; $s.IconLocation='{app}\mosaic.exe,0'; $s.Save() }"""; Flags: runhidden runasoriginaluser
 Filename: "{app}\mosaic.exe"; Description: "Launch Mosaic"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; started by Mosaic's own updater (Setup.exe /SILENT /RELAUNCH=1): it was closed to be replaced
+Filename: "{app}\mosaic.exe"; Flags: nowait postinstall skipifnotsilent runasoriginaluser; Check: Relaunch
 
 [UninstallRun]
 Filename: "powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -Command ""try {{ Remove-MpPreference -ExclusionProcess '{app}\mosaic-index.exe' -ErrorAction Stop } catch {{ }"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveDefenderExclusion"
@@ -74,6 +76,11 @@ Type: files; Name: "{app}\icons.txt"
 Type: dirifempty; Name: "{app}"
 
 [Code]
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 procedure Kill(const Image: String);
 var R: Integer;
 begin
