@@ -289,4 +289,8 @@ The NTFS engine (`application/`, `infrastructure/`) is adapted from **AllTheThin
 Full-text search by **[tantivy](https://github.com/quickwit-oss/tantivy)**. Inspired by the legendary **[Everything](https://www.voidtools.com)** by voidtools.
 See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for all licenses.
 
+## 📄 License
+
+[MIT](LICENSE).
+
 <p align="center"><sub>Made with Rust, for people with too many files.</sub></p>
