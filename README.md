@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="docs/banner.svg" alt="Mosaic, a fast file explorer and instant file search for Windows: every file on your PC, before you finish typing" width="100%">
+  <img src="docs/hero.svg" alt="Mosaic, a fast file explorer and instant file search for Windows: every file on your PC, before you finish typing. An animated tour of a made-up gamer's PC, full of Elden Ring and Minecraft files: searching 2.5 million files as you type, previews of spreadsheets, audio, PDF, video and images, search inside files and by metadata, list, grid and Windows-style views, merging windows into tabs, dragging tabs onto one another to split a tab into several folders, and live theme switching" width="100%">
+  <br><sub><i>Animated illustration of the real interface, on a made-up gamer's PC. Elden Ring and Minecraft are trademarks of their respective owners; Mosaic is not affiliated with them.</i></sub>
 </p>
 
 <p align="center">
@@ -10,6 +11,7 @@
 </p>
 
 <p align="center">
+  <b>⚡ Blazingly fast. Tiny memory. Instant search.</b><br>
   <b>Mosaic</b> is a fast file explorer for Windows 10 and 11, built around a search engine: an Explorer replacement and an alternative to Everything.<br>
   It reads your NTFS drives straight from the Master File Table,
   keeps up with every change through the USN journal, and answers searches across <b>millions of files in milliseconds</b>.<br>
@@ -27,6 +29,51 @@
 
 ---
 
+## 🚀 Why Mosaic
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+**Type, and it's there.**
+Every file on every NTFS drive, searched and ranked in about 12 ms. No indexing wait, no spinner, no "searching…". Results change as you type, and files you just saved are already in.
+
+</td>
+<td width="33%" valign="top">
+
+**Search inside your files, too.**
+Text, code, Word, Excel, PowerPoint and PDF, in the same box as filenames. Everything-style syntax, regex, dates, sizes, camera models and duplicates, all in one query.
+
+</td>
+<td width="33%" valign="top">
+
+**It replaces Explorer, not just sits next to it.**
+Folders, drives, <kbd>Win</kbd>+<kbd>E</kbd> and every Save / Open window in every program open in Mosaic. Switch it off in one click, and uninstalling gives it all back.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Small, on purpose.**
+One 9.5 MB native app. No Electron, no web view, no GUI framework. It starts in under half a second and the window sits around 50 MB.
+
+</td>
+<td valign="top">
+
+**Gentle on your SSD.**
+A 24-byte record per file, a compressed cache that loads in one read, and changes appended to a log only when something changed. No rescans, no constant writing.
+
+</td>
+<td valign="top">
+
+**Yours to keep.**
+Free, open source, MIT. 75 languages, 16 themes, updates announced in the app, and nothing sent anywhere except one release check against GitHub.
+
+</td>
+</tr>
+</table>
+
 ## ⚡ By the numbers
 
 Measured on a Windows 11 PC with a 1 TB NVMe system drive. The times are median round trips to the index service.
@@ -38,11 +85,9 @@ Measured on a Windows 11 PC with a 1 TB NVMe system drive. The times are median 
 | **0.3 ms** | to fetch the next page of results |
 | **24 bytes** | per file or folder in the name index |
 | **0** | rescans after startup: changes stream in from the USN journal |
-
-<p align="center">
-  <img src="docs/window.svg" alt="Mosaic window: tabs, places sidebar, a photo folder in grid view and the preview pane (illustration with made-up files)" width="100%">
-  <br><sub><i>Illustration with made-up files</i></sub>
-</p>
+| **< 0.4 s** | from launch to a window on screen |
+| **≈ 50 MB** | of memory for the window, with the index in a separate service |
+| **9.5 MB** | for the whole app: native Win32 and Direct2D, no browser engine, no GUI framework |
 
 ## ✨ Features
 
