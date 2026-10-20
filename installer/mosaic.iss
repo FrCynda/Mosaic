@@ -1,7 +1,7 @@
 ﻿; Mosaic installer. Build everything with ..\build.ps1 (it runs cargo, then ISCC on this file).
 ; One UAC prompt at install: the app goes to Program Files and the background index service is installed and
 ; started by the installer itself, so nothing is left for the user to set up.
-#define Version "1.1.0"
+#define Version "1.2.0"
 
 [Setup]
 AppId={{6B0A8E52-3F0B-4C57-9B7E-7E5D2A1C4F10}

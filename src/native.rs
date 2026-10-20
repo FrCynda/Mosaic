@@ -240,6 +240,8 @@ pub(super) unsafe fn erase(h: HWND, dc: WPARAM) -> LRESULT {
     DeleteObject(b);
     1
 }
+// The main window has a frame on screen (its pixels not let go of while minimized): it needs no erasing.
+thread_local!(static MAIN_DRAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 /// 0xRRGGBB as a GDI COLORREF
 const fn gdi(c: u32) -> u32 {
     ((c & 0xff) << 16) | (c & 0xff00) | ((c >> 16) & 0xff)
@@ -1141,6 +1143,9 @@ struct Ui {
     edit_font: HFONT,
     naming: Option<usize>,                          // the tab whose title is being typed over (see `TA::Rename`)
     name_slot: std::cell::Cell<Option<(RECT, u32)>>, // where its title was last drawn, and on what
+    seg_of: std::cell::Cell<Option<usize>>,          // the tab whose face is being drawn (none: a closing one's)
+    seg_rs: RefCell<Vec<(usize, RECT, usize)>>,      // where a split tab's pane names were drawn: tab, box, which name
+    seg_hot: Option<(usize, usize)>,                 // the one pointed at (a middle-click closes its pane)
     backend: SearchBackend,
     jobs: mpsc::Sender<Job>,
     args: SearchArgs,  // what the controls say
@@ -1831,6 +1836,9 @@ unsafe fn window(args: Vec<String>) {
             edit_font: edit_font(scale),
             naming: None,
             name_slot: std::cell::Cell::new(None),
+            seg_of: std::cell::Cell::new(None),
+            seg_rs: RefCell::new(Vec::new()),
+            seg_hot: None,
             backend,
             jobs: worker(main),
             shown: args.clone(),
@@ -3260,6 +3268,37 @@ impl Ui {
     fn close_tab(&mut self, k: usize) {
         self.drop_tab(k, true);
     }
+    /// Middle-click on tab `k` at (x, y): over one of a split tab's names, that pane closes; elsewhere the tab.
+    fn close_tab_at(&mut self, k: usize, x: i32, y: i32) {
+        let seg = self.seg_rs.borrow().iter().find(|s| s.0 == k && inside(&s.1, x, y)).map(|s| s.2);
+        let n = match &self.tabs[k].o.asleep {
+            Some((r, _)) => r.leaves().len(),
+            None => self.tabs[k].root.leaves().len(),
+        };
+        match seg {
+            None => self.close_tab(k),
+            Some(3) if n > 4 => {} // "+N": several panes, none in particular
+            Some(i) if k == self.cur => {
+                let id = self.tabs[k].root.leaves()[i];
+                self.close_pane(id);
+            }
+            Some(i) => {
+                // a tab not shown: the pane simply goes, no closing to watch
+                self.wake(k);
+                let t = &mut self.tabs[k];
+                let id = t.root.leaves()[i];
+                if !t.root.detach(id) {
+                    return self.close_tab(k);
+                }
+                if t.focus == id {
+                    t.focus = t.root.leaves()[0];
+                }
+                self.drop_pane(id);
+                self.layout();
+                self.invalidate_all();
+            }
+        }
+    }
 
     // -- dragging tabs and panes
     /// A press in the main window that may become a drag: a tab, a pane's caption, a split's gap. False if it's none.
@@ -4366,6 +4405,7 @@ impl Ui {
     fn idle(&mut self) {
         if unsafe { IsIconic(self.main) } != 0 {
             self.cm.release();
+            MAIN_DRAWN.set(false);
             for id in 0..self.panes.len() {
                 if id == self.id || self.panes[id].is_some() {
                     self.with_pane(id, |u| u.cl.release());
@@ -8031,11 +8071,15 @@ unsafe fn offer_install(main: HWND) {
 // ---- window procedures ---------------------------------------------------------------------------------------
 unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> LRESULT {
     match m {
+        // once drawn, its frame stays on screen till the paint that follows redraws all of it: a fill first would
+        // show the bare background over the bars for a moment (a tab dropped into another erased the whole window)
+        WM_ERASEBKGND if MAIN_DRAWN.get() => return 1,
         WM_ERASEBKGND => return erase(h, wp),
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             BeginPaint(h, &mut ps);
             with(|u| u.paint_main(ps.hdc, &ps.rcPaint));
+            MAIN_DRAWN.set(true);
             EndPaint(h, &ps);
             if CLOAKED.get() {
                 // the panes are windows of their own: drawn now, then the whole shows at once
@@ -8335,10 +8379,11 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             return 0;
         }
         WM_MBUTTONUP => {
-            // middle-click on a tab (or a pane's caption) closes it, as in a browser
+            // middle-click on a tab (or a pane's caption) closes it, as in a browser; on a split tab's name, that pane
             let (x, y) = xy(l);
             with(|u| match u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1) {
-                Some(Hit::Tab(k) | Hit::TabClose(k)) if !u.tabs[k].o.pinned => u.close_tab(k),
+                Some(Hit::Tab(k)) if !u.tabs[k].o.pinned => u.close_tab_at(k, x, y),
+                Some(Hit::TabClose(k)) if !u.tabs[k].o.pinned => u.close_tab(k),
                 Some(Hit::Pane(id) | Hit::PaneClose(id)) => u.close_pane(id),
                 _ => {}
             });
@@ -8426,8 +8471,13 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
             with(|u| {
                 let hot = u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1).filter(|h| *h != Hit::Search);
-                if hot != u.hot {
+                let seg = match hot {
+                    Some(Hit::Tab(k)) => u.seg_rs.borrow().iter().find(|s| s.0 == k && inside(&s.1, x, y)).map(|s| (k, s.2)),
+                    _ => None,
+                };
+                if hot != u.hot || seg != u.seg_hot {
                     u.hot = hot;
+                    u.seg_hot = seg;
                     InvalidateRect(h, null(), 0);
                     u.card_hover();
                 }
@@ -8440,6 +8490,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         WM_MOUSELEAVE => {
             with(|u| {
                 u.hot = None;
+                u.seg_hot = None;
                 u.set_toolbar_tip();
                 u.card_close();
             });

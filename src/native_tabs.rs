@@ -385,6 +385,16 @@ fn fair(want: &[i32], room: i32) -> Vec<i32> {
     }
     out
 }
+/// `ws` grown to fill `room`: what's to spare shared evenly.
+fn spread(mut ws: Vec<i32>, room: i32) -> Vec<i32> {
+    let (n, spare) = (ws.len() as i32, room - ws.iter().sum::<i32>());
+    if n > 0 && spare > 0 {
+        for (j, w) in ws.iter_mut().enumerate() {
+            *w += spare / n + ((j as i32) < spare % n) as i32;
+        }
+    }
+    ws
+}
 
 /// How a tab is drawn: worked out from it and the prefs, also kept by a closing tab while it folds away.
 pub(super) struct Face {
@@ -1482,6 +1492,7 @@ impl Ui {
         }
         let lit = |j: usize| matches!(self.hot, Some(Hit::Tab(i) | Hit::TabClose(i)) if i == j);
         let order: Vec<usize> = (0..self.tabs.len()).filter(|&k| k != self.cur).chain([self.cur]).collect();
+        self.seg_rs.borrow_mut().clear();
         for k in order {
             if dragged == Some(k) || self.folded_away(k) || self.slot_rs.get(k).is_none() {
                 continue;
@@ -1498,7 +1509,9 @@ impl Ui {
                 1 => Some(hot(Hit::TabClose(k))),
                 _ => near.then_some(hot(Hit::TabClose(k))),
             };
+            self.seg_of.set(Some(k));
             self.draw_face(r, a, &self.face(k), on, near, sep, close);
+            self.seg_of.set(None);
         }
         // a split tab's panes, under it (left strip)
         for &(r, h) in &self.hits {
@@ -1670,16 +1683,29 @@ impl Ui {
                     l.push_str(&name[fc.name.len()..]); // the count and marks, after the last
                 }
                 let gap = px(13);
-                let room = (end - tx - badge - gap * (segs.len() as i32 - 1)).max(1);
-                let ws = fair(&segs.iter().map(|s| self.gfx.width(s, font) + 1).collect::<Vec<_>>(), room);
+                // up to where the × goes, shown or not: the names don't shift as it comes and goes on hover
+                let room = (x_r.left - px(2) - tx - badge - gap * (segs.len() as i32 - 1)).max(1);
+                let want: Vec<i32> = segs.iter().map(|s| self.gfx.width(s, font) + 1).collect();
+                let ws = spread(fair(&want, room), room);
                 let mut x = tx;
                 for (i, (s, sw)) in segs.iter().zip(ws).enumerate() {
                     if i > 0 {
                         let dx = x - gap / 2 - 1;
                         cv.fill(&RECT { left: dx, top: cy - px(6), right: dx + 1, bottom: cy + px(6) }, theme().line, a as f32);
                     }
-                    if let Some(tl) = self.gfx.layout(&w(s), font, sw.max(1) as f32, flh as f32) {
-                        cv.text_a(&tl, x, ty, if near { theme().text } else { theme().muted }, ta);
+                    // pointed at: this name's pane is the one a middle-click closes (not "+N", which is several)
+                    let lit = self.seg_of.get().is_some_and(|k| self.seg_hot == Some((k, i))) && !(i == 3 && fc.panes.len() > 4);
+                    if lit {
+                        let b = RECT { left: x - px(5), top: cy - flh / 2 - px(3), right: x + sw + px(5), bottom: cy + flh / 2 + px(3) };
+                        cv.rrect_a(&b, rad(5.0), Some(theme().accent), None, (0.22 * a) as f32);
+                    }
+                    // centred in its share of the tab, so a short name leaves no gap at the end
+                    let tw = want[i].min(sw);
+                    if let Some(tl) = self.gfx.layout(&w(s), font, tw.max(1) as f32, flh as f32) {
+                        cv.text_a(&tl, x + (sw - tw) / 2, ty, if near || lit { theme().text } else { theme().muted }, ta);
+                    }
+                    if let Some(k) = self.seg_of.get() {
+                        self.seg_rs.borrow_mut().push((k, RECT { left: x - gap / 2, top: r.top, right: x + sw + gap / 2, bottom: r.bottom }, i));
                     }
                     x += sw + gap;
                 }
@@ -3397,6 +3423,8 @@ mod tests {
         assert_eq!(fair(&[30, 200], 150), vec![30, 120]); // the short one whole, the long one cut
         assert_eq!(fair(&[30, 40], 150), vec![30, 40]);
         assert_eq!(fair(&[200, 200], 100), vec![50, 50]);
+        assert_eq!(spread(vec![30, 40], 151), vec![71, 80]); // short names share what's to spare
+        assert_eq!(spread(vec![30, 120], 150), vec![30, 120]);
         let p = |n: usize| (0..n).map(|i| (i, format!("d{i}"))).collect::<Vec<_>>();
         assert_eq!(seg_names(&p(4)), ["d0", "d1", "d2", "d3"]);
         assert_eq!(seg_names(&p(6)), ["d0", "d1", "d2", "+3"]);
