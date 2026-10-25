@@ -780,6 +780,7 @@ enum Hit {
     Col(usize, usize), // a pane's column header: (pane, column)
     ColEdge(usize, usize), // … the gap after a column: drag to resize it, double-click for the default widths
     Search,
+    CopyPath, // the search box's right end, a folder listed: copies its path
     Lang,  // no button of its own now: names the language picker `drop_menu` opens from Tools
     Menu(usize), // the File/Edit/View/Search strip above the tab row
     Back,        // toolbar: previous folder / search (Alt+Left, mouse back button)
@@ -4728,6 +4729,7 @@ impl Ui {
             Hit::PaneClose(_) => "Ctrl+W".into(),
             Hit::Gutter(_) | Hit::ColEdge(..) => String::new(),
             Hit::Split => t("tip.split").into(),
+            Hit::CopyPath => t("menu.copy_path").into(),
             Hit::Search | Hit::SaveName | Hit::SaveType | Hit::SaveOk | Hit::SaveCancel | Hit::SaveWin => String::new(),
             Hit::Menu(i) => menu_bar_labels().get(i).copied().unwrap_or_default().into(),
             // in full: the tab may cut it short (its card says more)
@@ -5401,6 +5403,9 @@ impl Ui {
                 right_edge = r.left - px(6);
             }
             self.search_box = RECT { left: search_left, top, right: right_edge.max(search_left + min_search), bottom: top + box_h };
+            // its right end always kept for the copy button, shown while a folder is listed: no relayout when that changes
+            let cs = box_h - px(6);
+            hits.push((RECT { left: self.search_box.right - px(3) - cs, top: top + px(3), right: self.search_box.right - px(3), bottom: top + px(3) + cs }, Hit::CopyPath));
             hits.push((self.search_box, Hit::Search));
             hits.push((filter, Hit::Filter));
             let sb = self.search_box;
@@ -5410,7 +5415,7 @@ impl Ui {
             GetTextMetricsW(dc, &mut tm);
             SelectObject(dc, old);
             ReleaseDC(self.edit, dc);
-            MoveWindow(self.edit, sb.left + px(8), sb.top + (box_h - tm.tmHeight) / 2, (sb.right - sb.left - px(16)).max(1), tm.tmHeight, 1);
+            MoveWindow(self.edit, sb.left + px(8), sb.top + (box_h - tm.tmHeight) / 2, (sb.right - sb.left - px(14) - cs).max(1), tm.tmHeight, 1);
             // status bar along the bottom (text on the left). At its right, like Explorer's and Everything's:
             // the active filter, then the view controls. Right to left: [List|Grid], 10, (grid: ▲, sort), names, 10, filter
             let bar_h = lh + px(12);
@@ -5815,6 +5820,11 @@ impl Ui {
             Hit::Search => unsafe {
                 SetFocus(self.edit);
             },
+            Hit::CopyPath => {
+                if self.here().is_some_and(|d| unsafe { clip_text(self.main, &d) }) {
+                    self.flash(t("status.path_copied").into());
+                }
+            }
             Hit::Tag => return None, // double-click only
             Hit::Split => {
                 if !inside(&self.grip, x, y) {
@@ -5916,6 +5926,16 @@ impl Ui {
         let sb = self.search_box;
         let focused = unsafe { GetFocus() } == self.edit;
         cv.rrect(&sb, rad(4.0), Some(theme().bg), Some(if focused { theme().accent } else { theme().line }));
+        if let (Some(&(r, h)), true) = (self.hits.iter().find(|x| x.1 == Hit::CopyPath), self.here().is_some()) {
+            if hot(h) {
+                cv.rrect(&r, rad(4.0), Some(theme().hl), None);
+            }
+            // two sheets, the front one over the back one's corner
+            let (c, s, o) = (if hot(h) { theme().text } else { theme().muted }, px(9), px(3));
+            let (x, y) = ((r.left + r.right - s - o) / 2, (r.top + r.bottom - s - o) / 2);
+            cv.rrect(&RECT { left: x, top: y, right: x + s, bottom: y + s }, rad(1.5), None, Some(c));
+            cv.rrect(&RECT { left: x + o, top: y + o, right: x + o + s, bottom: y + o + s }, rad(1.5), Some(if hot(h) { theme().hl } else { theme().bg }), Some(c));
+        }
         // filter dropdown, status bar filter and view controls
         for &(r, h) in &self.hits {
             if !cv.shows(&r) {
@@ -8470,7 +8490,7 @@ unsafe extern "system" fn main_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
                 return 0;
             }
             with(|u| {
-                let hot = u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1).filter(|h| *h != Hit::Search);
+                let hot = u.hits.iter().find(|(r, _)| inside(r, x, y)).map(|h| h.1).filter(|h| *h != Hit::Search && (*h != Hit::CopyPath || u.here().is_some()));
                 let seg = match hot {
                     Some(Hit::Tab(k)) => u.seg_rs.borrow().iter().find(|s| s.0 == k && inside(&s.1, x, y)).map(|s| (k, s.2)),
                     _ => None,

@@ -22,6 +22,7 @@ use super::{mix, png_pixels, put, shell, t, theme, wz, xy, MItem};
 
 const WM_ICON: u32 = WM_APP + 10;
 const WM_KIDS: u32 = WM_APP + 11; // lParam: a boxed (place, its rows)
+const WM_PINS: u32 = WM_APP + 12; // Explorer saved its Quick access list: its pins read again
 /// Width (CSS px) of the panel, until its right edge is dragged; and how far it can be.
 pub const WIDTH: i32 = 186;
 const WIDTHS: (i32, i32) = (150, 480);
@@ -29,7 +30,7 @@ const WIDTHS: (i32, i32) = (150, 480);
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Place,
-    Pin,        // a folder pinned by the user
+    Pin,        // a folder pinned to Explorer's Quick access
     Head(u8),   // Recent files (0) / folders (1), Bookmarks (2), This PC (3), Network (4), Linux (5): its chevron
                 // folds the rows below (Bookmarks' whole row); the rest opens the place
     Child,      // a recent file or folder, a place's drive or server, under its header
@@ -54,7 +55,7 @@ pub struct Prefs {
     bars: bool,
     compact: bool,
     hidden: Vec<String>, // targets, lowercased
-    pins: Vec<String>,
+    pins: Vec<String>, // Mosaic's own pins, from before it used Quick access's: moved there once
     marks: bool,
     open_marks: bool,
     bookmarks: Vec<String>,
@@ -123,6 +124,7 @@ struct Side {
     kids: HashMap<String, Vec<(String, String)>>, // an unfolded place's rows (name, path), read when it opens
     dropping: bool, // a drag over Bookmarks: lit
     gen: u64,       // `crate::recent`'s, when its rows were read
+    moved: bool,    // Mosaic's own old pins sent to Quick access, this run (once: a pin it won't show can't loop)
 }
 
 thread_local!(static SIDE: RefCell<Option<Side>> = const { RefCell::new(None) });
@@ -168,6 +170,96 @@ fn known(id: &windows::core::GUID, label: &str) -> Option<Item> {
         CoTaskMemFree(Some(p.0 as _));
         Some(Item { space: None, kind: Kind::Place, label: label.into(), target: path?, mosaic: true, icon: String::new() })
     }
+}
+
+/// A shell item's name, as `how` spells it.
+unsafe fn item_name(it: &windows::Win32::UI::Shell::IShellItem, how: windows::Win32::UI::Shell::SIGDN) -> Option<String> {
+    let p = it.GetDisplayName(how).ok()?;
+    let s = p.to_string().ok();
+    CoTaskMemFree(Some(p.0 as _));
+    s
+}
+
+/// Explorer's Quick access entries that are folders pinned there (not its frequent ones), with their paths, in its
+/// order. COM must be up on this thread.
+unsafe fn qa_pinned() -> Vec<(windows::Win32::UI::Shell::IShellItem, String)> {
+    use windows::core::{w, Interface};
+    use windows::Win32::UI::Shell::PropertiesSystem::{PSGetPropertyKeyFromName, PROPERTYKEY};
+    use windows::Win32::UI::Shell::{BHID_EnumItems, IEnumShellItems, IShellItem, IShellItem2, SHCreateItemFromParsingName, SIGDN_FILESYSPATH};
+    let mut out = Vec::new();
+    let mut pinned = PROPERTYKEY::default();
+    let Ok(qa) = PSGetPropertyKeyFromName(w!("System.Home.IsPinned"), &mut pinned).and_then(|_| SHCreateItemFromParsingName::<_, _, IShellItem>(w!("shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}"), None)) else { return out };
+    let Ok(items) = qa.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) else { return out };
+    loop {
+        let mut one = [None];
+        let Some(it) = items.Next(&mut one, None).ok().and(one[0].take()) else { break };
+        let pin = it.cast::<IShellItem2>().and_then(|i2| i2.GetBool(&pinned)).is_ok_and(|b| b.as_bool());
+        // real folders only (not a library or the Recycle Bin)
+        if let (true, Some(path)) = (pin, item_name(&it, SIGDN_FILESYSPATH)) {
+            out.push((it, path));
+        }
+    }
+    out
+}
+
+/// The folders pinned to Explorer's Quick access (its name, path): the sidebar's pins.
+fn explorer_pins() -> Vec<(String, String)> {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        qa_pinned().into_iter().filter_map(|(it, path)| Some((item_name(&it, windows::Win32::UI::Shell::SIGDN_NORMALDISPLAY)?, path))).collect()
+    }
+}
+
+/// Pin `dirs` to Explorer's Quick access (or unpin them) with its own menu's commands, off this thread (the shell
+/// can take a moment); `watch_pins` hears of it.
+fn quick_access(dirs: Vec<String>, pin: bool) {
+    use windows::core::{s, PCWSTR};
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{BHID_SFUIObject, IContextMenu, IShellItem, SHCreateItemFromParsingName, CMF_NORMAL, CMINVOKECOMMANDINFO};
+    std::thread::spawn(move || unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let qa = if pin { Vec::new() } else { qa_pinned() };
+        for d in dirs {
+            // unpinning is on Quick access's entry for the folder: the folder's own menu doesn't offer it
+            let item = if pin { SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wz(&d).as_ptr()), None).ok() } else { qa.iter().find(|x| x.1.eq_ignore_ascii_case(&d)).map(|x| x.0.clone()) };
+            let Some(cm) = item.and_then(|i| i.BindToHandler::<_, IContextMenu>(None, &BHID_SFUIObject).ok()) else { continue };
+            let menu = CreatePopupMenu();
+            if cm.QueryContextMenu(windows::Win32::UI::WindowsAndMessaging::HMENU(menu as _), 0, 1, 0x7fff, CMF_NORMAL).is_ok() {
+                let ci = CMINVOKECOMMANDINFO { cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32, lpVerb: if pin { s!("pintohome") } else { s!("unpinfromhome") }, nShow: SW_SHOWNORMAL, ..Default::default() };
+                let _ = cm.InvokeCommand(&ci);
+            }
+            DestroyMenu(menu);
+        }
+    });
+}
+
+/// Until panel `hw` is gone: a WM_PINS each time Explorer saves its Quick access list (pins and frequent folders).
+fn watch_pins(hw: isize) {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification, FILE_NOTIFY_CHANGE_LAST_WRITE};
+    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+    let dir = recent_dir() + r"\AutomaticDestinations";
+    let file = std::path::Path::new(&dir).join("f01b4d95cf55d32a.automaticDestinations-ms"); // Explorer's own jump list
+    std::thread::spawn(move || unsafe {
+        let h = FindFirstChangeNotificationW(wz(&dir).as_ptr(), 0, FILE_NOTIFY_CHANGE_LAST_WRITE);
+        if h == INVALID_HANDLE_VALUE {
+            return;
+        }
+        // other apps' lists live there too: only Explorer's counts
+        let stamp = || std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+        let mut last = stamp();
+        while WaitForSingleObject(h, INFINITE) == 0 && FindNextChangeNotification(h) != 0 {
+            let now = stamp();
+            if now != last {
+                last = now;
+                if PostMessageW(hw as HWND, WM_PINS, 0, 0) == 0 {
+                    break; // the window is gone
+                }
+            }
+        }
+        FindCloseChangeNotification(h);
+    });
 }
 
 /// Windows' Recent folder: its clock icon is the Recent lists'.
@@ -243,7 +335,10 @@ fn build(p: &Prefs, drv: &[Item], kids: &HashMap<String, Vec<(String, String)>>)
     if let Some(sc) = known(&FOLDERID_Screenshots, "").filter(|i| std::path::Path::new(&i.target).is_dir()) {
         v[2].target = sc.target;
     }
-    v.extend(p.pins.iter().map(|d| Item { space: None, kind: Kind::Pin, label: base(d), target: d.clone(), mosaic: true, icon: String::new() }));
+    // the folders pinned to Explorer's Quick access (but those shown below anyway)
+    let below = if p.folders { special_dirs() } else { HashSet::new() };
+    let qa = kids.get("qa:").into_iter().flatten().filter(|(_, d)| !below.contains(&d.to_lowercase()));
+    v.extend(qa.map(|(label, d)| Item { space: None, kind: Kind::Pin, label: label.clone(), target: d.clone(), mosaic: true, icon: String::new() }));
     if p.marks {
         // the star of Explorer's Favorites
         let star = "shell:::{323CA680-C24D-4099-B94D-446DD2D7249E}".into();
@@ -343,6 +438,7 @@ pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
         RegisterClassExW(&wc);
     });
     let hwnd = CreateWindowExW(0, class.as_ptr(), null(), WS_CHILD, 0, 0, 10, 10, parent, null_mut(), inst, null());
+    watch_pins(hwnd as isize);
     if let Ok(gfx) = Gfx::new(scale, crate::i18n::rtl()) {
         let prefs: Prefs = serde_json::from_str(prefs).unwrap_or_default();
         let drv = drives();
@@ -357,6 +453,7 @@ pub unsafe fn create(parent: HWND, scale: f64, prefs: &str) -> HWND {
             kids: HashMap::new(),
             dropping: false,
             gen: crate::recent::generation(),
+            moved: false,
             cur_dir: None,
             png: HashMap::new(),
             bmp: HashMap::new(),
@@ -501,6 +598,9 @@ impl Side {
 
     /// Read what each unfolded place holds, off this thread (a network can take a while); rebuilt when it's in.
     fn ask_kids(&mut self) {
+        if !self.kids.contains_key("qa:") {
+            self.ask_pins();
+        }
         for (k, q) in ["pc:", "net:", "linux:"].into_iter().enumerate() {
             if !self.prefs.places || !self.prefs.open_places[k] {
                 self.kids.remove(q); // read again when unfolded again
@@ -515,6 +615,18 @@ impl Side {
                 unsafe { PostMessageW(hw as HWND, WM_KIDS, 0, Box::into_raw(b) as isize) };
             });
         }
+    }
+
+    /// Explorer's pinned folders, read off this thread (the shell can take a moment); in as the place "qa:".
+    fn ask_pins(&mut self) {
+        if !self.asked.insert("kids:qa:".into()) {
+            return;
+        }
+        let hw = self.hwnd as isize;
+        std::thread::spawn(move || {
+            let b: Box<(String, Vec<(String, String)>)> = Box::new(("qa:".into(), explorer_pins()));
+            unsafe { PostMessageW(hw as HWND, WM_KIDS, 0, Box::into_raw(b) as isize) };
+        });
     }
 
     /// Bookmarks' rows (header to last), in this window's coordinates, if screen point `x, y` is over them.
@@ -879,14 +991,33 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             }
             return 0;
         }
+        WM_PINS => {
+            with(|s| s.ask_pins());
+            return 0;
+        }
         WM_KIDS => {
             let p = l as *mut (String, Vec<(String, String)>);
             let got = with(|s| {
                 let (q, rows) = *Box::from_raw(p);
                 s.asked.remove(&format!("kids:{q}"));
-                s.kids.insert(q, rows);
-                s.rebuild();
+                // Mosaic's own old pins: forgotten once Quick access shows them, sent there (once a run) till then
+                let n = s.prefs.pins.len();
+                if q == "qa:" {
+                    s.prefs.pins.retain(|d| !rows.iter().any(|r| r.1.eq_ignore_ascii_case(d)));
+                    if !s.moved && !s.prefs.pins.is_empty() {
+                        s.moved = true;
+                        quick_access(s.prefs.pins.clone(), true);
+                    }
+                }
+                if s.kids.get(&q) != Some(&rows) {
+                    s.kids.insert(q, rows);
+                    s.rebuild();
+                }
+                s.prefs.pins.len() != n
             });
+            if got == Some(true) {
+                save(); // outside the panel's borrow: the settings ask it for its choices
+            }
             if got.is_none() {
                 PostMessageW(h, m, wp, l); // busy: try again in a moment
             }
@@ -1004,11 +1135,11 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
     }
     let mut c = POINT { x, y };
     ScreenToClient(h, &mut c);
-    let Some((it, p, cur)) = with(|s| {
+    let Some((it, p, cur, qa)) = with(|s| {
         let i = s.item_at(c.x, c.y);
         s.hot = i; // the row the menu is for stays lit
         InvalidateRect(s.hwnd, null(), 0);
-        (i.map(|i| s.items[i].clone()), s.prefs.clone(), s.cur_dir.clone())
+        (i.map(|i| s.items[i].clone()), s.prefs.clone(), s.cur_dir.clone(), s.kids.get("qa:").cloned().unwrap_or_default())
     }) else {
         return;
     };
@@ -1040,11 +1171,12 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
             v.push(e(t("menu.copy_path"), false, A::Copy));
         }
         v.push(MItem::default());
-        if real && dir && !matches!(it.kind, Kind::Pin | Kind::Drive) && !p.pins.iter().any(|d| d.eq_ignore_ascii_case(&it.target)) {
-            v.push(e(t("side.pin"), false, A::Pin(it.target.clone())));
+        if real && dir && it.kind != Kind::Drive {
+            let pinned = qa.iter().any(|(_, d)| d.eq_ignore_ascii_case(&it.target));
+            v.push(if pinned { e(t("side.unpin"), false, A::Unpin) } else { e(t("side.pin"), false, A::Pin(it.target.clone())) });
         }
         match it.kind {
-            Kind::Pin => v.push(e(t("side.unpin"), false, A::Unpin)),
+            Kind::Pin => {}
             Kind::Mark => v.push(e(t("side.unmark"), false, A::Unmark)),
             Kind::Head(2) => v.push(e(t("side.hide"), false, A::Show(7))),
             Kind::Child if !real || it.target.starts_with(r"\\") || it.target.len() <= 3 => {} // a place's drive or server
@@ -1059,7 +1191,7 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
         }
         v.push(MItem::default());
     }
-    if let Some(d) = cur.filter(|d| !p.pins.iter().any(|x| x.eq_ignore_ascii_case(d))) {
+    if let Some(d) = cur.filter(|d| !qa.iter().any(|(_, x)| x.eq_ignore_ascii_case(d))) {
         v.push(e(t("side.pin_current"), false, A::Pin(d)));
     }
     let mut q = p.clone();
@@ -1092,6 +1224,8 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
         A::Reveal => shell::reveal(&target),
         A::Eject => shell::item_verb(&target, "eject"),
         A::Props => shell::properties(target),
+        A::Pin(d) => quick_access(vec![d], true),
+        A::Unpin => quick_access(vec![target], false),
         A::Forget | A::Clear => {
             if matches!(a, A::Clear) {
                 crate::recent::clear();
@@ -1104,8 +1238,6 @@ unsafe fn menu(h: HWND, (mut x, mut y): (i32, i32)) {
             with(|s| {
                 let p = &mut s.prefs;
                 match a {
-                    A::Pin(d) => p.pins.push(d),
-                    A::Unpin => p.pins.retain(|d| *d != target),
                     A::Unmark => p.bookmarks.retain(|d| *d != target),
                     A::Hide => p.hidden.push(target.to_lowercase()),
                     A::Show(n) => {
