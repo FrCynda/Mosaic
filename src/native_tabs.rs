@@ -678,8 +678,8 @@ impl Ui {
     fn pane_spec(&self, p: usize) -> PaneSpec {
         of_pane!(self, p, |v| {
             let h = v.hist.borrow();
-            let skip = h.0.len().saturating_sub(50);
-            PaneSpec { q: v.args.q.clone(), hist: h.0[skip..].to_vec(), at: h.1.saturating_sub(skip), grid: v.grid, size: v.size, sort: v.args.sort.clone(), dir: v.args.dir.clone(), cat: v.args.cat.clone(), y: v.y }
+            let skip = h.0.len().saturating_sub(50).min(h.1); // 50 kept, the one on screen among them
+            PaneSpec { q: v.args.q.clone(), hist: h.0[skip..].iter().take(50).cloned().collect(), at: h.1.saturating_sub(skip), grid: v.grid, size: v.size, sort: v.args.sort.clone(), dir: v.args.dir.clone(), cat: v.args.cat.clone(), y: v.y }
         })
         .unwrap_or_default()
     }

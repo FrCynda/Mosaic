@@ -7684,7 +7684,7 @@ unsafe fn end_rename(keep: bool) {
     let to = from.with_file_name(&name);
     // never over another file (Windows' rename replaces it, unrecoverably); a change of case only is the same file
     let exact = crate::infrastructure::fileops::exact;
-    let taken = exact(&to.to_string_lossy()).exists() && !to.to_string_lossy().eq_ignore_ascii_case(&path);
+    let taken = exact(&to.to_string_lossy()).exists() && to.to_string_lossy().to_lowercase() != path.to_lowercase(); // É/é too
     preview::release(std::slice::from_ref(&path));
     let msg = match if taken { Err(std::io::Error::from_raw_os_error(183)) } else { std::fs::rename(exact(&path), exact(&to.to_string_lossy())) } {
         Ok(()) => {

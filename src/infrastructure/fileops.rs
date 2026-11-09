@@ -122,23 +122,29 @@ fn recycled_from(b: &[u8]) -> Option<(u64, String)> {
 /// Restore does: the bin's `$R…` item moved back and its `$I…` record dropped. Returns how many came back.
 pub fn restore(paths: &[String]) -> usize {
     let mut back = 0;
+    // each drive's bin read once (not once per file: undoing a 1000-file delete took half a minute): where each
+    // item came from, its newest deletion
+    let mut bins: std::collections::HashMap<String, std::collections::HashMap<String, (u64, PathBuf)>> = Default::default();
     for p in paths {
         let Some(drive) = p.get(..3).filter(|d| d.ends_with(":\\")) else { continue };
-        let want = p.to_lowercase();
-        let mut best: Option<(u64, PathBuf)> = None;
-        // only the user's own SID folder is readable: the rest are skipped
-        for sid in std::fs::read_dir(Path::new(drive).join("$Recycle.Bin")).into_iter().flatten().flatten() {
-            for e in std::fs::read_dir(sid.path()).into_iter().flatten().flatten() {
-                if !e.file_name().to_string_lossy().starts_with("$I") {
-                    continue;
-                }
-                let Some((when, from)) = std::fs::read(e.path()).ok().and_then(|b| recycled_from(&b)) else { continue };
-                if from.to_lowercase() == want && best.as_ref().is_none_or(|b| when > b.0) {
-                    best = Some((when, e.path()));
+        let bin = bins.entry(drive.to_lowercase()).or_insert_with(|| {
+            let mut best: std::collections::HashMap<String, (u64, PathBuf)> = Default::default();
+            // only the user's own SID folder is readable: the rest are skipped
+            for sid in std::fs::read_dir(Path::new(drive).join("$Recycle.Bin")).into_iter().flatten().flatten() {
+                for e in std::fs::read_dir(sid.path()).into_iter().flatten().flatten() {
+                    if !e.file_name().to_string_lossy().starts_with("$I") {
+                        continue;
+                    }
+                    let Some((when, from)) = std::fs::read(e.path()).ok().and_then(|b| recycled_from(&b)) else { continue };
+                    let b = best.entry(from.to_lowercase()).or_insert((when, e.path()));
+                    if when > b.0 {
+                        *b = (when, e.path());
+                    }
                 }
             }
-        }
-        let Some((_, info)) = best else { continue };
+            best
+        });
+        let Some((_, info)) = bin.remove(&p.to_lowercase()) else { continue };
         let item = info.with_file_name(format!("$R{}", &info.file_name().unwrap_or_default().to_string_lossy()[2..]));
         // something new took its place (or may have: one it can't look at): leave both alone
         if !matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
@@ -188,5 +194,24 @@ mod tests {
         v1.resize(24 + 520, 0);
         assert_eq!(recycled_from(&v1), Some((9, "C:\\a\\b.txt".into())));
         assert_eq!(recycled_from(&[3, 0, 0]), None);
+    }
+
+    /// Recycles 1000 files in the test folder and times putting them back (`cargo test -- --ignored restore_many`).
+    #[test]
+    #[ignore]
+    fn restore_many_is_quick() {
+        let dir = Path::new(r"C:\Users\frenc\Desktop\foldericon\test\stress\undo");
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let paths: Vec<String> = (0..1000).map(|i| dir.join(format!("u{i}.txt")).to_string_lossy().into_owned()).collect();
+        for p in &paths {
+            std::fs::write(p, "x").unwrap();
+        }
+        delete_many(&paths, true).unwrap();
+        let t = std::time::Instant::now();
+        let back = restore(&paths);
+        eprintln!("restored {back} in {:?}", t.elapsed());
+        assert_eq!(back, paths.len());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
