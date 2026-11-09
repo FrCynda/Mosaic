@@ -1801,6 +1801,9 @@ unsafe fn window(args: Vec<String>) {
         let scale = GetDpiForWindow(main) as f64 / 96.0;
         let pane = preview::create(main, scale);
         let side = side::create(main, scale, &get("sidebar"));
+        // what a screen reader calls these panes (they draw everything themselves, so have no other name)
+        SetWindowTextW(pane, wz(&t("toolbar.preview")).as_ptr());
+        SetWindowTextW(side, wz(&t("toolbar.sidebar")).as_ptr());
         // language is fixed for the process's lifetime (set from settings above, no in-app switcher), so RTL fonts
         // can be built once here rather than needing a rebuild-on-switch path.
         let rtl = crate::i18n::rtl();
@@ -2216,6 +2219,13 @@ unsafe fn dispatch(msg: &MSG) {
     if msg.message == WM_SYSKEYDOWN && msg.wParam == VK_RETURN as usize {
         // Alt+Enter: Properties, of the selection or else the folder on screen
         return act(if with(|u| u.sel.count() > 0) == Some(true) { Act::Props } else { Act::HereProps });
+    }
+    if msg.message == WM_KEYDOWN && msg.wParam == VK_TAB as usize && !key_down(VK_CONTROL) {
+        // Tab / Shift+Tab: between the search box and the list, as in Explorer (no other way there without a mouse)
+        if let Some((edit, list)) = with(|u| (u.edit, u.list)).filter(|&(e, l)| msg.hwnd == e || msg.hwnd == l) {
+            SetFocus(if msg.hwnd == edit { list } else { edit });
+            return;
+        }
     }
     if msg.message == WM_KEYDOWN {
         let r = with(|u| (msg.hwnd == u.edit || msg.hwnd == u.list).then(|| u.key(msg.wParam as u16, msg.hwnd == u.edit)).flatten()).flatten();
@@ -5030,6 +5040,21 @@ impl Ui {
         self.want_preview();
         self.linked();
         save::picked(self);
+        self.announce();
+    }
+
+    /// The focused item's name as the list's own: what a screen reader reads out (the list draws its items itself,
+    /// so it has no other way to tell one).
+    fn announce(&self) {
+        let name = self.focus.and_then(|i| self.get(i)).map(|r| String::from_utf16_lossy(&r.name)).unwrap_or_default();
+        unsafe {
+            let mut buf = [0u16; 512];
+            let n = GetWindowTextW(self.list, buf.as_mut_ptr(), buf.len() as i32) as usize;
+            if String::from_utf16_lossy(&buf[..n]) != name {
+                SetWindowTextW(self.list, wz(&name).as_ptr());
+                windows_sys::Win32::UI::Accessibility::NotifyWinEvent(0x800C, self.list, -4, 0); // EVENT_OBJECT_NAMECHANGE, OBJID_CLIENT, CHILDID_SELF
+            }
+        }
     }
 
     /// What the preview pane should show: the one selected file, else a note.
