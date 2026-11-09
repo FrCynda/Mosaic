@@ -492,7 +492,12 @@ mod cli {
         use std::os::windows::io::FromRawHandle;
         use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
         use windows_sys::Win32::Storage::FileSystem::CreateFileW;
-        use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
+        use windows_sys::Win32::System::Console::{AllocConsole, AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+        // redirected to a file or a pipe (`mosaic --cli foo > out.txt`): write there, not to a console
+        let std = GetStdHandle(STD_OUTPUT_HANDLE);
+        if !std.is_null() && std != INVALID_HANDLE_VALUE {
+            return Some(std::fs::File::from_raw_handle(std as _));
+        }
         if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
             AllocConsole();
         }
