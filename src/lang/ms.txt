@@ -361,6 +361,7 @@ apps.shift=Tahan Shift semasa tetingkap dibuka untuk mendapat tetingkap Windows,
 apps.done=Selesai
 icons.title=Ikon
 icons.folders=Folder
+icons.style=Gaya folder
 icons.type=Jenis
 icons.contents=Kandungan
 icons.both=Kedua-dua

@@ -362,6 +362,7 @@ apps.shift=Hoia avanemisel Shifti all, et saada üks kord Windowsi aken.
 apps.done=Valmis
 icons.title=Ikoonid
 icons.folders=Kaustad
+icons.style=Kaustade stiil
 icons.type=Tüüp
 icons.contents=Sisu
 icons.both=Mõlemad

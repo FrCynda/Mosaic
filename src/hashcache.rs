@@ -147,7 +147,11 @@ fn run(h: &SearchHandle) -> Result<(), String> {
 
 fn save(unsaved: &Mutex<Vec<String>>) -> Result<(), String> {
     let changed = std::mem::take(&mut *unsaved.lock());
-    crate::kvlog::save(&store(), FILES.read().as_ref().unwrap(), &changed)
+    let r = crate::kvlog::save(&store(), FILES.read().as_ref().unwrap(), &changed);
+    if r.is_err() {
+        unsaved.lock().extend(changed); // tried again next time
+    }
+    r
 }
 
 /// Read `path` once, feeding all four hashers at the same time.

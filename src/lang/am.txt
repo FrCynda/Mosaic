@@ -362,6 +362,7 @@ apps.shift=አንድ ጊዜ የWindowsን ለማግኘት ሲከፈት Shiftን 
 apps.done=ተጠናቋል
 icons.title=አዶዎች
 icons.folders=አቃፊዎች
+icons.style=የአቃፊ ቅጥ
 icons.type=ዓይነት
 icons.contents=ይዘት
 icons.both=ሁለቱም

@@ -362,6 +362,7 @@ apps.shift=Bir kez Windows'unkini almak için açılırken Shift'i basılı tutu
 apps.done=Bitti
 icons.title=Simgeler
 icons.folders=Klasörler
+icons.style=Klasör stili
 icons.type=Tür
 icons.contents=İçerik
 icons.both=İkisi de

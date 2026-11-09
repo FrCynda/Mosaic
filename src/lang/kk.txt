@@ -362,6 +362,7 @@ apps.shift=Windows терезесін бір рет алу үшін ашылға
 apps.done=Дайын
 icons.title=Белгішелер
 icons.folders=Қалталар
+icons.style=Қалта стилі
 icons.type=Түрі
 icons.contents=Мазмұны
 icons.both=Екеуі де

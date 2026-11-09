@@ -362,6 +362,7 @@ apps.shift=Bamba u-Shift ngenkathi livuleka ukuze uthole elama-Windows, kanye.
 apps.done=Kwenziwe
 icons.title=Izithonjana
 icons.folders=Amafolda
+icons.style=Isitayela samafolda
 icons.type=Uhlobo
 icons.contents=Okuqukethwe
 icons.both=Kokubili

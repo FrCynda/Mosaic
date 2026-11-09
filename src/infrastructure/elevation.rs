@@ -9,7 +9,7 @@ use std::mem::size_of;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
 use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
-use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SW_HIDE};
 
 /// `GetLastError` value when the user declines the UAC prompt.
 const ERROR_CANCELLED: u32 = 1223;
@@ -36,6 +36,7 @@ pub fn run_elevated(arg: &str) -> Result<(), String> {
     info.lpFile = file.as_ptr();
     info.lpParameters = params.as_ptr();
     info.nShow = SW_HIDE;
+    info.hwnd = unsafe { GetForegroundWindow() }; // the prompt in front, not left flashing on the taskbar
 
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         let code = unsafe { GetLastError() };

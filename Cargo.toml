@@ -25,6 +25,7 @@ md-5 = "0.10"
 crc32fast = "1.4"
 memchr = "2" # already in the tree (regex): prebuilt substring finders for name search
 zstd = { version = "0.13", default-features = false } # already in the tree (tantivy): the index cache on disk
+resvg = { version = "0.45.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

@@ -240,7 +240,8 @@ impl Matcher {
                 // User regex matches the original-case haystack (the regex crate's
                 // own case folding via `case_insensitive`).
                 kind: TextKind::Re {
-                    re: build_regex(query, case)?,
+                    // the haystack loses its accents (diacritics on): so does the expression
+                    re: build_regex(&if diacritics { strip_diacritics(query) } else { query.to_string() }, case)?,
                     on_lower: false,
                 },
             };
@@ -348,8 +349,9 @@ impl Matcher {
                     _ => path.len() > target.len() && path.starts_with(target.as_str()) && path.as_bytes()[target.len()] == b'\\',
                 }
             }
-            Pred::Empty => e.is_dir && std::fs::read_dir(e.path).map(|mut d| d.next().is_none()).unwrap_or(false),
-            Pred::Exists => std::path::Path::new(e.path).exists(),
+            // the lowercased path when that's all there is (match case off): Windows' paths ignore case
+            Pred::Empty => e.is_dir && std::fs::read_dir(if e.path.is_empty() { e.path_lower } else { e.path }).map(|mut d| d.next().is_none()).unwrap_or(false),
+            Pred::Exists => std::path::Path::new(if e.path.is_empty() { e.path_lower } else { e.path }).exists(),
             Pred::Never => false,
             Pred::Text { target, kind } => {
                 let (orig, lower) = match target {
@@ -712,7 +714,7 @@ fn looks_like_path(word: &str) -> bool {
 /// `sibling:`/`ancestor:`/`descendant:` argument, the same convention as every other text needle.
 fn path_arg(v: &str, opts: &SearchOptions) -> String {
     let v = v.trim_end_matches('\\');
-    if opts.match_case { v.to_string() } else { v.to_lowercase() }
+    if opts.match_case { v.to_string() } else { super::index::fold(v) }
 }
 
 /// A quoted phrase is always a literal substring (no functions or wildcards). A
@@ -727,7 +729,7 @@ fn phrase_pred(phrase: &str, opts: &SearchOptions, needs_path: &mut bool) -> Opt
     let mut needle = if opts.match_case {
         phrase.to_string()
     } else {
-        phrase.to_lowercase()
+        super::index::fold(phrase)
     };
     if opts.diacritics {
         needle = strip_diacritics(&needle);
@@ -755,7 +757,7 @@ fn text_pred(text: &str, target: TextTarget, opts: &SearchOptions) -> Option<Pre
         // case folding disagree.
         let on_lower = !opts.match_case;
         let mut src = if on_lower {
-            text.to_lowercase()
+            super::index::fold(text)
         } else {
             text.to_string()
         };
@@ -777,7 +779,7 @@ fn text_pred(text: &str, target: TextTarget, opts: &SearchOptions) -> Option<Pre
             Err(_) => None,
         };
     }
-    let mut needle = if opts.match_case { text.to_string() } else { text.to_lowercase() };
+    let mut needle = if opts.match_case { text.to_string() } else { super::index::fold(text) };
     if opts.diacritics {
         needle = strip_diacritics(&needle);
     }

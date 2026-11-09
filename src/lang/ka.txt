@@ -362,6 +362,7 @@ apps.shift=გახსნისას დააჭირეთ Shift-ს, რ�
 apps.done=მზადაა
 icons.title=ხატულები
 icons.folders=საქაღალდეები
+icons.style=საქაღალდეების სტილი
 icons.type=ტიპი
 icons.contents=შიგთავსი
 icons.both=ორივე

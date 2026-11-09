@@ -364,6 +364,7 @@ apps.shift=Удерживайте Shift при открытии, чтобы од
 apps.done=Готово
 icons.title=Значки
 icons.folders=Папки
+icons.style=Стиль папок
 icons.type=Тип
 icons.contents=Содержимое
 icons.both=Оба

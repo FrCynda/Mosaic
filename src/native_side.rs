@@ -101,6 +101,12 @@ struct Item {
     icon: String, // what to take the icon from, when not `target`
     space: Option<(u64, u64)>, // a drive's free and total bytes
 }
+impl Item {
+    /// What its icon is kept under: where it comes from (Gallery and Pictures can open the same folder).
+    fn ikey(&self) -> &str {
+        if self.icon.is_empty() { &self.target } else { &self.icon }
+    }
+}
 
 struct Side {
     hwnd: HWND,
@@ -546,6 +552,11 @@ pub fn sync() {
 }
 
 /// The panel's choices, for the settings file.
+/// Its right edge is being dragged.
+pub fn sizing() -> bool {
+    with(|s| s.sizing.is_some()).unwrap_or(false)
+}
+
 /// The panel's width, CSS px.
 pub fn width() -> i32 {
     with(|s| s.prefs.width.clamp(WIDTHS.0, WIDTHS.1)).unwrap_or(WIDTH)
@@ -557,6 +568,16 @@ pub fn prefs_json() -> String {
 
 fn save() {
     super::with(|u| u.save_settings());
+}
+
+/// View > Icons… changed the folders' look: every icon fetched again.
+pub fn reload_icons() {
+    with(|s| {
+        s.bmp.clear();
+        s.png.clear();
+        s.asked.clear();
+        s.ask_icons();
+    });
 }
 
 pub fn rescale(scale: f64) {
@@ -651,10 +672,10 @@ impl Side {
         let hw = self.hwnd as isize;
         for it in self.items.iter().filter(|i| !i.target.is_empty()) {
             let size = self.px(if it.kind == Kind::Drive { 96 } else { 48 }); // 3x, box-filtered down: sharper than the shell's own scaling
-            if self.png.contains_key(&it.target) || !self.asked.insert(it.target.clone()) {
+            if self.png.contains_key(it.ikey()) || !self.asked.insert(it.ikey().to_string()) {
                 continue;
             }
-            let (target, src) = (it.target.clone(), if it.icon.is_empty() { it.target.clone() } else { it.icon.clone() });
+            let (target, src) = (it.ikey().to_string(), it.ikey().to_string());
             shell::shell_spawn(Box::new(move |dropped| {
                 let png = if dropped { None } else { shell::thumbnail(&src, size, true) };
                 let b: Box<(String, Option<Vec<u8>>)> = Box::new((target, png));
@@ -855,14 +876,14 @@ impl Side {
         // decode the icons on screen for this canvas (after a GPU reset, again)
         let gen = self.cv.gen;
         for &(i, a, b) in &rows {
-            let tg = &self.items[i].target;
+            let tg = self.items[i].ikey();
             if self.items[i].kind == Kind::Sep || (b as f32) < self.y || a as f32 > self.y + self.view_h() as f32 || self.bmp.get(tg).is_some_and(|x| x.1 == gen) {
                 continue;
             }
             let isz = self.icon_px(&self.items[i]);
             if let Some((px, w, h)) = self.png.get(tg).and_then(|p| png_pixels(p, isz)) {
                 if let Some(bm) = self.cv.make_bitmap(&px, w, h) {
-                    self.bmp.insert(tg.clone(), (bm, gen));
+                    self.bmp.insert(tg.to_string(), (bm, gen));
                 }
             }
         }
@@ -923,7 +944,7 @@ impl Side {
                     cv.lines(&[(cx - h / 2.0, cy - h), (cx + h / 2.0, cy), (cx - h / 2.0, cy + h)], theme().muted, 1.3 * s as f32);
                 }
             }
-            if let Some((bm, _)) = self.bmp.get(&it.target) {
+            if let Some((bm, _)) = self.bmp.get(it.ikey()) {
                 let iy = r.top + (r.bottom - r.top - isz) / 2;
                 cv.bitmap(bm, &RECT { left: ix, top: iy, right: ix + isz, bottom: iy + isz }, 1.0);
             }
@@ -1035,7 +1056,7 @@ unsafe extern "system" fn side_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
         WM_MOUSEMOVE => {
             let (x, y) = xy(l);
             if with(|s| s.moved(x, y)) == Some(true) {
-                super::with(|u| u.layout()); // outside `with`: moving the panel sizes it
+                super::with(|u| u.side_sized = true); // laid out on the next frame: on every move, the window flashed
             }
             return 0;
         }

@@ -361,6 +361,7 @@ apps.shift=打开时按住 Shift 可使用一次 Windows 自带窗口。
 apps.done=完成
 icons.title=图标
 icons.folders=文件夹
+icons.style=文件夹样式
 icons.type=类型
 icons.contents=内容
 icons.both=两者

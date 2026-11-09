@@ -362,6 +362,7 @@ apps.shift=Håll ned Skift när fönstret öppnas för att få Windows eget, en 
 apps.done=Klar
 icons.title=Ikoner
 icons.folders=Mappar
+icons.style=Mappstil
 icons.type=Typ
 icons.contents=Innehåll
 icons.both=Båda

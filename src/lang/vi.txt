@@ -361,6 +361,7 @@ apps.shift=Giữ Shift khi cửa sổ mở để dùng cửa sổ của Windows 
 apps.done=Xong
 icons.title=Biểu tượng
 icons.folders=Thư mục
+icons.style=Kiểu thư mục
 icons.type=Loại
 icons.contents=Nội dung
 icons.both=Cả hai

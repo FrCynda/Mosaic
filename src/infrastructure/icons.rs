@@ -23,6 +23,9 @@ const DIB_RGB_COLORS: u32 = 0;
 /// PNG of the 256 px ("jumbo") shell icon for an extension or folder, the size Explorer's thumbnails use, so a
 /// grid tile's placeholder matches the thumbnail that replaces it. Needs a COM-initialised thread.
 pub fn jumbo_png(ext: Option<&str>, is_dir: bool) -> Option<Vec<u8>> {
+    if let Some(png) = is_dir.then(|| crate::folders10::closed(256)).flatten() {
+        return Some(png); // View > Icons…: Windows 10's folders
+    }
     use windows_sys::Win32::UI::Controls::ImageList_GetIcon;
     use windows_sys::Win32::UI::Shell::SHGetImageList;
     const SHGFI_SYSICONINDEX: u32 = 0x4000;

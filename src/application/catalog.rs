@@ -194,14 +194,31 @@ impl Catalog {
                 let mut per = opts.clone();
                 per.limit = opts.offset + opts.limit;
                 per.offset = 0;
-                let parts: Vec<SearchResult> =
-                    many.par_iter().map(|v| v.search(&per, &matcher)).collect();
-                let mut total = parts.iter().map(|p| p.total).sum();
-                let mut hits: Vec<Hit> = parts.into_iter().flat_map(|p| p.hits).collect();
+                // distinct: each volume's own distinct rows (its plain top ones could all be one value), and every
+                // value it has, for the total across volumes
+                let parts: Vec<(SearchResult, std::collections::HashSet<String>)> = match &distinct {
+                    Some(field) => many
+                        .par_iter()
+                        .map(|v| {
+                            let order = dedup_order(v, v.ranked(opts, &matcher), field);
+                            let keys = order.iter().map(|&i| dedup_key(&v.hit(i), field)).collect();
+                            let hits = order.iter().take(per.limit).map(|&i| v.hit(i)).collect();
+                            (SearchResult { hits, ..Default::default() }, keys)
+                        })
+                        .collect(),
+                    None => many.par_iter().map(|v| (v.search(&per, &matcher), Default::default())).collect(),
+                };
+                let mut total = parts.iter().map(|p| p.0.total).sum();
+                let mut keys = std::collections::HashSet::new();
+                let mut hits: Vec<Hit> = Vec::new();
+                for (r, k) in parts {
+                    hits.extend(r.hits);
+                    keys.extend(k);
+                }
                 sort_hits(&mut hits, opts);
                 if let Some(field) = &distinct {
                     dedup_hits(&mut hits, field);
-                    total = hits.len(); // the per-volume sum above double-counts what dedup then drops
+                    total = keys.len(); // each value once, wherever it is
                 }
                 hits.drain(..opts.offset.min(hits.len()));
                 hits.truncate(opts.limit);

@@ -360,6 +360,7 @@ impl Dlg {
     }
 
     fn act(&mut self, h: Hot) {
+        let hwnd = self.hwnd;
         let Some(d) = self.dates.as_mut() else {
             if h == Hot::Switch {
                 super::with(|u| u.flip(self.what));
@@ -400,7 +401,8 @@ impl Dlg {
             Hot::Add => {
                 if let Some(p) = d.pick {
                     put_filter(FIELDS[d.field].0, Some(&token(d.field, d.mode, p)));
-                    return close();
+                    unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) }; // closed once `with` lets go
+                    return;
                 }
             }
             Hot::Clear => {

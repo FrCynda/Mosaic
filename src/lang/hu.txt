@@ -362,6 +362,7 @@ apps.shift=Nyitáskor tartsa lenyomva a Shiftet, hogy egyszer a Windows ablakát
 apps.done=Kész
 icons.title=Ikonok
 icons.folders=Mappák
+icons.style=Mappák stílusa
 icons.type=Típus
 icons.contents=Tartalom
 icons.both=Mindkettő

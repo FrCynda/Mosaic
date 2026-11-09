@@ -362,6 +362,7 @@ apps.shift=Kan Windows al tokko argachuuf yeroo banamu Shift qabadhu.
 apps.done=Xumurameera
 icons.title=Mallattoolee
 icons.folders=Kuusaalee
+icons.style=Akkaataa kuusaa
 icons.type=Gosa
 icons.contents=Qabiyyee
 icons.both=Lamaanuu

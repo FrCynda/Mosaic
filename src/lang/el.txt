@@ -362,6 +362,7 @@ apps.shift=Κρατήστε το Shift καθώς ανοίγει για να π�
 apps.done=Τέλος
 icons.title=Εικονίδια
 icons.folders=Φάκελοι
+icons.style=Στυλ φακέλων
 icons.type=Τύπος
 icons.contents=Περιεχόμενο
 icons.both=Και τα δύο

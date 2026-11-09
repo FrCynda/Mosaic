@@ -226,7 +226,7 @@ fn load_workspaces() -> Vec<(String, Session)> {
 }
 fn save_workspaces(v: &[(String, Session)]) {
     let _ = std::fs::create_dir_all(app_dir());
-    let _ = std::fs::write(workspaces_path(), serde_json::to_string(v).unwrap_or_default());
+    let _ = crate::write_safe(workspaces_path(), serde_json::to_string(v).unwrap_or_default());
 }
 thread_local! {
     /// The session as last written, scroll positions and all: the same again isn't written.
@@ -572,7 +572,7 @@ pub(super) unsafe fn send_tabs(to: HWND, json: &str, all: bool) -> bool {
     use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
     let cd = COPYDATASTRUCT { dwData: if all { DATA_ALL } else { DATA_TABS }, cbData: json.len() as u32, lpData: json.as_ptr() as *mut c_void };
     let mut r = 0usize;
-    SendMessageTimeoutW(to, WM_COPYDATA, 0, &cd as *const _ as LPARAM, SMTO_ABORTIFHUNG, 3000, &mut r) != 0
+    SendMessageTimeoutW(to, WM_COPYDATA, 0, &cd as *const _ as LPARAM, SMTO_ABORTIFHUNG, 3000, &mut r) != 0 && r != 0 // (0: not taken in)
 }
 /// WM_COPYDATA: tabs from another window, taken in once the window is free to (`WM_TABS_IN`).
 pub(super) unsafe fn copydata(h: HWND, l: LPARAM) -> bool {
@@ -581,7 +581,11 @@ pub(super) unsafe fn copydata(h: HWND, l: LPARAM) -> bool {
         return false;
     }
     let s = String::from_utf8_lossy(std::slice::from_raw_parts(cd.lpData as *const u8, cd.cbData as usize)).into_owned();
-    PostMessageW(h, WM_TABS_IN, (cd.dwData == DATA_ALL) as usize, Box::into_raw(Box::new(s)) as LPARAM);
+    let b = Box::into_raw(Box::new(s));
+    if PostMessageW(h, WM_TABS_IN, (cd.dwData == DATA_ALL) as usize, b as LPARAM) == 0 {
+        drop(Box::from_raw(b));
+        return false; // the sender keeps its tabs
+    }
     true
 }
 /// A new window with these tabs (a session as JSON), at `at` on screen.
@@ -870,13 +874,14 @@ impl Ui {
         if now == self.saved && !force {
             return;
         }
-        self.saved = now;
         let full = self.session_json(true);
         if WRITTEN.with(|w| *w.borrow() == full) {
+            self.saved = now;
             return;
         }
         let _ = std::fs::create_dir_all(app_dir());
-        if std::fs::write(session_path(), &full).is_ok() {
+        if crate::write_safe(session_path(), &full).is_ok() {
+            self.saved = now; // a failed write is tried again on the next change check
             WRITTEN.set(full);
         }
     }
@@ -885,6 +890,8 @@ impl Ui {
     /// Close tab `k` (`remember`: Reopen can bring it back); the last one closes the window, as Explorer's does.
     pub(super) fn drop_tab(&mut self, k: usize, remember: bool) {
         if self.tabs.len() == 1 {
+            // (not `remember`: it went to another window, so it isn't kept here too)
+            self.merged |= !remember;
             unsafe { PostMessageW(self.main, WM_CLOSE, 0, 0) };
             return;
         }
@@ -965,13 +972,16 @@ impl Ui {
     /// Pinned tabs first, each group's tabs together where its first one is; groups with no tab left go.
     pub(super) fn order_tabs(&mut self) {
         let uid = self.tabs.get(self.cur).map(|t| t.uid);
-        let mut v = std::mem::take(&mut self.tabs);
-        v.sort_by_key(|t| !t.o.pinned);
-        let mut out: Vec<Tab> = Vec::with_capacity(v.len());
-        for t in v {
-            match t.o.group.and_then(|g| out.iter().rposition(|x| x.o.group == Some(g))) {
-                Some(i) => out.insert(i + 1, t),
-                None => out.push(t),
+        let (pinned, rest): (Vec<Tab>, Vec<Tab>) = std::mem::take(&mut self.tabs).into_iter().partition(|t| t.o.pinned);
+        // grouped within each part: a tab never joins its group inside the other part
+        let mut out: Vec<Tab> = Vec::with_capacity(pinned.len() + rest.len());
+        for v in [pinned, rest] {
+            let from = out.len();
+            for t in v {
+                match t.o.group.and_then(|g| out[from..].iter().rposition(|x| x.o.group == Some(g))) {
+                    Some(i) => out.insert(from + i + 1, t),
+                    None => out.push(t),
+                }
             }
         }
         self.tabs = out;
@@ -996,6 +1006,7 @@ impl Ui {
         rest.splice(j..j, mine);
         self.tabs = rest;
         self.cur = self.tabs.iter().position(|t| t.uid == uid).unwrap_or(0);
+        self.order_tabs(); // pinned ones stay first
     }
     /// A folder opened from this tab: here, or in a new tab when it's locked.
     pub(super) fn go_dir(&mut self, d: &str) {
@@ -1867,7 +1878,9 @@ impl Ui {
     /// T_CARD: the card for the tab still pointed at.
     pub(super) fn card_due(&mut self) {
         unsafe { KillTimer(self.main, T_CARD) };
-        if let Some(k) = self.card_for.filter(|&k| self.hot == Some(Hit::Tab(k))) {
+        // never over the Ctrl+Tab switcher
+        let mru = matches!(self.card, Some((_, _, Panel::Mru(..))));
+        if let Some(k) = self.card_for.filter(|&k| !mru && self.hot == Some(Hit::Tab(k))) {
             self.card_open(Panel::Tab(k));
             self.card_for = Some(k);
         }
@@ -3390,8 +3403,9 @@ impl Ui {
             let Some(d) = self.pane_dir(p) else { continue };
             let d = d.trim_end_matches('\\').to_string();
             let to = if let Some(rest) = nl.strip_prefix(&format!("{ol}\\")) {
-                let tail = &new.trim_end_matches('\\')[new.trim_end_matches('\\').len() - rest.len()..];
-                Some(format!("{d}\\{tail}"))
+                // the new name's own letters, found by length: only when lowercasing didn't change that
+                let nt = new.trim_end_matches('\\');
+                nt.len().checked_sub(rest.len()).and_then(|i| nt.get(i..)).filter(|t| t.to_lowercase() == rest).map(|tail| format!("{d}\\{tail}"))
             } else if ol.starts_with(&format!("{nl}\\")) {
                 let up = ol[nl.len() + 1..].split('\\').count();
                 let mut x = std::path::PathBuf::from(&d);

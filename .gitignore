@@ -1,3 +1,4 @@
 /target
 /dist
 *.exe.tmp
+__pycache__/

@@ -361,6 +361,7 @@ apps.shift=開くときに Shift を押し続けると、一度だけ Windows �
 apps.done=完了
 icons.title=アイコン
 icons.folders=フォルダー
+icons.style=フォルダーのスタイル
 icons.type=種類
 icons.contents=内容
 icons.both=両方

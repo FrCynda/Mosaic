@@ -166,7 +166,12 @@ fn notify() -> &'static EngineNotify {
     thread_local!(static N: &'static EngineNotify = Box::leak(Box::new(EngineNotify(&NOTIFY_VTBL, std::sync::atomic::AtomicBool::new(false)))));
     N.with(|n| *n)
 }
-unsafe extern "system" fn notify_query(this: *mut std::ffi::c_void, _: *const windows::core::GUID, out: *mut *mut std::ffi::c_void) -> windows::core::HRESULT {
+unsafe extern "system" fn notify_query(this: *mut std::ffi::c_void, iid: *const windows::core::GUID, out: *mut *mut std::ffi::c_void) -> windows::core::HRESULT {
+    use windows::core::IUnknown;
+    if *iid != IUnknown::IID && *iid != windows::Win32::Media::MediaFoundation::IMFMediaEngineNotify::IID {
+        *out = std::ptr::null_mut();
+        return windows::Win32::Foundation::E_NOINTERFACE;
+    }
     *out = this;
     windows::core::HRESULT(0)
 }
@@ -539,6 +544,7 @@ impl Preview {
     }
 
     fn clear(&mut self) {
+        self.press = None; // a press on the last thing shown: not a click on the next
         unsafe {
             if let Some(p) = self.player.take() {
                 let _ = p.Shutdown();
@@ -1000,7 +1006,8 @@ impl Preview {
             if !self.ent_png.contains_key(&key) && self.ent_asked.insert(key.clone()) {
                 let (path, k) = (self.rows[i].path.clone(), key.clone());
                 shell::shell_spawn(Box::new(move |dropped| {
-                    let png = if dropped { None } else { shell::thumbnail(&path, size, true) };
+                    // dropped (never asked): None, asked again; no icon to be had: empty, not asked again
+                    let png = if dropped { None } else { Some(shell::thumbnail(&path, size, true).unwrap_or_default()) };
                     let m: Box<(String, Option<Vec<u8>>)> = Box::new((k, png));
                     unsafe { PostMessageW(hw as HWND, WM_ICON, 0, Box::into_raw(m) as isize) };
                 }));
@@ -1016,9 +1023,13 @@ impl Preview {
     }
 
     fn got_icon(&mut self, (key, png): (String, Option<Vec<u8>>)) {
-        if let Some(p) = png {
-            self.ent_png.insert(key.clone(), p);
-            self.ent_bmp.remove(&key);
+        match png {
+            Some(p) if p.is_empty() => return, // none to be had: asking again (each repaint) would never stop
+            Some(p) => {
+                self.ent_png.insert(key.clone(), p);
+                self.ent_bmp.remove(&key);
+            }
+            None => {}
         }
         self.ent_asked.remove(&key);
         unsafe { InvalidateRect(self.hwnd, null(), 0) };

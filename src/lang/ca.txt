@@ -362,6 +362,7 @@ apps.shift=Mantén Maj en obrir-se per tenir la de Windows, un cop.
 apps.done=Fet
 icons.title=Icones
 icons.folders=Carpetes
+icons.style=Estil de carpetes
 icons.type=Tipus
 icons.contents=Contingut
 icons.both=Tots dos

@@ -362,6 +362,7 @@ apps.shift=ಒಮ್ಮೆ Windows ವಿಂಡೋ ಪಡೆಯಲು ತೆರ�
 apps.done=ಮುಗಿದಿದೆ
 icons.title=ಐಕಾನ್‌ಗಳು
 icons.folders=ಫೋಲ್ಡರ್‌ಗಳು
+icons.style=ಫೋಲ್ಡರ್ ಶೈಲಿ
 icons.type=ಪ್ರಕಾರ
 icons.contents=ವಿಷಯ
 icons.both=ಎರಡೂ

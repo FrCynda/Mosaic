@@ -362,6 +362,7 @@ apps.shift=Pidä Vaihto painettuna ikkunan avautuessa saadaksesi Windowsin oman,
 apps.done=Valmis
 icons.title=Kuvakkeet
 icons.folders=Kansiot
+icons.style=Kansioiden tyyli
 icons.type=Tyyppi
 icons.contents=Sisältö
 icons.both=Molemmat

@@ -362,6 +362,7 @@ apps.shift=एक बार Windows की विंडो पाने के �
 apps.done=हो गया
 icons.title=आइकन
 icons.folders=फ़ोल्डर
+icons.style=फ़ोल्डर शैली
 icons.type=प्रकार
 icons.contents=सामग्री
 icons.both=दोनों

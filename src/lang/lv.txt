@@ -363,6 +363,7 @@ apps.shift=Turiet Shift, kamēr logs atveras, lai vienreiz iegūtu Windows logu.
 apps.done=Gatavs
 icons.title=Ikonas
 icons.folders=Mapes
+icons.style=Mapju stils
 icons.type=Tips
 icons.contents=Saturs
 icons.both=Abi

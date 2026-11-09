@@ -362,6 +362,7 @@ apps.shift=Shikilia Shift dirisha linapofunguka ili kupata la Windows, mara moja
 apps.done=Imekamilika
 icons.title=Aikoni
 icons.folders=Folda
+icons.style=Mtindo wa folda
 icons.type=Aina
 icons.contents=Maudhui
 icons.both=Zote mbili

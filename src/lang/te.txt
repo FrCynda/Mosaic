@@ -362,6 +362,7 @@ apps.shift=ఒకసారి Windows విండో కోసం తెరు�
 apps.done=పూర్తయింది
 icons.title=చిహ్నాలు
 icons.folders=ఫోల్డర్‌లు
+icons.style=ఫోల్డర్ శైలి
 icons.type=రకం
 icons.contents=కంటెంట్
 icons.both=రెండూ

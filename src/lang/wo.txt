@@ -361,6 +361,7 @@ apps.shift=Téye Shift bu muy ubbiku ngir am bu Windows, benn yoon.
 apps.done=Jeex na
 icons.title=Maandarga yi
 icons.folders=Kaggu yi
+icons.style=Melokaanu kaggu
 icons.type=Xeet
 icons.contents=Li ci biir
 icons.both=Ñaari yi

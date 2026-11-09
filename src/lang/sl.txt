@@ -364,6 +364,7 @@ apps.shift=Držite Shift med odpiranjem, da enkrat dobite okno sistema Windows.
 apps.done=Končano
 icons.title=Ikone
 icons.folders=Mape
+icons.style=Slog map
 icons.type=Vrsta
 icons.contents=Vsebina
 icons.both=Oboje

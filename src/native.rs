@@ -231,8 +231,12 @@ unsafe fn apply_titlebar(main: HWND) {
     DwmSetWindowAttribute(main, 36, &text as *const _ as *const c_void, 4); // DWMWA_TEXT_COLOR
 }
 /// WM_ERASEBKGND: the theme's background, so whatever shows before the first paint (a window uncovered, or
-/// restored after hours, its pages to read back first) is that, not black. Ordinary repaints don't erase.
+/// restored after hours, its pages to read back first) is that, not black. Ordinary repaints don't erase, nor does
+/// a resize while the places panel's edge is dragged: each step would flash the background before its paint.
 pub(super) unsafe fn erase(h: HWND, dc: WPARAM) -> LRESULT {
+    if side::sizing() {
+        return 1;
+    }
     let mut r: RECT = zeroed();
     GetClientRect(h, &mut r);
     let b = CreateSolidBrush(gdi(theme().bg));
@@ -430,6 +434,8 @@ fn save_kinds() {
         // the first save writes it whole (there's no snapshot yet), so the old text file can go
         if crate::kvlog::save(&kinds_path(), &g.map, &changed).is_ok() {
             let _ = std::fs::remove_file(kinds_path().with_extension("txt"));
+        } else {
+            g.changed = changed; // tried again next time
         }
     }
 }
@@ -530,7 +536,9 @@ fn write_views() {
                 .iter()
                 .map(|(p, f)| format!("{}\t{}\t{}\t{}\t{}\t{p}\n", if f.grid { "grid" } else { "list" }, f.size, f.sort, if f.desc { "desc" } else { "asc" }, f.n))
                 .collect();
-            let _ = std::fs::write(views_path(), s);
+            if crate::write_safe(views_path(), s).is_err() {
+                *dirty = true; // tried again next time
+            }
         }
     });
 }
@@ -543,6 +551,10 @@ fn load_settings() -> HashMap<String, String> {
         if let Ok(m) = serde_json::from_str(&s) {
             return m;
         }
+        // unreadable: kept aside (the next save would write over it with the defaults)
+        let mut bad = settings_path().into_os_string();
+        bad.push(".bad");
+        let _ = std::fs::copy(settings_path(), bad);
     }
     std::fs::read_to_string(legacy_settings_path()).unwrap_or_default().lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
@@ -662,7 +674,11 @@ unsafe fn next_place(main: HWND) -> Option<WINDOWPLACEMENT> {
 fn placement(s: &str) -> Option<WINDOWPLACEMENT> {
     let v: Vec<i32> = s.split(',').map(|x| x.parse().ok()).collect::<Option<_>>()?;
     let [left, top, right, bottom, max] = v[..] else { return None };
-    if right - left < 200 || bottom - top < 150 {
+    if right.saturating_sub(left) < 200 || bottom.saturating_sub(top) < 150 {
+        return None;
+    }
+    // on a screen that's gone (unplugged): the default place, not somewhere no one can see it
+    if unsafe { MonitorFromRect(&RECT { left, top, right, bottom }, MONITOR_DEFAULTTONULL) }.is_null() {
         return None;
     }
     let mut wp: WINDOWPLACEMENT = unsafe { zeroed() };
@@ -1130,6 +1146,7 @@ struct Ui {
     pv_w: i32,       // … its width (CSS px) as dragged; 0 = 40% of the window
     split: Option<i32>, // dragging the divider left of the pane: the pointer's offset from its left edge
     split_x: Option<i32>, // … where the pointer moved to, applied on the next frame
+    side_sized: bool,     // the places panel's edge dragged: laid out on the next frame, as the divider
     grip: RECT,         // the divider's grip: the part that can be dragged
     grip_a: f64,        // … how lit it is (fades)
     fx: Option<Instant>, // a live refresh's animation: when it started
@@ -1196,6 +1213,7 @@ struct Ui {
     folded: bool, // the status bar's buttons folded away behind its ‹
     folder_color: bool, // folder names in the accent colour (off: plain text, like files)
     folder_icons: u8,   // View > Icons…: a tile of a folder of one kind of file shows 0 that kind's folder, 1 what's inside, 2 both
+    folder_style: u8,   // … folders drawn 0 as Windows does, 1 as Windows 10 did, 2 so with Windows 11's coloured special folders
     link_arrow: u8,     // … the arrow on a shortcut's tile: an index into `ARROWS`
     link_size: u8,      // … how big, in % of Windows' own size (`ARROW_SIZES`)
     hist: std::cell::RefCell<(Vec<String>, usize)>, // folders / searches visited (browse_to) and where we are in them
@@ -1823,6 +1841,7 @@ unsafe fn window(args: Vec<String>) {
             pv_w: get("pvw").parse().unwrap_or(240),
             split: None,
             split_x: None,
+            side_sized: false,
             grip: zeroed(),
             grip_a: 0.0,
             fx: None,
@@ -1889,6 +1908,11 @@ unsafe fn window(args: Vec<String>) {
             folded: get("folded") != "0",
             folder_color: get("folder_color") == "1",
             folder_icons: get("folder_icons").parse().map_or(2, |v: u8| v.min(2)),
+            folder_style: {
+                let v = get("folder_style").parse().map_or(0, |v: u8| v.min(2));
+                crate::folders10::STYLE.store(v, std::sync::atomic::Ordering::Relaxed); // read by the shell helpers' threads
+                v
+            },
             link_arrow: get("link_arrow").parse().map_or(0, |v: u8| v.min(ARROWS.len() as u8 - 1)),
             link_size: get("link_size").parse().map_or(70, |v: u8| v.clamp(*ARROW_SIZES.start(), *ARROW_SIZES.end())),
             hist: Default::default(),
@@ -2541,7 +2565,7 @@ fn fold_in(folder: &Px, inner: &[u8], icon: bool) -> Option<Px> {
     // the shadow the front casts on the preview
     let sh = (h * 12 / 256).max(2);
     for x in x0..x0 + cw {
-        let low = edge[x] + d;
+        let low = (edge[x] + d).min(h); // (an icon whose front sits low: kept inside it)
         for y in low.saturating_sub(sh)..low {
             let t = 1.0 - (low - y) as f32 / (sh + 1) as f32;
             put(&mut out, x, y, [0.0, 0.0, 0.0, 255.0], 0.08 * t * t);
@@ -2838,7 +2862,7 @@ thread_local!(static WATCH: RefCell<Option<(String, isize)>> = const { RefCell::
 fn watch(q: &str) -> bool {
     use windows_sys::Win32::Storage::FileSystem::{FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification, GetDriveTypeW, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE};
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
-    let want = listed_dir(q).filter(|d| d.as_bytes().get(1) == Some(&b':') && crate::direct::outside(d) && matches!(unsafe { GetDriveTypeW(wz(&d[..3]).as_ptr()) }, 2 | 3));
+    let want = listed_dir(q).filter(|d| d.as_bytes().get(1) == Some(&b':') && d.is_char_boundary(3) && crate::direct::outside(d) && matches!(unsafe { GetDriveTypeW(wz(&d[..3]).as_ptr()) }, 2 | 3));
     WATCH.with(|w| unsafe {
         let mut w = w.borrow_mut();
         if w.as_ref().map(|x| &x.0) != want.as_ref() {
@@ -4055,7 +4079,8 @@ impl Ui {
     /// Alt+Up while browsing a folder: its parent. False when the search box isn't showing a folder listing.
     fn browse_up(&self) -> bool {
         let Some(dir) = self.args.q.trim().strip_prefix("child:\"").or_else(|| self.args.q.trim().strip_prefix("descendant:\"")).and_then(|d| d.strip_suffix('"')) else { return false };
-        let Some((parent, _)) = dir.rsplit_once('\\').filter(|(p, _)| !p.is_empty()) else { return false }; // already at a drive's top
+        // already at a drive's top, or a share's (\\server alone is no folder)
+        let Some((parent, _)) = dir.rsplit_once('\\').filter(|(p, _)| !p.is_empty() && !(p.starts_with(r"\\") && !p[2..].contains('\\'))) else { return false };
         self.browse_to(parent);
         true
     }
@@ -4115,6 +4140,8 @@ impl Ui {
         // a live refresh keeps the selection on the same files: note where they were (up to 1000 of them)
         let at = |u: &Self, i: Option<usize>| i.and_then(|i| u.get(i).map(|r| (i, r.path.clone())));
         let kept: Vec<(usize, String)> = if fresh || self.sel.count() > 1000 { Vec::new() } else { self.sel.iter().filter_map(|i| at(self, Some(i))).collect() };
+        // more than that, or some not loaded: left where they are (by position) rather than dropped
+        let whole = kept.len() == self.sel.count();
         let (focus, anchor) = (at(self, self.focus), at(self, self.anchor));
         // ...and the view on the same rows: the focused item if it's on screen, else the top one
         let (n, rh, h) = (self.ncols(), self.rh() as f64, self.list_size().1 as f64);
@@ -4157,7 +4184,9 @@ impl Ui {
                         sel.add(k, k);
                     }
                 }
-                self.sel = sel;
+                if whole {
+                    self.sel = sel;
+                }
                 self.focus = focus.and_then(|(i, p)| self.relocate(i, &p));
                 self.anchor = anchor.and_then(|(i, p)| self.relocate(i, &p));
             }
@@ -4386,7 +4415,9 @@ impl Ui {
         if himl != 0 && self.himl == 0 {
             self.himl = himl as isize;
         }
-        self.sys.insert(key, info.iIcon);
+        if himl != 0 {
+            self.sys.insert(key, info.iIcon); // a failed look-up is asked again, not kept as icon 0
+        }
         info.iIcon
     }
 
@@ -4518,7 +4549,8 @@ impl Ui {
         kind.then(|| self.kind_icon(path, is_dir)).flatten().unwrap_or_else(|| path.to_string())
     }
 
-    /// Both, on a tile: the kind's Windows folder and its kind, for [`fold_in`].
+    /// Both, on a tile: the kind's Windows folder and its kind, for [`fold_in`] (Windows' folders) or
+    /// [`crate::folders10::both`] (Windows 10's).
     fn both(&self, path: &str, is_dir: bool) -> Option<(String, u8)> {
         if !self.grid || self.folder_icons != 2 {
             return None;
@@ -4526,9 +4558,13 @@ impl Ui {
         Some((self.kind_icon(path, is_dir)?, kind_of(path)?.0))
     }
 
-    /// View > Icons… changed: every pane's pictures made again.
+    /// View > Icons… changed: every pane's pictures made again, the sidebar's and tabs' icons too.
     fn icons_changed(&mut self) {
+        crate::folders10::STYLE.store(self.folder_style, std::sync::atomic::Ordering::Relaxed); // read by the shell helpers' threads
         self.forget_pics();
+        self.jumbo_png.remove(" dir");
+        (self.tab_png, self.tab_bmp) = (HashMap::new(), HashMap::new());
+        side::reload_icons();
         for v in self.panes.iter_mut().flatten() {
             v.pics_gen = u32::MAX; // forgotten when next shown (`canvas_ready`)
         }
@@ -4618,6 +4654,8 @@ impl Ui {
                 // decoded and resampled here, on the helper's thread: the UI thread only uploads the pixels
                 let px = if dropped {
                     None
+                } else if let Some(b) = both.as_ref().and_then(|(dir, _)| crate::folders10::both(dir, &p, ts)) {
+                    png_pixels(&b, ts).map(|i| shrink(i, tile)) // Windows 10's folders: drawn whole there
                 } else if let Some((dir, kind)) = both {
                     // the kind's folder holding a preview of its first such file (that folder alone when there's none);
                     // drawn at full size, then made tile-sized as a whole, so its edges come out smooth
@@ -4787,7 +4825,7 @@ impl Ui {
         self.sync_scroll();
     }
     fn animating(&mut self) -> bool {
-        if self.split_x.is_some() || self.grip_a != self.grip_want() || self.ui_moving() || fade_due() || themes::moving() {
+        if self.split_x.is_some() || self.side_sized || self.grip_a != self.grip_want() || self.ui_moving() || fade_due() || themes::moving() {
             return true;
         }
         let mut any = false;
@@ -4826,6 +4864,9 @@ impl Ui {
     fn step(&mut self) {
         let dt = (Instant::now() - self.tick).as_secs_f64().min(1.0 / 30.0);
         self.drag_split();
+        if std::mem::take(&mut self.side_sized) {
+            self.layout();
+        }
         let want = self.grip_want();
         if self.grip_a != want {
             // the divider's grip fades in (0.25 s) and out (0.35 s)
@@ -5596,6 +5637,7 @@ impl Ui {
             ("folded", (self.folded as u8).to_string()),
             ("folder_color", (self.folder_color as u8).to_string()),
             ("folder_icons", self.folder_icons.to_string()),
+            ("folder_style", self.folder_style.to_string()),
             ("link_arrow", self.link_arrow.to_string()),
             ("link_size", self.link_size.to_string()),
             ("browse", self.browse.to_string()),
@@ -5622,7 +5664,7 @@ impl Ui {
         ]);
         let new = serde_json::to_string(&m).unwrap_or_default();
         if std::fs::read_to_string(&p).ok().as_deref() != Some(new.as_str()) {
-            let _ = std::fs::write(p, new);
+            let _ = crate::write_safe(p, new);
         }
     }
 
@@ -6873,6 +6915,13 @@ unsafe fn menu_scroll(d: isize) {
 
 /// A typed character: into a searchable menu's search box.
 unsafe fn menu_char(c: u32) {
+    // a character past U+FFFF comes as two halves: the first kept until the second
+    thread_local!(static HIGH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+    let c = match c {
+        0xD800..=0xDBFF => return HIGH.set(c),
+        0xDC00..=0xDFFF => 0x10000 + ((HIGH.take().wrapping_sub(0xD800) & 0x3FF) << 10) + (c - 0xDC00),
+        _ => c,
+    };
     let Some(c) = char::from_u32(c).filter(|c| !c.is_control()) else { return };
     search(|f| f.insert(c.encode_utf8(&mut [0; 4])));
 }
@@ -7436,7 +7485,8 @@ unsafe fn bad_name_tip(h: HWND) {
 enum Undo {
     Renamed(String, String),      // (now, was)
     Recycled(Vec<String>),        // where they were
-    Made(Vec<String>),            // a new folder, a paste's copies: back to the Recycle Bin
+    Made(Vec<String>),            // a new folder: back to the Recycle Bin
+    Copied(Vec<(String, String)>), // a paste's copies (copy, original): back to the Recycle Bin
     Moved(Vec<(String, String)>), // a paste's moves: (now, was)
 }
 
@@ -7463,6 +7513,14 @@ unsafe fn undo() {
         Some(Undo::Recycled(paths)) => fileops::restore(&paths) > 0,
         Some(Undo::Made(paths)) => {
             let there: Vec<String> = paths.into_iter().filter(|p| !gone(p)).collect();
+            preview::release(&there);
+            !there.is_empty() && fileops::delete_many(&there, true).is_ok()
+        }
+        Some(Undo::Copied(pairs)) => {
+            // only what is still that copy: a cancelled paste leaves the name free for some other file
+            // (a file's copy keeps its size and date; a folder's gets a new date, so only that it's a folder)
+            let stamp = |p: &str| std::fs::metadata(p).ok().map(|m| if m.is_dir() { (0, None) } else { (m.len() + 1, m.modified().ok()) });
+            let there: Vec<String> = pairs.into_iter().filter(|(c, o)| stamp(c).is_some() && stamp(c) == stamp(o)).map(|p| p.0).collect();
             preview::release(&there);
             !there.is_empty() && fileops::delete_many(&there, true).is_ok()
         }
@@ -7493,7 +7551,7 @@ fn note_paste(dir: &str) {
     if pairs.is_empty() {
         return;
     }
-    did(if cut { Undo::Moved(pairs) } else { Undo::Made(pairs.into_iter().map(|p| p.0).collect()) });
+    did(if cut { Undo::Moved(pairs) } else { Undo::Copied(pairs) });
 }
 
 /// Explorer's menu at (x, y) for `paths` (with `bg`, the folder `paths[0]`'s empty space; none: only `extras`),
@@ -7584,8 +7642,10 @@ unsafe fn end_rename(keep: bool) {
         return;
     }
     let to = from.with_file_name(&name);
+    // never over another file (Windows' rename replaces it, unrecoverably); a change of case only is the same file
+    let taken = to.exists() && !to.to_string_lossy().eq_ignore_ascii_case(&path);
     preview::release(std::slice::from_ref(&path));
-    let msg = match std::fs::rename(from, &to) {
+    let msg = match if taken { Err(std::io::Error::from_raw_os_error(183)) } else { std::fs::rename(from, &to) } {
         Ok(()) => {
             did(Undo::Renamed(to.to_string_lossy().into_owned(), path.clone()));
             LISTED.set(Some((to.to_string_lossy().into_owned(), false, Instant::now() + Duration::from_secs(10))));
@@ -7650,10 +7710,11 @@ unsafe fn act(a: Act) {
             return;
         }
         Act::Open => {
-            if n > 5 && !confirm(main, &t("confirm.open_items").replace("{n}", &n.to_string())) {
+            // every one asked about is opened (the count is of the paths actually in hand)
+            if paths.len() > 5 && !confirm(main, &t("confirm.open_items").replace("{n}", &paths.len().to_string())) {
                 return;
             }
-            paths.iter().take(20).for_each(|p| open_item(p));
+            paths.iter().for_each(|p| open_item(p));
             return;
         }
         Act::Reveal => return shell::reveal(&paths[0]),
@@ -8804,7 +8865,7 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, l: LPARAM) -> L
             SetCursor(LoadCursorW(null_mut(), IDC_SIZENS));
             return 1;
         }
-        WM_CHAR if wp >= 32 => {
+        WM_CHAR if wp >= 32 && wp != 0x7F => { // (0x7F: Ctrl+Backspace, not a letter)
             // typing while the list has focus goes to the search box, whatever is selected:
             //  - All / a search: at the end of what's there
             //  - a folder listing (`child:"D"`): after it, as a word narrowing that folder (not descending into subfolders)

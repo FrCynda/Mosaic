@@ -12,6 +12,15 @@ fn list<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<u16> {
     v
 }
 
+/// A name with `*` or `?` (made outside Windows, by WSL say): the shell would take it as a pattern and act on every
+/// file it matches, unasked. Such names are refused.
+fn wild<'a>(mut paths: impl Iterator<Item = &'a str>) -> Result<(), String> {
+    match paths.any(|p| p.strip_prefix(r"\\?\").unwrap_or(p).contains(['*', '?'])) {
+        true => Err("a name with * or ? in it".into()),
+        false => Ok(()),
+    }
+}
+
 fn shell_op(func: u32, from: &[u16], to: Option<&[u16]>, flags: u32) -> Result<(), String> {
     let mut op: SHFILEOPSTRUCTW = unsafe { zeroed() };
     op.wFunc = func;
@@ -35,6 +44,7 @@ pub fn delete_many(paths: &[String], recycle: bool) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
+    wild(paths.iter().map(|p| p.as_str()))?;
     shell_op(FO_DELETE, &list(paths.iter().map(|p| p.as_str())), None, if recycle { FOF_ALLOWUNDO } else { 0 })
 }
 
@@ -43,6 +53,7 @@ pub fn move_many(pairs: &[(String, String)]) -> Result<(), String> {
     if pairs.is_empty() {
         return Ok(());
     }
+    wild(pairs.iter().flat_map(|p| [p.0.as_str(), p.1.as_str()]))?;
     let (from, to) = (list(pairs.iter().map(|p| p.0.as_str())), list(pairs.iter().map(|p| p.1.as_str())));
     shell_op(FO_MOVE, &from, Some(&to), FOF_MULTIDESTFILES | FOF_NOCONFIRMMKDIR | FOF_ALLOWUNDO)
 }
@@ -53,6 +64,7 @@ pub fn transfer(paths: &[String], dir: &str, copy: bool, owner: isize) -> Result
     if paths.is_empty() {
         return Ok(());
     }
+    wild(paths.iter().map(|p| p.as_str()).chain([dir]))?;
     let (from, to) = (list(paths.iter().map(|p| p.as_str())), list(std::iter::once(dir)));
     let mut op: SHFILEOPSTRUCTW = unsafe { zeroed() };
     op.hwnd = owner as _;
@@ -105,8 +117,9 @@ pub fn restore(paths: &[String]) -> usize {
         }
         let Some((_, info)) = best else { continue };
         let item = info.with_file_name(format!("$R{}", &info.file_name().unwrap_or_default().to_string_lossy()[2..]));
-        if Path::new(p).exists() {
-            continue; // something new took its place: leave both alone
+        // something new took its place (or may have: one it can't look at): leave both alone
+        if !matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            continue;
         }
         if let Some(dir) = Path::new(p).parent() {
             let _ = std::fs::create_dir_all(dir);

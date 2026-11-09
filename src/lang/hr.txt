@@ -363,6 +363,7 @@ apps.shift=Držite Shift dok se prozor otvara za Windowsov, jednom.
 apps.done=Gotovo
 icons.title=Ikone
 icons.folders=Mape
+icons.style=Stil mapa
 icons.type=Vrsta
 icons.contents=Sadržaj
 icons.both=Oboje

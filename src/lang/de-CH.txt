@@ -362,6 +362,7 @@ apps.shift=Halten Sie beim Öffnen die Umschalttaste gedrückt, um einmal das Wi
 apps.done=Fertig
 icons.title=Symbole
 icons.folders=Ordner
+icons.style=Ordnerstil
 icons.type=Typ
 icons.contents=Inhalt
 icons.both=Beides

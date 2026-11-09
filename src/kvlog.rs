@@ -19,6 +19,9 @@ fn log_path(base: &Path) -> PathBuf {
     base.with_extension("log")
 }
 
+/// Logs found torn at load: anything appended after the tear would never be read back, so the next save folds instead.
+static TORN: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// `b` decompressed, if it's zstd. Of a torn last frame, whatever decoded before the tear.
 fn unpack(b: Vec<u8>) -> Vec<u8> {
     if !b.starts_with(&ZSTD) {
@@ -42,6 +45,10 @@ pub fn load<V: DeserializeOwned>(base: &Path) -> HashMap<String, V> {
             };
         }
     }
+    let raw = std::fs::read(log_path(base)).unwrap_or_default();
+    if !r.is_empty() || raw.starts_with(&ZSTD) && zstd::decode_all(&raw[..]).is_err() {
+        TORN.lock().unwrap_or_else(|e| e.into_inner()).push(base.to_path_buf());
+    }
     map
 }
 
@@ -56,7 +63,8 @@ pub fn save<V: Serialize>(base: &Path, map: &HashMap<String, V>, changed: &[Stri
     let (log, size) = (log_path(base), |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len()));
     let mut head = [0u8; 4];
     let log_ok = size(&log) == 0 || std::fs::File::open(&log).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head == ZSTD;
-    if log_ok && size(base) > 0 && (size(&log) + frame.len() as u64) * 4 <= size(base) {
+    let torn = TORN.lock().unwrap_or_else(|e| e.into_inner()).contains(&base.to_path_buf());
+    if log_ok && !torn && size(base) > 0 && (size(&log) + frame.len() as u64) * 4 <= size(base) {
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| e.to_string())?;
         return f.write_all(&frame).map_err(|e| e.to_string());
     }
@@ -65,6 +73,7 @@ pub fn save<V: Serialize>(base: &Path, map: &HashMap<String, V>, changed: &[Stri
     std::fs::write(&tmp, z).map_err(|e| e.to_string())?;
     std::fs::rename(tmp, base).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(log);
+    TORN.lock().unwrap_or_else(|e| e.into_inner()).retain(|b| b != base);
     Ok(())
 }
 
@@ -93,6 +102,11 @@ mod tests {
         let log = std::fs::read(super::log_path(&base)).unwrap();
         std::fs::write(super::log_path(&base), &log[..log.len() - 1]).unwrap(); // a crash mid-append
         assert_eq!(super::load::<u64>(&base), before, "the torn frame dropped, the one before kept");
+        let mut after = before.clone();
+        after.insert("k4".into(), 444);
+        super::save(&base, &after, &["k4".into()]).unwrap(); // after a tear: folded, not appended past it
+        assert_eq!(super::load::<u64>(&base), after, "a change saved after a tear is read back");
+        m.insert("k4".into(), 444);
         std::fs::write(super::log_path(&base), bincode::serialize(&vec![("k1", Some(111u64)), ("k2", None), ("k3", Some(333))]).unwrap()).unwrap();
         assert_eq!(super::load::<u64>(&base), m, "an uncompressed log of earlier versions");
         super::save(&base, &m, &["k3".into()]).unwrap(); // not appended to: folded

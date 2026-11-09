@@ -361,6 +361,7 @@ apps.shift=開啟時按住 Shift 可使用一次 Windows 原生視窗。
 apps.done=完成
 icons.title=圖示
 icons.folders=資料夾
+icons.style=資料夾樣式
 icons.type=類型
 icons.contents=內容
 icons.both=兩者

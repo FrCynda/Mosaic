@@ -143,6 +143,31 @@ impl MftReader {
     /// different file, so stale metadata never attaches to the changed entry.
     /// Returns `None` if the record is unreadable, free, reused, or not a `FILE`.
     pub fn read_meta(&self, record_no: u64, expected_seq: u16) -> Option<RecordMeta> {
+        let (mut buf, pad) = self.read_record(record_no)?;
+        let record = &mut buf[pad..pad + self.record_size as usize];
+        apply_fixup(record, self.bytes_per_sector);
+        // Sequence number lives in the FILE header at +0x10; a mismatch means the
+        // record was recycled between the journal event and this read.
+        if read_u16(record, 0x10) != expected_seq {
+            return None;
+        }
+        parse_record_meta(record)
+    }
+
+    /// Every name the record has now, each as the full scan reads it; `None` as for [`Self::read_meta`].
+    pub fn read_links(&self, record_no: u64, expected_seq: u16) -> Option<Vec<RawRecord>> {
+        let (mut buf, pad) = self.read_record(record_no)?;
+        let record = &mut buf[pad..pad + self.record_size as usize];
+        if read_u16(record, 0x10) != expected_seq {
+            return None;
+        }
+        let mut out = Vec::new();
+        parse_file_record(record, record_no, self.bytes_per_sector, &mut Vec::new(), &mut |r| out.push(r));
+        Some(out)
+    }
+
+    /// The sector window holding record `record_no`, and where in it the record starts.
+    fn read_record(&self, record_no: u64) -> Option<(Vec<u8>, usize)> {
         let offset = self.record_offset(record_no)?;
         let rec_size = self.record_size as usize;
         // Raw volume reads must be aligned to the logical sector size in both
@@ -154,15 +179,7 @@ impl MftReader {
         let len = (pad + rec_size).next_multiple_of(sector as usize);
         let mut buf = vec![0u8; len];
         self.volume.read_at(aligned, &mut buf).ok()?;
-
-        let record = &mut buf[pad..pad + rec_size];
-        apply_fixup(record, self.bytes_per_sector);
-        // Sequence number lives in the FILE header at +0x10; a mismatch means the
-        // record was recycled between the journal event and this read.
-        if read_u16(record, 0x10) != expected_seq {
-            return None;
-        }
-        parse_record_meta(record)
+        Some((buf, pad))
     }
 }
 

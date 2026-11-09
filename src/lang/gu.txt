@@ -362,6 +362,7 @@ apps.shift=એક વાર Windowsની વિન્ડો મેળવવા 
 apps.done=થઈ ગયું
 icons.title=આઇકન
 icons.folders=ફોલ્ડર
+icons.style=ફોલ્ડરની શૈલી
 icons.type=પ્રકાર
 icons.contents=સામગ્રી
 icons.both=બંને

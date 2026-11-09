@@ -361,6 +361,7 @@ apps.shift=Pindutin nang matagal ang Shift habang bumubukas para makuha ang sa W
 apps.done=Tapos na
 icons.title=Mga icon
 icons.folders=Mga folder
+icons.style=Istilo ng folder
 icons.type=Uri
 icons.contents=Nilalaman
 icons.both=Pareho

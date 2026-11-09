@@ -362,6 +362,7 @@ apps.shift=Houd Shift ingedrukt bij het openen voor dat van Windows, eenmalig.
 apps.done=Klaar
 icons.title=Pictogrammen
 icons.folders=Mappen
+icons.style=Mapstijl
 icons.type=Type
 icons.contents=Inhoud
 icons.both=Beide

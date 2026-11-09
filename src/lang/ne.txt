@@ -362,6 +362,7 @@ apps.shift=एक पटक Windows को सञ्झ्याल पाउन
 apps.done=सकियो
 icons.title=आइकनहरू
 icons.folders=फोल्डरहरू
+icons.style=फोल्डर शैली
 icons.type=प्रकार
 icons.contents=सामग्री
 icons.both=दुवै

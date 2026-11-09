@@ -362,6 +362,7 @@ apps.shift=Haltu Shift inni þegar glugginn opnast til að fá glugga Windows, e
 apps.done=Lokið
 icons.title=Tákn
 icons.folders=Möppur
+icons.style=Útlit mappa
 icons.type=Tegund
 icons.contents=Innihald
 icons.both=Bæði

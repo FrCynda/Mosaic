@@ -362,6 +362,7 @@ apps.shift=Riƙe Shift yayin da take buɗewa don samun ta Windows, sau ɗaya.
 apps.done=An gama
 icons.title=Gumaka
 icons.folders=Fayiloli
+icons.style=Salon fayiloli
 icons.type=Iri
 icons.contents=Abin ciki
 icons.both=Duka biyu

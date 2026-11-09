@@ -361,6 +361,7 @@ apps.shift=Di Shift mú nígbà tí ó ń ṣí láti gba ti Windows, lẹ́ẹ�
 apps.done=Ó ti parí
 icons.title=Àwọn àmì
 icons.folders=Àwọn fódà
+icons.style=Ìrísí fódà
 icons.type=Irú
 icons.contents=Àkóónú
 icons.both=Méjèèjì

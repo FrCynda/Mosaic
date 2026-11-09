@@ -362,6 +362,7 @@ apps.shift=Maintenez Maj pendant l'ouverture pour avoir celle de Windows, une fo
 apps.done=Terminé
 icons.title=Icônes
 icons.folders=Dossiers
+icons.style=Style des dossiers
 icons.type=Type
 icons.contents=Contenu
 icons.both=Les deux

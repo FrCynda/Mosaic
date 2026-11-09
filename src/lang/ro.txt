@@ -363,6 +363,7 @@ apps.shift=Ține apăsat Shift la deschidere pentru fereastra Windows, o dată.
 apps.done=Gata
 icons.title=Pictograme
 icons.folders=Foldere
+icons.style=Stilul folderelor
 icons.type=Tip
 icons.contents=Conținut
 icons.both=Ambele

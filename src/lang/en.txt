@@ -366,6 +366,7 @@ apps.shift=Hold Shift while a window opens to get Windows' own, once.
 apps.done=Done
 icons.title=Icons
 icons.folders=Folders
+icons.style=Folder style
 icons.type=Type
 icons.contents=Contents
 icons.both=Both

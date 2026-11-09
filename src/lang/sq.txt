@@ -362,6 +362,7 @@ apps.shift=Mbaj Shift ndërsa hapet për të marrë atë të Windows, një herë
 apps.done=U krye
 icons.title=Ikonat
 icons.folders=Dosjet
+icons.style=Stili i dosjeve
 icons.type=Lloji
 icons.contents=Përmbajtja
 icons.both=Të dyja

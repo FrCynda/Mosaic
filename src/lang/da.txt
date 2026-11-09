@@ -362,6 +362,7 @@ apps.shift=Hold Skift nede, mens vinduet åbner, for at få Windows' eget, én g
 apps.done=Færdig
 icons.title=Ikoner
 icons.folders=Mapper
+icons.style=Mappestil
 icons.type=Type
 icons.contents=Indhold
 icons.both=Begge

@@ -362,6 +362,7 @@ apps.shift=Задръжте Shift при отваряне, за да получ�
 apps.done=Готово
 icons.title=Икони
 icons.folders=Папки
+icons.style=Стил на папките
 icons.type=Тип
 icons.contents=Съдържание
 icons.both=И двете

@@ -361,6 +361,7 @@ apps.shift=Jide Shift mgbe ọ na-emepe iji nweta nke Windows, otu ugboro.
 apps.done=Emechara
 icons.title=Akara ngosi
 icons.folders=Nchekwa
+icons.style=Ụdị nchekwa
 icons.type=Ụdị
 icons.contents=Ọdịnaya
 icons.both=Ha abụọ

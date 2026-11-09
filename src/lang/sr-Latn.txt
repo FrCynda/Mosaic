@@ -363,6 +363,7 @@ apps.shift=Držite Shift dok se prozor otvara za Windows prozor, jednom.
 apps.done=Gotovo
 icons.title=Ikone
 icons.folders=Fascikle
+icons.style=Stil fascikli
 icons.type=Tip
 icons.contents=Sadržaj
 icons.both=Oba

@@ -93,7 +93,7 @@ pub fn save() {
     v.retain(|e| seen.insert(e.1.to_lowercase()));
     v.truncate(MAX);
     let text: String = v.iter().map(|(d, p)| format!("{}\t{p}\n", if *d { "d" } else { "f" })).collect();
-    let _ = std::fs::write(file(), text);
+    let _ = crate::write_safe(file(), text);
 }
 
 /// Windows' Recent shortcuts, resolved: kept a minute, read again on a thread of its own (a COM call each).

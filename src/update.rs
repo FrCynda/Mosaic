@@ -77,7 +77,7 @@ pub fn set_prefs(f: impl FnOnce(&mut Prefs)) {
     let mut p = prefs();
     f(&mut p);
     let _ = std::fs::create_dir_all(file().parent().unwrap());
-    let _ = std::fs::write(file(), serde_json::to_string(&p).unwrap_or_default());
+    let _ = crate::write_safe(file(), serde_json::to_string(&p).unwrap_or_default());
     *PREFS.lock().unwrap() = Some(p);
 }
 
@@ -136,7 +136,7 @@ pub fn plain(md: &str) -> String {
 }
 
 fn curl(args: &[&str]) -> Option<Vec<u8>> {
-    let o = Command::new("curl.exe").args(["-sfL", "--max-time", "30", "-A", "Mosaic"]).args(args).creation_flags(NO_WINDOW).output().ok()?;
+    let o = Command::new("curl.exe").args(["-sfL", "--connect-timeout", "30", "--speed-limit", "1000", "--speed-time", "30", "-A", "Mosaic"]).args(args).creation_flags(NO_WINDOW).output().ok()?;
     o.status.success().then_some(o.stdout)
 }
 
@@ -212,7 +212,7 @@ pub fn install(i: &Info) {
             use sha2::{Digest, Sha256};
             std::fs::read(&exe).map(|b| Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect::<String>()).unwrap_or_default()
         };
-        if !got || (!i.sha256.is_empty() && hash() != i.sha256) {
+        if !got || i.sha256.is_empty() || hash() != i.sha256 {
             let _ = std::fs::remove_file(&exe);
             return set(Progress::Failed("download".into()));
         }

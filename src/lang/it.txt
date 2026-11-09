@@ -362,6 +362,7 @@ apps.shift=Tieni premuto Maiusc all'apertura per avere quella di Windows, una vo
 apps.done=Fatto
 icons.title=Icone
 icons.folders=Cartelle
+icons.style=Stile delle cartelle
 icons.type=Tipo
 icons.contents=Contenuto
 icons.both=Entrambi

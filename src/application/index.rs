@@ -150,6 +150,17 @@ impl Rec {
     }
 }
 
+/// Lowercase as names are matched: a Greek final sigma as any other (lowercased alone, a query's last Σ is ς, the
+/// same letter mid-name σ; both are two bytes, so offsets hold).
+pub fn fold(s: &str) -> String {
+    s.to_lowercase().replace('ς', "σ")
+}
+
+#[test]
+fn final_sigma_matches_mid_name() {
+    assert!(fold("ΟΔΟΣΑ.txt").contains(&fold("ΟΔΟΣ")));
+}
+
 /// One search result row, serialized to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hit {
@@ -253,6 +264,8 @@ const UNSAVED_MAX: usize = 200_000;
 pub enum Change {
     Upsert(RawRecord),
     Delete(u64),
+    /// One more name of a file (see [`SearchIndex::apply_link`]). Last: earlier logs still read.
+    Link(RawRecord),
 }
 
 /// `changes` (each with whether it must stay: see below) less the ones replay doesn't need: an update in place to an
@@ -275,6 +288,7 @@ fn coalesce(changes: Vec<(Change, bool)>) -> Vec<Change> {
                 let later = !updated.insert((raw.record_no, raw.parent_no, raw.name.clone())) || deleted.contains(&raw.record_no);
                 *stays || !later
             }
+            Change::Link(_) => true,
         })
         .map(|(c, _)| c)
         .collect();
@@ -296,7 +310,7 @@ fn push_name(names: &mut Vec<u8>, name: &str) -> (u32, u32) {
         }
         return (off, name.len() as u32 | CASE_MASK << CASE_SHIFT);
     }
-    let lower = name.to_lowercase();
+    let lower = fold(name);
     names.extend_from_slice(lower.as_bytes());
     if lower == name {
         return (off, lower.len() as u32);
@@ -484,6 +498,7 @@ impl SearchIndex {
             match c {
                 Change::Upsert(raw) => self.apply_upsert(raw),
                 Change::Delete(record_no) => self.apply_delete(record_no),
+                Change::Link(raw) => self.apply_link(raw),
             }
         }
         *self.unsaved.get_mut() = Some(Vec::new());
@@ -997,7 +1012,7 @@ impl SearchIndex {
     /// MFT record of the folder at `path` (`c:`, any case; `c:` is the drive root), found by walking down from
     /// the root one name at a time. `None` when it is on another drive or doesn't exist.
     fn dir_record(&self, path: &str, last_any: bool) -> Option<u32> {
-        let path = path.to_lowercase();
+        let path = fold(path);
         let (drive, rest) = path.split_once(':')?;
         if drive.len() != 1 || !drive.starts_with(self.drive.to_ascii_lowercase()) {
             return None;
@@ -1078,6 +1093,14 @@ impl SearchIndex {
 
     /// Insert or replace an entry (USN create / rename / metadata change).
     pub fn apply_upsert(&mut self, raw: RawRecord) {
+        self.upsert(raw, false)
+    }
+    /// `raw` as one more name of its file, never in place of one it has (a file's names read anew: all of them gone
+    /// first, then each added).
+    pub fn apply_link(&mut self, raw: RawRecord) {
+        self.upsert(raw, true)
+    }
+    fn upsert(&mut self, raw: RawRecord, add: bool) {
         let Some(mut rec) = new_rec(&raw) else {
             return;
         };
@@ -1099,10 +1122,11 @@ impl SearchIndex {
                 .map(|&p| p as usize)
                 .find(|&p| self.recs[p].parent == rec.parent && self.name(p) == raw.name.as_str()),
         };
+        let target = target.filter(|_| !add);
         // folder totals: take the old entry's bytes off its old folders, put the new ones on its new folders. A
         // folder event carries no total, so it keeps the one it had.
         let old = target.map(|i| (self.recs[i].parent, self.recs[i].weight()));
-        self.log(old.is_none_or(|o| o.0 != rec.parent), || Change::Upsert(raw.clone())); // added or moved: stays
+        self.log(old.is_none_or(|o| o.0 != rec.parent), || if add { Change::Link(raw.clone()) } else { Change::Upsert(raw.clone()) }); // added or moved: stays
         let slot = target.map_or(NONE, |i| i as u32);
         self.touch(rec.record, rec.parent, slot);
         if let Some((parent, _)) = old.filter(|o| o.0 != rec.parent) {

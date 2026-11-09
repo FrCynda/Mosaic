@@ -363,6 +363,7 @@ apps.shift=Laikykite Shift atsidarant langui, kad vieną kartą gautumėte „Wi
 apps.done=Atlikta
 icons.title=Piktogramos
 icons.folders=Aplankai
+icons.style=Aplankų stilius
 icons.type=Tipas
 icons.contents=Turinys
 icons.both=Abu

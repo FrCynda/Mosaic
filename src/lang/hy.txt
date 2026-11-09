@@ -362,6 +362,7 @@ apps.shift=Բացվելիս պահեք Shift-ը՝ մեկ անգամ Windows-ին
 apps.done=Պատրաստ է
 icons.title=Պատկերակներ
 icons.folders=Թղթապանակներ
+icons.style=Թղթապանակների ոճը
 icons.type=Տեսակ
 icons.contents=Բովանդակություն
 icons.both=Երկուսն էլ

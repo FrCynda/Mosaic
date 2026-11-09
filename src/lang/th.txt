@@ -361,6 +361,7 @@ apps.shift=กด Shift ค้างไว้ขณะเปิดเพื่�
 apps.done=เสร็จสิ้น
 icons.title=ไอคอน
 icons.folders=โฟลเดอร์
+icons.style=สไตล์โฟลเดอร์
 icons.type=ประเภท
 icons.contents=เนื้อหา
 icons.both=ทั้งสอง

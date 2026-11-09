@@ -140,7 +140,13 @@ fn run(h: &SearchHandle) -> Result<(), String> {
                     // the lock must drop before ExifTool runs: in `while let` it would be held for the whole batch
                     let next = queue.lock().pop();
                     let Some(chunk) = next else { break };
-                    let texts = read(exe, chunk, k);
+                    let Some(texts) = read(exe, chunk, k) else {
+                        // ExifTool failed: nothing stored, so these are read again next run (not empty for good)
+                        if let Some(pr) = PROGRESS.lock().as_mut() {
+                            pr.0 += chunk.len();
+                        }
+                        continue;
+                    };
                     let mut g = FILES.write();
                     let files = g.as_mut().unwrap();
                     for p in chunk {
@@ -181,20 +187,17 @@ fn fields_of(o: &serde_json::Map<String, serde_json::Value>) -> Fields {
 }
 
 /// One ExifTool run over `paths`: lowercased path → (the metadata's text values lowercased, the structured fields).
-fn read(exe: &PathBuf, paths: &[String], k: usize) -> HashMap<String, (String, Fields)> {
+fn read(exe: &PathBuf, paths: &[String], k: usize) -> Option<HashMap<String, (String, Fields)>> {
     let args = std::env::temp_dir().join(format!("mosaic-meta-{}-{k}.txt", std::process::id()));
-    if std::fs::write(&args, paths.join("\n")).is_err() {
-        return HashMap::new();
-    }
+    std::fs::write(&args, paths.join("\n")).ok()?;
     let out = Command::new(exe)
         .args(["-charset", "filename=utf8", "-q", "-q", "-fast", "-j", "-a", "--File:all", "--System:all", "--ExifTool:all", "--Composite:all", "-@"])
         .arg(&args)
         .creation_flags(0x0800_0000) // no console window
         .output();
     let _ = std::fs::remove_file(&args);
-    let Ok(out) = out else { return HashMap::new() };
-    let objs: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    objs.into_iter()
+    let objs: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_slice(&out.ok()?.stdout).ok()?;
+    Some(objs.into_iter()
         .filter_map(|o| {
             let path = o.get("SourceFile")?.as_str()?.replace('/', "\\").to_lowercase();
             let mut text = String::new();
@@ -212,7 +215,7 @@ fn read(exe: &PathBuf, paths: &[String], k: usize) -> HashMap<String, (String, F
             text.truncate(n);
             Some((path, (text, fields_of(&o))))
         })
-        .collect()
+        .collect())
 }
 
 /// One `field:value` operator from a search box query: `camera-model:canon`, `iso-speed:>800`, `width:1920..3840`.
@@ -244,7 +247,7 @@ fn parse_num_filter(v: &str) -> Option<FieldFilter> {
 pub fn extract_field(query: &str) -> (String, Option<(&'static str, FieldFilter)>) {
     for (prefix, tag) in FIELDS {
         let needle = format!("{prefix}:");
-        if let Some(start) = query.to_lowercase().find(&needle) {
+        if let Some(start) = query.to_ascii_lowercase().find(&needle) {
             let rest = &query[start + needle.len()..];
             let end = rest.find(' ').unwrap_or(rest.len());
             let (value, tail) = (&rest[..end], &rest[end..]);

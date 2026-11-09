@@ -362,6 +362,7 @@ apps.shift=ਇੱਕ ਵਾਰ Windows ਦੀ ਵਿੰਡੋ ਲਈ ਖੁੱ�
 apps.done=ਹੋ ਗਿਆ
 icons.title=ਆਈਕਨ
 icons.folders=ਫ਼ੋਲਡਰ
+icons.style=ਫ਼ੋਲਡਰ ਸ਼ੈਲੀ
 icons.type=ਕਿਸਮ
 icons.contents=ਸਮੱਗਰੀ
 icons.both=ਦੋਵੇਂ

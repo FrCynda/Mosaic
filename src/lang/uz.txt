@@ -362,6 +362,7 @@ apps.shift=Windows oynasini bir marta olish uchun ochilayotganda Shift'ni bosib 
 apps.done=Tayyor
 icons.title=Belgilar
 icons.folders=Jildlar
+icons.style=Jild uslubi
 icons.type=Tur
 icons.contents=Tarkib
 icons.both=Ikkalasi

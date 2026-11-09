@@ -413,7 +413,7 @@ pub(super) fn add_program(path: &str) {
 
 pub(super) fn remove_program(exe: &str) {
     let rest: Vec<String> = programs().into_iter().filter(|p| exe_name(p) != exe).collect();
-    let _ = std::fs::write(programs_file(), rest.iter().map(|p| format!("{p}\n")).collect::<String>());
+    let _ = crate::write_safe(programs_file(), rest.iter().map(|p| format!("{p}\n")).collect::<String>());
 }
 
 /// Where a program not seen yet lives, if it registered itself (App Paths): firefox.exe before Firefox's first file window.
@@ -817,8 +817,15 @@ pub(super) unsafe fn open(main: HWND, path: &str) {
             with(|u| u.go_dir(path));
         }
         Kind::Save => {
-            pick(|p| SetWindowTextW(p.edit, wz(&file_name(path)).as_ptr()));
-            commit(main);
+            let name = file_name(path);
+            let Some((dlg, e, done)) = pick(|p| {
+                SetWindowTextW(p.edit, wz(&name).as_ptr());
+                (p.dlg, p.edit, p.done)
+            }) else { return };
+            if !done {
+                let parent = std::path::Path::new(path).parent().map(|d| d.to_string_lossy().into_owned());
+                commit_save(main, dlg, e, &name, parent); // its own folder: a recursive listing shows subfolders' files
+            }
         }
         Kind::Open => {
             // the box shows the selection when the opened file is in it; else just this one
@@ -905,6 +912,10 @@ unsafe fn hand_over(main: HWND, dlg: HWND, answer: &str, folder: bool, remember:
             let t0 = Instant::now();
             while IsWindow(dlg) != 0 && text(e) == answer && t0.elapsed() < Duration::from_secs(2) {
                 std::thread::sleep(Duration::from_millis(20));
+            }
+            if IsWindow(dlg) != 0 && text(e) == answer {
+                unhide(dlg); // it never went in: its own OK now would answer with some other folder
+                return;
             }
             send(e, WM_SETTEXT, 0, wz("").as_ptr() as isize);
             PostMessageW(dlg, WM_COMMAND, IDOK as usize, 0);

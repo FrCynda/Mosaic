@@ -362,6 +362,7 @@ apps.shift=Windows pəncərəsini bir dəfə almaq üçün açılarkən Shift-i 
 apps.done=Hazır
 icons.title=İkonlar
 icons.folders=Qovluqlar
+icons.style=Qovluq üslubu
 icons.type=Növ
 icons.contents=Məzmun
 icons.both=Hər ikisi

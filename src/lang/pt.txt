@@ -362,6 +362,7 @@ apps.shift=Segure Shift ao abrir para ter a do Windows, uma vez.
 apps.done=Concluído
 icons.title=Ícones
 icons.folders=Pastas
+icons.style=Estilo das pastas
 icons.type=Tipo
 icons.contents=Conteúdo
 icons.both=Ambos

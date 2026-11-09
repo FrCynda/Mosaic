@@ -7,6 +7,7 @@ mod contentindex;
 mod datestore;
 mod direct;
 mod extract;
+mod folders10;
 mod hashcache;
 mod i18n;
 mod infrastructure;
@@ -27,6 +28,15 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 
 use application::search::SortKey;
+
+/// A file replaced whole or not at all: written beside it, then swapped in (a crash mid-write can't leave it half-empty).
+pub fn write_safe(p: impl AsRef<std::path::Path>, data: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let p = p.as_ref();
+    let mut tmp = p.as_os_str().to_owned();
+    tmp.push(".new");
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, p)
+}
 use application::SearchOptions;
 use backend::SearchBackend;
 use infrastructure::icons;
@@ -101,7 +111,7 @@ fn build_query(q: &str, cat: &str, meta: &str) -> String {
         let lower = t.to_lowercase();
         let plain = !t.starts_with('"') && !t.contains(['|', '!', '(', ')', '*', '?', ':']) && !OPS.iter().any(|o| lower.starts_with(o));
         if !meta.is_empty() && plain {
-            let mut exts: Vec<&str> = ext_info().iter().filter(|(_, info)| info.contains(&lower)).map(|(e, _)| e.as_str()).collect();
+            let mut exts: Vec<&str> = ext_info().iter().filter(|(_, info)| info.split_whitespace().any(|w| w.starts_with(lower.as_str()))).map(|(e, _)| e.as_str()).collect();
             exts.truncate(400);
             let mut alts: Vec<String> = Vec::new();
             if meta == "both" {
@@ -110,7 +120,7 @@ fn build_query(q: &str, cat: &str, meta: &str) -> String {
             if !exts.is_empty() {
                 alts.push(format!("ext:{}", exts.join(";")));
             }
-            if FOLDER_WORDS.contains(lower.as_str()) {
+            if FOLDER_WORDS.split(' ').any(|w| w == lower) {
                 alts.push("folder:".into());
             }
             if alts.is_empty() {
@@ -365,7 +375,8 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
     }
     let hq_key = hashq.as_ref().map_or(String::new(), |q| format!("{q:?}"));
     let fq_key = fieldq.as_ref().map_or(String::new(), |(t, f)| format!("{t}{f:?}"));
-    let key = format!("{}{}{}{}\0{}\0{}\0{}\0{}\0{}\0{}", a.tags, a.content, metadata::generation(), hashcache::generation(), clean_q, a.cat, a.sort, a.dir, hq_key, fq_key);
+    let flags = (a.match_case, a.whole_word, a.regex, a.diacritics, a.hidden, a.system); // the name search's too
+    let key = format!("{}{}{}{}\0{}\0{}\0{}\0{}\0{}\0{}\0{flags:?}", a.tags, a.content, metadata::generation(), hashcache::generation(), clean_q, a.cat, a.sort, a.dir, hq_key, fq_key);
     let cached = LAST.lock().as_ref().filter(|c| c.0 == key).map(|c| (c.1.clone(), c.2.clone()));
     let (hits, error) = cached.unwrap_or_else(|| {
         let (mut v, mut error) = (Vec::new(), None);
@@ -503,7 +514,13 @@ mod cli {
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--status" => status_only = true,
-                "--limit" => opts.limit = it.next().and_then(|s| s.parse().ok()).unwrap_or(opts.limit),
+                // only a number is taken as the limit: the next flag or word isn't swallowed
+                "--limit" => {
+                    if let Some(n) = it.clone().next().and_then(|s| s.parse().ok()) {
+                        opts.limit = n;
+                        it.next();
+                    }
+                }
                 "--case" => opts.match_case = true,
                 "--word" => opts.whole_word = true,
                 "--regex" => opts.regex = true,

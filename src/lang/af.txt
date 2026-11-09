@@ -362,6 +362,7 @@ apps.shift=Hou Shift in terwyl dit oopmaak om Windows s'n een keer te kry.
 apps.done=Klaar
 icons.title=Ikone
 icons.folders=Gidse
+icons.style=Gidsstyl
 icons.type=Soort
 icons.contents=Inhoud
 icons.both=Albei

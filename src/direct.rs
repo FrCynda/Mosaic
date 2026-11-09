@@ -22,8 +22,8 @@ const LISTS: [&str; 5] = ["pc:", "net:", "linux:", "recent:", "recent-dirs:"];
 /// A list of `q`'s own (This PC, Network, Linux, Recent), or the folder of a `child:` query the index can't answer.
 fn target(q: &str) -> Option<String> {
     let q = q.trim();
-    if LISTS.contains(&q) {
-        return Some(q.into());
+    if LISTS.contains(&q.to_lowercase().as_str()) {
+        return Some(q.to_lowercase());
     }
     let (d, _) = q.strip_prefix("child:\"")?.split_once('"')?;
     outside(d).then(|| d.to_string())

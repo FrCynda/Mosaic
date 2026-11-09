@@ -361,6 +361,7 @@ apps.shift=창이 열릴 때 Shift를 누르고 있으면 한 번 Windows 기본
 apps.done=완료
 icons.title=아이콘
 icons.folders=폴더
+icons.style=폴더 스타일
 icons.type=유형
 icons.contents=내용
 icons.both=둘 다

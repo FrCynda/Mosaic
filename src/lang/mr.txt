@@ -362,6 +362,7 @@ apps.shift=एकदा Windows ची विंडो मिळवण्या�
 apps.done=झाले
 icons.title=आयकॉन
 icons.folders=फोल्डर
+icons.style=फोल्डर शैली
 icons.type=प्रकार
 icons.contents=आशय
 icons.both=दोन्ही

@@ -141,7 +141,7 @@ fn effect(keys: u32, files: &[String], dest: &str, allowed: u32) -> u32 {
         DROPEFFECT_COPY
     } else if shift {
         DROPEFFECT_MOVE
-    } else if files.first().and_then(|f| f.get(..2)).is_some_and(|d| dest.get(..2).is_some_and(|e| d.eq_ignore_ascii_case(e))) {
+    } else if files.first().is_some_and(|f| volume_of(f) == volume_of(dest)) {
         DROPEFFECT_MOVE
     } else {
         DROPEFFECT_COPY
@@ -154,6 +154,15 @@ fn effect(keys: u32, files: &[String], dest: &str, allowed: u32) -> u32 {
         DROPEFFECT_NONE
     }
 }
+/// The drive (`C:`) or share (`\\server\share`) `p` is on, lowercased.
+fn volume_of(p: &str) -> String {
+    let p = p.to_lowercase();
+    match p.strip_prefix("\\\\") {
+        Some(rest) => rest.splitn(3, '\\').take(2).collect::<Vec<_>>().join("\\"),
+        None => p.chars().take(2).collect(),
+    }
+}
+
 fn parent_of(p: &str) -> Option<String> {
     std::path::Path::new(p).parent().map(|d| d.to_string_lossy().into_owned())
 }

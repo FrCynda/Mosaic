@@ -363,6 +363,7 @@ apps.shift=Podržaním Shiftu pri otváraní získate raz okno Windows.
 apps.done=Hotovo
 icons.title=Ikony
 icons.folders=Priečinky
+icons.style=Štýl priečinkov
 icons.type=Typ
 icons.contents=Obsah
 icons.both=Oboje

@@ -362,6 +362,7 @@ apps.shift=ഒരിക്കൽ Windows ജാലകം ലഭിക്കാ�
 apps.done=പൂർത്തിയായി
 icons.title=ഐക്കണുകൾ
 icons.folders=ഫോൾഡറുകൾ
+icons.style=ഫോൾഡർ ശൈലി
 icons.type=തരം
 icons.contents=ഉള്ളടക്കം
 icons.both=രണ്ടും

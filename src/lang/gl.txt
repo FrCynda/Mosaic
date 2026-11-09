@@ -362,6 +362,7 @@ apps.shift=Mantén Maiús ao abrirse para ter a de Windows, unha vez.
 apps.done=Feito
 icons.title=Iconas
 icons.folders=Cartafoles
+icons.style=Estilo dos cartafoles
 icons.type=Tipo
 icons.contents=Contido
 icons.both=Ambos

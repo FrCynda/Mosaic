@@ -362,6 +362,7 @@ apps.shift=Mantén Mayús al abrirse para tener la de Windows, una vez.
 apps.done=Listo
 icons.title=Iconos
 icons.folders=Carpetas
+icons.style=Estilo de carpetas
 icons.type=Tipo
 icons.contents=Contenido
 icons.both=Ambos

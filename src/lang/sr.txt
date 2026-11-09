@@ -363,6 +363,7 @@ apps.shift=Држите Shift док се прозор отвара за Windows
 apps.done=Готово
 icons.title=Иконе
 icons.folders=Фасцикле
+icons.style=Стил фасцикли
 icons.type=Тип
 icons.contents=Садржај
 icons.both=Оба

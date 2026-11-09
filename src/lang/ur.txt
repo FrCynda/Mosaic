@@ -362,6 +362,7 @@ apps.shift=ایک بار ونڈوز کی ونڈو کے لیے کھلتے وقت 
 apps.done=ہو گیا
 icons.title=آئیکنز
 icons.folders=فولڈرز
+icons.style=فولڈر کا انداز
 icons.type=قسم
 icons.contents=مواد
 icons.both=دونوں

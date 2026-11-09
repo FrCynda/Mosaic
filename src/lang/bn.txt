@@ -362,6 +362,7 @@ apps.shift=একবার Windows-এর উইন্ডো পেতে খো
 apps.done=সম্পন্ন
 icons.title=আইকন
 icons.folders=ফোল্ডার
+icons.style=ফোল্ডারের ধরন
 icons.type=ধরন
 icons.contents=বিষয়বস্তু
 icons.both=উভয়

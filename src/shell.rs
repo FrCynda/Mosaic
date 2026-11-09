@@ -35,7 +35,14 @@ thread_local!(static HELPER: std::cell::RefCell<Option<std::process::Child>> = c
 /// Drive\ShellEx\FolderExtensions) crashes in our process. A crash now costs one thumbnail; the next call
 /// starts a fresh helper.
 /// ponytail: no per-request timeout; a hung thumbnailer stalls its worker (1 of 4). Kill+respawn on timeout if seen.
+///
+/// A folder is drawn here instead when View > Icons… asks for Windows 10's ([`crate::folders10`]).
 pub fn thumbnail(path: &str, size: i32, icon_only: bool) -> Option<Vec<u8>> {
+    crate::folders10::icon(path, size, icon_only).or_else(|| windows_thumbnail(path, size, icon_only))
+}
+
+/// [`thumbnail`] as Windows itself draws it, whatever the folder style.
+pub fn windows_thumbnail(path: &str, size: i32, icon_only: bool) -> Option<Vec<u8>> {
     use std::io::{Read, Write};
     HELPER.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -274,8 +281,18 @@ pub unsafe fn global(data: &[u8]) -> *mut c_void {
     h
 }
 
+/// `path` opened as a double-click in Explorer would (its default verb), off this thread.
 pub fn open(path: &str) {
-    let _ = Command::new("cmd").args(["/c", "start", "", path]).creation_flags(0x0800_0000).spawn();
+    let file = wide(path);
+    std::thread::spawn(move || unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let mut sei: SHELLEXECUTEINFOW = zeroed();
+        sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.fMask = SEE_MASK_NOASYNC;
+        sei.lpFile = file.as_ptr();
+        sei.nShow = SW_SHOW;
+        ShellExecuteExW(&mut sei);
+    });
 }
 
 /// Where a .lnk points (None for a broken link or one into a shell namespace with no path).

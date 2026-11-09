@@ -362,6 +362,7 @@ apps.shift=Eutsi Maius irekitzean Windows-ena izateko, behin.
 apps.done=Eginda
 icons.title=Ikonoak
 icons.folders=Karpetak
+icons.style=Karpeten estiloa
 icons.type=Mota
 icons.contents=Edukia
 icons.both=Biak

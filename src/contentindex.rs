@@ -131,7 +131,10 @@ impl Engine {
         // nothing to flush if this process never wrote anything (a search-only reader): reloading
         // the reader is still correct (and cheap) in case another process committed meanwhile
         if let Some(w) = self.writer.lock().as_mut().filter(|_| self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)) {
-            w.commit()?;
+            if let Err(e) = w.commit() {
+                self.dirty.store(true, std::sync::atomic::Ordering::Relaxed); // still to commit
+                return Err(e);
+            }
         }
         self.reader.reload()
     }
@@ -143,7 +146,11 @@ impl Engine {
         let mut w = self.writer.lock();
         if let Some(mut writer) = w.take() {
             if self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                writer.commit()?;
+                if let Err(e) = writer.commit() {
+                    self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+                    *w = Some(writer); // kept: dropping it would throw the batch away
+                    return Err(e);
+                }
             }
             writer.wait_merging_threads()?;
         }
@@ -388,23 +395,22 @@ pub fn progress() -> Option<(usize, usize)> {
 /// Whether it wrote anything to the index.
 fn index_file(path: &str, mtime: i64, size: i64) -> bool {
     if let Some(body) = crate::extract::local_text(path) {
-        let Some(body) = worth_indexing(path, &body) else {
-            // empty (a lock, a placeholder: a document per such file was a new segment a minute for nothing), or
-            // machine data rather than text
-            skip_mark(path, mtime, size);
-            return forget(path);
-        };
-        upsert(path, mtime, size, body);
-        return true;
+        if let Some(body) = worth_indexing(path, &body) {
+            upsert(path, mtime, size, body);
+            return true;
+        }
+        // empty (a lock, a placeholder: a document per such file was a new segment a minute for nothing), or
+        // machine data rather than text — unless a filter reads it (a PDF can pass the text sniff)
     }
     if !crate::extract::has_ifilter(path) {
         skip_mark(path, mtime, size); // no text in it: don't open it again until it changes
-        return false;
+        return forget(path);
     }
-    let Ok(exe) = crate::native::content_exe().or_else(|_| std::env::current_exe()) else { return false };
+    // a failed read drops the old text (no longer what the file says); unmarked, it's tried again next scan
+    let Ok(exe) = crate::native::content_exe().or_else(|_| std::env::current_exe()) else { return forget(path) };
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--extract").arg(path);
-    let Some(out) = run_capped(cmd, EXTRACT_TIMEOUT, EXTRACT_MAX) else { return false };
+    let Some(out) = run_capped(cmd, EXTRACT_TIMEOUT, EXTRACT_MAX) else { return forget(path) };
     let body = String::from_utf8_lossy(&out);
     // an empty result is stored too (an empty body): the stored mtime/size is what lets the next session's scan
     // skip this file instead of starting another subprocess for it, every time

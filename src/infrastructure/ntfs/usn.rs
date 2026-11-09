@@ -25,6 +25,7 @@ const FSCTL_READ_USN_JOURNAL: u32 = 0x0009_00BB;
 
 // USN reason flags.
 const USN_REASON_FILE_DELETE: u32 = 0x0000_0200;
+const USN_REASON_HARD_LINK_CHANGE: u32 = 0x0001_0000;
 const USN_REASON_CLOSE: u32 = 0x8000_0000;
 
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
@@ -60,6 +61,8 @@ struct ReadUsnJournalDataV0 {
 enum Op {
     Upsert(RawRecord),
     Delete(u64),
+    /// A file with several names: all of them, read anew.
+    Relink(u64, Vec<RawRecord>),
 }
 
 /// A live file change, resolved to a real path — what a USN event means to anything that cares
@@ -221,6 +224,19 @@ fn apply_op(idx: &mut SearchIndex, op: Op, sink: Option<&ChangeSink>) {
             idx.apply_delete(record_no);
             if let (Some(tx), Some(path)) = (sink, path) {
                 let _ = tx.send(ChangeEvent::Deleted { path });
+            }
+        }
+        Op::Relink(record_no, links) => {
+            let want = sink.is_some() && !links[0].is_dir;
+            let (mtime, size) = (crate::application::index::filetime_to_unix_s(links[0].modified_ft) as i64, links[0].size.unwrap_or(0) as i64);
+            idx.apply_delete(record_no);
+            for raw in links {
+                idx.apply_link(raw);
+            }
+            if want {
+                if let (Some(tx), Some(path)) = (sink, idx.path_of(record_no as u32)) {
+                    let _ = tx.send(ChangeEvent::Upserted { path, mtime, size });
+                }
             }
         }
         // resolved after upserting: a newly-created record has no path until it's linked in
@@ -394,7 +410,7 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
                 ops.push(Op::Delete(record_no));
             } else {
                 let name_start = p + name_off;
-                let name = if name_len > 0 && name_start + name_len <= buf.len() {
+                let name = if name_len > 0 && name_start + name_len <= p + rec_len {
                     let units: Vec<u16> = buf[name_start..name_start + name_len]
                         .chunks_exact(2)
                         .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -419,7 +435,13 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
                     accessed_ft: 0,
                     attributes: attrs,
                 };
-                ops.push(Op::Upsert(enrich(raw, seq, reader)));
+                // an event names one link of a file, and can't say a name went: a file with several names (or a
+                // name added or removed) is read again whole
+                let links = reader.and_then(|r| r.read_links(record_no, seq)).filter(|l| !l.is_empty() && (l.len() > 1 || reason & USN_REASON_HARD_LINK_CHANGE != 0));
+                match links {
+                    Some(links) => ops.push(Op::Relink(record_no, links)),
+                    None => ops.push(Op::Upsert(enrich(raw, seq, reader))),
+                }
             }
         }
         p += rec_len;

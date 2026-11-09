@@ -362,6 +362,7 @@ apps.shift=Hay Shift marka ay furmayso si aad mar u hesho tan Windows.
 apps.done=Waa la dhammeeyay
 icons.title=Astaamo
 icons.folders=Faylal
+icons.style=Qaabka faylalka
 icons.type=Nooc
 icons.contents=Waxa ku jira
 icons.both=Labadaba

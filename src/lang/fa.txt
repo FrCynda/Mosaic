@@ -362,6 +362,7 @@ apps.shift=هنگام باز شدن Shift را نگه دارید تا یک با�
 apps.done=انجام شد
 icons.title=نمادها
 icons.folders=پوشه‌ها
+icons.style=سبک پوشه‌ها
 icons.type=نوع
 icons.contents=محتوا
 icons.both=هر دو

@@ -362,6 +362,7 @@ apps.shift=ஒருமுறை Windows சாளரத்தைப் பெ�
 apps.done=முடிந்தது
 icons.title=ஐகான்கள்
 icons.folders=கோப்புறைகள்
+icons.style=கோப்புறை பாணி
 icons.type=வகை
 icons.contents=உள்ளடக்கம்
 icons.both=இரண்டும்

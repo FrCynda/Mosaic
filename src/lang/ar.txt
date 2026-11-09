@@ -366,6 +366,7 @@ apps.shift=اضغط Shift أثناء فتح النافذة للحصول على �
 apps.done=تم
 icons.title=الأيقونات
 icons.folders=المجلدات
+icons.style=نمط المجلدات
 icons.type=النوع
 icons.contents=المحتوى
 icons.both=كلاهما
