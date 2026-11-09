@@ -55,6 +55,55 @@ const CASE_FULL: u32 = 2;
 const ATTRS: [u32; 13] = [0x1, 0x2, 0x4, 0x10, 0x20, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x40_0000];
 const DIR_BIT: u32 = 1 << (ATTR_SHIFT + 3);
 
+/// Name order as Explorer shows it: runs of digits compare by value, so `file2` comes before `file10`. Takes
+/// lowercased names. Ties (`a01` / `a1`) fall back to the plain bytes, so the order stays total.
+pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    // skip the shared start, back to where its last digit run began: most names differ in a letter, decided at once
+    let mut i = x.iter().zip(y).take_while(|(c, d)| c == d).count();
+    while i > 0 && x[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    let mut j = i;
+    loop {
+        match (x.get(i), y.get(j)) {
+            (None, None) => return x.cmp(y),
+            (None, _) => return Less,
+            (_, None) => return Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let run = |s: &[u8], k: usize| k + s[k..].iter().take_while(|c| c.is_ascii_digit()).count();
+                let (ie, je) = (run(x, i), run(y, j));
+                let trim = |s: &[u8]| -> usize { s.iter().take_while(|&&c| c == b'0').count() };
+                let (n, m) = (&x[i + trim(&x[i..ie])..ie], &y[j + trim(&y[j..je])..je]);
+                let o = n.len().cmp(&m.len()).then(n.cmp(m));
+                if o != Equal {
+                    return o;
+                }
+                (i, j) = (ie, je);
+            }
+            (Some(c), Some(d)) if c != d => return c.cmp(d),
+            _ => (i, j) = (i + 1, j + 1),
+        }
+    }
+}
+
+/// A name as a sort key in [`name_cmp`] order (lowercase it first).
+#[derive(PartialEq, Eq)]
+pub struct NameKey(pub String);
+
+impl Ord for NameKey {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        name_cmp(&self.0, &o.0)
+    }
+}
+
+impl PartialOrd for NameKey {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
 /// Retired + unsorted entries that trigger a [`SearchIndex::rebuild`]. Until then deletes and renames only retire
 /// a slot and new names queue in a small unsorted tail, so the ~150 ms full name sort runs rarely, not on every
 /// file created anywhere on the drive.
@@ -558,7 +607,7 @@ impl SearchIndex {
     /// sorting ~2M names takes ~150 ms, and a write lock would stall every search meanwhile.
     pub fn live_name_order(&self) -> Vec<u32> {
         let mut v: Vec<u32> = (0..self.recs.len() as u32).into_par_iter().filter(|&i| self.is_live(i as usize)).collect();
-        v.par_sort_unstable_by(|&a, &b| self.lower(a as usize).cmp(self.lower(b as usize)));
+        v.par_sort_unstable_by(|&a, &b| name_cmp(self.lower(a as usize), self.lower(b as usize)));
         v
     }
 
@@ -826,7 +875,7 @@ impl SearchIndex {
             // Name order without a full sort: filter the presorted view, then slot in the (small) sorted tail.
             m = (0..self.sorted as u32).into_par_iter().filter(|&i| keep(i)).collect();
             let mut tail: Vec<u32> = (self.sorted as u32..self.recs.len() as u32).into_par_iter().filter(|&i| keep(i)).collect();
-            tail.par_sort_unstable_by(|&a, &b| self.lower(a as usize).cmp(self.lower(b as usize)));
+            tail.par_sort_unstable_by(|&a, &b| name_cmp(self.lower(a as usize), self.lower(b as usize)));
             m = self.merge_by_name(m, tail);
         } else {
             m = (0..self.recs.len() as u32).into_par_iter().filter(|&i| keep(i)).collect();
@@ -881,7 +930,7 @@ impl SearchIndex {
         let mut start = 0;
         for t in tail {
             let key = self.lower(t as usize);
-            let k = start + head[start..].partition_point(|&h| self.lower(h as usize) <= key);
+            let k = start + head[start..].partition_point(|&h| name_cmp(self.lower(h as usize), key).is_le());
             out.extend_from_slice(&head[start..k]);
             out.push(t);
             start = k;
@@ -917,7 +966,7 @@ impl SearchIndex {
         let ff = opts.folders_first;
         let cmp = |a: u32, b: u32| {
             let group = (ff && self.folder_like(b as usize)).cmp(&(ff && self.folder_like(a as usize)));
-            let name = self.lower(a as usize).cmp(self.lower(b as usize));
+            let name = name_cmp(self.lower(a as usize), self.lower(b as usize));
             group.then(if opts.ascending { name } else { name.reverse() })
         };
         back.sort_unstable_by(|&a, &b| cmp(a, b));
@@ -1440,6 +1489,19 @@ mod tests {
         want.sort();
         assert_eq!(shown, want, "every entry still shows its own spelling");
         assert_links_consistent(&idx);
+    }
+
+    #[test]
+    fn names_sort_numbers_by_value_as_explorer_does() {
+        let mut v = ["dir_1044", "dir_13", "file10.txt", "file2.txt", "a01", "a1", "a", "a0", "b", "x9y", "x10y", "x09y", "1", "z"];
+        v.sort_by(|a, b| name_cmp(a, b));
+        assert_eq!(v, ["1", "a", "a0", "a01", "a1", "b", "dir_13", "dir_1044", "file2.txt", "file10.txt", "x09y", "x9y", "x10y", "z"]);
+        // a total order: each pair agrees with its reverse
+        for a in &v {
+            for b in &v {
+                assert_eq!(name_cmp(a, b), name_cmp(b, a).reverse());
+            }
+        }
     }
 
     #[test]

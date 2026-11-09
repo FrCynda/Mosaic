@@ -12,12 +12,26 @@ fn list<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<u16> {
     v
 }
 
-/// A name with `*` or `?` (made outside Windows, by WSL say): the shell would take it as a pattern and act on every
-/// file it matches, unasked. Such names are refused.
+/// Names the shell would act on wrongly, made outside Windows (by WSL say), are refused: one with `*` or `?` it takes
+/// as a pattern, acting on every file that matches; one ending in a dot or a space it trims, acting on the file
+/// without them (`a.` deletes `a`).
 fn wild<'a>(mut paths: impl Iterator<Item = &'a str>) -> Result<(), String> {
-    match paths.any(|p| p.strip_prefix(r"\\?\").unwrap_or(p).contains(['*', '?'])) {
-        true => Err("a name with * or ? in it".into()),
-        false => Ok(()),
+    let trims = |p: &str| p.split('\\').any(|c| c.ends_with([' ', '.']) && c != "." && c != "..");
+    match paths.find_map(|p| Some(p.strip_prefix(r"\\?\").unwrap_or(p)).filter(|p| p.contains(['*', '?']) || trims(p))) {
+        Some(p) if p.contains(['*', '?']) => Err("a name with * or ? in it".into()),
+        Some(_) => Err("a name ending in a dot or a space".into()),
+        None => Ok(()),
+    }
+}
+
+/// `path` as Windows must take it literally (`\\?\C:\…`, `\\?\UNC\server\…`): the plain form drops a trailing dot
+/// or space from each name, so renaming or checking `a.` would reach `a`.
+pub fn exact(path: &str) -> PathBuf {
+    match path {
+        p if p.starts_with(r"\\?\") => p.into(),
+        p if p.starts_with(r"\\") => format!(r"\\?\UNC\{}", &p[2..]).into(),
+        p if p.get(1..3) == Some(":\\") => format!(r"\\?\{p}").into(),
+        p => p.into(),
     }
 }
 
@@ -135,6 +149,17 @@ pub fn restore(paths: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_the_shell_would_trim_are_refused_and_kept_whole() {
+        assert!(wild([r"C:\a\twin."].into_iter()).is_err());
+        assert!(wild([r"C:\a\sp \x.txt"].into_iter()).is_err());
+        assert!(wild([r"C:\a\b*.txt"].into_iter()).is_err());
+        assert!(wild([r"C:\a\.git\b.txt", r"C:\a\..\b"].into_iter()).is_ok());
+        assert_eq!(exact(r"C:\a\twin."), PathBuf::from(r"\\?\C:\a\twin."));
+        assert_eq!(exact(r"\\srv\share\a."), PathBuf::from(r"\\?\UNC\srv\share\a."));
+        assert_eq!(exact(r"\\?\C:\a"), PathBuf::from(r"\\?\C:\a"));
+    }
 
     #[test]
     fn reads_both_recycle_record_versions() {

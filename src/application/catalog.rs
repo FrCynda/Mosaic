@@ -7,7 +7,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use rayon::prelude::*;
 
-use crate::application::index::{Hit, SearchIndex, SearchResult};
+use crate::application::index::{name_cmp, Hit, NameKey, SearchIndex, SearchResult};
 use crate::application::search::{extract_distinct, Matcher, SearchOptions, SortKey};
 
 /// All indexed volumes.
@@ -252,7 +252,7 @@ pub fn sort_hits(hits: &mut [Hit], opts: &SearchOptions) {
         return;
     }
     match opts.sort {
-        SortKey::Name => hits.sort_by_key(|h| h.name.to_lowercase()),
+        SortKey::Name => hits.sort_by_cached_key(|h| NameKey(h.name.to_lowercase())),
         SortKey::Path => hits.sort_by_key(|h| h.path.to_lowercase()),
         SortKey::Size => hits.sort_by_key(|h| h.size),
         SortKey::Modified => hits.sort_by_key(|h| h.modified),
@@ -312,7 +312,7 @@ fn dedup_order(idx: &SearchIndex, order: Vec<u32>, field: &str) -> Vec<u32> {
 /// Compare two merged hits by a sort column, ascending.
 fn hit_col_cmp(a: &Hit, b: &Hit, sort: SortKey) -> std::cmp::Ordering {
     match sort {
-        SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        SortKey::Name => name_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()),
         SortKey::Path => a.path.to_lowercase().cmp(&b.path.to_lowercase()),
         SortKey::Size => a.size.cmp(&b.size),
         SortKey::Modified => a.modified.cmp(&b.modified),

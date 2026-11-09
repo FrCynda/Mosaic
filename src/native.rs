@@ -7503,12 +7503,12 @@ fn did(u: Undo) {
 /// Ctrl+Z: the newest operation reversed, as far as the files still allow (nothing put back over a newer file).
 unsafe fn undo() {
     use crate::infrastructure::fileops;
-    let gone = |p: &String| !std::path::Path::new(p).exists();
+    let gone = |p: &String| !fileops::exact(p).exists();
     let ok = match UNDO.with(|s| s.borrow_mut().pop()) {
         None => return with(|u| u.flash(t("status.nothing_undo").into())).unwrap_or(()),
         Some(Undo::Renamed(now, was)) => {
             preview::release(std::slice::from_ref(&now));
-            !gone(&now) && (gone(&was) || now.to_lowercase() == was.to_lowercase()) && std::fs::rename(&now, &was).is_ok()
+            !gone(&now) && (gone(&was) || now.to_lowercase() == was.to_lowercase()) && std::fs::rename(fileops::exact(&now), fileops::exact(&was)).is_ok()
         }
         Some(Undo::Recycled(paths)) => fileops::restore(&paths) > 0,
         Some(Undo::Made(paths)) => {
@@ -7628,7 +7628,9 @@ unsafe fn end_rename(keep: bool) {
     let n = GetWindowTextLengthW(edit);
     let mut b = vec![0u16; n as usize + 1];
     GetWindowTextW(edit, b.as_mut_ptr(), n + 1);
-    let name = String::from_utf16_lossy(&b[..n as usize]).trim().to_string();
+    // trailing dots too, as Windows drops them: the rename below is literal (a name `a.` is renamed, not `a`), so
+    // one typed with them would make a name Explorer can't open
+    let name = String::from_utf16_lossy(&b[..n as usize]).trim().trim_end_matches(['.', ' ']).to_string();
     if GetFocus() == edit {
         if let Some(list) = with(|u| u.list) {
             SetFocus(list);
@@ -7643,9 +7645,10 @@ unsafe fn end_rename(keep: bool) {
     }
     let to = from.with_file_name(&name);
     // never over another file (Windows' rename replaces it, unrecoverably); a change of case only is the same file
-    let taken = to.exists() && !to.to_string_lossy().eq_ignore_ascii_case(&path);
+    let exact = crate::infrastructure::fileops::exact;
+    let taken = exact(&to.to_string_lossy()).exists() && !to.to_string_lossy().eq_ignore_ascii_case(&path);
     preview::release(std::slice::from_ref(&path));
-    let msg = match if taken { Err(std::io::Error::from_raw_os_error(183)) } else { std::fs::rename(from, &to) } {
+    let msg = match if taken { Err(std::io::Error::from_raw_os_error(183)) } else { std::fs::rename(exact(&path), exact(&to.to_string_lossy())) } {
         Ok(()) => {
             did(Undo::Renamed(to.to_string_lossy().into_owned(), path.clone()));
             LISTED.set(Some((to.to_string_lossy().into_owned(), false, Instant::now() + Duration::from_secs(10))));
@@ -7741,7 +7744,7 @@ unsafe fn act(a: Act) {
             }
             preview::release(&paths);
             let _ = crate::infrastructure::fileops::delete_many(&paths, recycle);
-            let gone: Vec<String> = paths.iter().filter(|p| !std::path::Path::new(p).exists()).cloned().collect();
+            let gone: Vec<String> = paths.iter().filter(|p| !crate::infrastructure::fileops::exact(p).exists()).cloned().collect();
             if recycle && !gone.is_empty() {
                 did(Undo::Recycled(gone.clone()));
             }

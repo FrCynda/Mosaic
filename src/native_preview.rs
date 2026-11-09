@@ -461,7 +461,7 @@ fn folder_listing(path: &str) -> Option<Vec<Entry>> {
             Entry { path: e.path().to_string_lossy().into_owned(), name, dir, size }
         })
         .collect();
-    v.sort_by_cached_key(|e| (!e.dir, e.name.to_lowercase()));
+    v.sort_by_cached_key(|e| (!e.dir, crate::application::index::NameKey(e.name.to_lowercase())));
     v.truncate(LIST_MAX);
     Some(v)
 }

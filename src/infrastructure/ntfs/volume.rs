@@ -9,11 +9,15 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, SetFilePointerEx, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, FileBasicInfo, FileStandardInfo, GetFileInformationByHandleEx, OpenFileById, ReadFile,
+    SetFilePointerEx, FileIdType, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
 use crate::application::IndexError;
+
+use super::mft::RecordMeta;
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_BEGIN: u32 = 0;
@@ -57,6 +61,37 @@ impl Volume {
         }
 
         Ok(Self { handle, drive })
+    }
+
+    /// Size, times and attributes of the file `file_ref` (record number, sequence in the top 16 bits), asked of the
+    /// file system: current the moment a change closes, while the MFT record a raw read sees reaches the disk seconds
+    /// later. `None` when it's gone or the record was reused (the sequence no longer matches).
+    pub fn meta_by_id(&self, file_ref: u64) -> Option<RecordMeta> {
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        let id = FILE_ID_DESCRIPTOR {
+            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: file_ref as i64 },
+        };
+        unsafe {
+            let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+            let h = OpenFileById(self.handle, &id, FILE_READ_ATTRIBUTES, share, ptr::null(), FILE_FLAG_BACKUP_SEMANTICS);
+            if h == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            let mut basic: FILE_BASIC_INFO = std::mem::zeroed();
+            let mut std: FILE_STANDARD_INFO = std::mem::zeroed();
+            let ok = GetFileInformationByHandleEx(h, FileBasicInfo, &mut basic as *mut _ as *mut c_void, std::mem::size_of::<FILE_BASIC_INFO>() as u32) != 0
+                && GetFileInformationByHandleEx(h, FileStandardInfo, &mut std as *mut _ as *mut c_void, std::mem::size_of::<FILE_STANDARD_INFO>() as u32) != 0;
+            CloseHandle(h);
+            ok.then(|| RecordMeta {
+                size: (std.Directory == 0).then_some(std.EndOfFile as u64),
+                modified_ft: basic.LastWriteTime as u64,
+                created_ft: basic.CreationTime as u64,
+                accessed_ft: basic.LastAccessTime as u64,
+                attributes: basic.FileAttributes,
+            })
+        }
     }
 
     /// Issue a `DeviceIoControl` against the volume handle. Returns the number

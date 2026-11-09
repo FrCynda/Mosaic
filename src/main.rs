@@ -418,11 +418,11 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
             "path" => v.sort_by_cached_key(|h| h.path.to_lowercase()),
             "size" => v.sort_by_key(|h| h.size),
             "mtime" => v.sort_by_key(|h| h.modified),
-            "type" => v.sort_by_cached_key(|h| (ext_of(&h.name), h.name.to_lowercase())),
+            "type" => v.sort_by_cached_key(|h| (ext_of(&h.name), application::index::NameKey(h.name.to_lowercase()))),
             "attributes" => v.sort_by_key(|h| h.attributes),
             "created" => v.sort_by_key(|h| h.created),
             "accessed" => v.sort_by_key(|h| h.accessed),
-            _ => v.sort_by_cached_key(|h| h.name.to_lowercase()),
+            _ => v.sort_by_cached_key(|h| application::index::NameKey(h.name.to_lowercase())),
         }
         if a.dir == "desc" {
             v.reverse();

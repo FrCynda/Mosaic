@@ -440,7 +440,7 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
                 let links = reader.and_then(|r| r.read_links(record_no, seq)).filter(|l| !l.is_empty() && (l.len() > 1 || reason & USN_REASON_HARD_LINK_CHANGE != 0));
                 match links {
                     Some(links) => ops.push(Op::Relink(record_no, links)),
-                    None => ops.push(Op::Upsert(enrich(raw, seq, reader))),
+                    None => ops.push(Op::Upsert(enrich(raw, file_ref, reader))),
                 }
             }
         }
@@ -449,12 +449,14 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
     ops
 }
 
-/// Replace the journal's partial metadata with the authoritative values from the
-/// live MFT record, keeping the journal's name/parent/is_dir for the changed
-/// link. `seq` guards against the record having been reused since the event. A
-/// failed or rejected read leaves the journal fallbacks in place.
-fn enrich(mut raw: RawRecord, seq: u16, reader: Option<&MftReader>) -> RawRecord {
-    if let Some(meta) = reader.and_then(|r| r.read_meta(raw.record_no, seq)) {
+/// Replace the journal's partial metadata with the authoritative values, keeping the journal's name/parent/is_dir
+/// for the changed link: asked of the file system first (a raw read of the MFT record lags the disk by seconds, so a
+/// new file read no size and a changed one its old size), the raw record only when that fails. The sequence in
+/// `file_ref` guards against the record having been reused since the event. A failed or rejected read leaves the
+/// journal fallbacks in place.
+fn enrich(mut raw: RawRecord, file_ref: u64, reader: Option<&MftReader>) -> RawRecord {
+    let meta = reader.and_then(|r| r.volume().meta_by_id(file_ref).or_else(|| r.read_meta(raw.record_no, (file_ref >> 48) as u16)));
+    if let Some(meta) = meta {
         raw.size = if raw.is_dir { None } else { meta.size };
         raw.modified_ft = meta.modified_ft;
         raw.created_ft = meta.created_ft;

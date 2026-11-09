@@ -162,7 +162,7 @@ impl MftReader {
             return None;
         }
         let mut out = Vec::new();
-        parse_file_record(record, record_no, self.bytes_per_sector, &mut Vec::new(), &mut |r| out.push(r));
+        parse_file_record(record, record_no, self.bytes_per_sector, &mut Vec::new(), None, &mut |r| out.push(r));
         Some(out)
     }
 
@@ -198,8 +198,11 @@ impl VolumeEnumerator for MftReader {
         let mut record_no: u64 = 0;
         // Reused per record so hardlink name collection allocates nothing.
         let mut names: Vec<(u64, String)> = Vec::new();
+        // a file in many pieces keeps its $DATA in an extension record, which may come before or after its own: those
+        // files wait here until the whole table is read, then take their size from it
+        let mut ext = Ext::default();
 
-        for run in &self.runs {
+        'all: for run in &self.runs {
             if record_no >= self.record_count {
                 break;
             }
@@ -229,14 +232,18 @@ impl VolumeEnumerator for MftReader {
 
                 for k in 0..(want / rec_size) {
                     if record_no >= self.record_count {
-                        return Ok(());
+                        break 'all;
                     }
                     let rec = &mut buf[k * rec_size..(k + 1) * rec_size];
-                    parse_file_record(rec, record_no, self.bytes_per_sector, &mut names, sink);
+                    parse_file_record(rec, record_no, self.bytes_per_sector, &mut names, Some(&mut ext), sink);
                     record_no += 1;
                 }
                 pos += want as u64;
             }
+        }
+        for mut r in ext.held.drain(..) {
+            r.size = ext.sizes.get(&r.record_no).copied().or(r.size);
+            sink(r);
         }
         Ok(())
     }
@@ -366,11 +373,21 @@ fn decode_runs(bytes: &[u8]) -> Vec<Run> {
 /// each is a distinct path that Everything lists separately. DOS 8.3 aliases
 /// (namespace 2) are suppressed. `names` is a caller-owned scratch buffer to
 /// avoid per-record allocation.
+/// What a full scan gathers for files whose `$DATA` sits in an extension record (see [`MftReader::enumerate`]).
+#[derive(Default)]
+struct Ext {
+    /// Base record number → the size its extension record's `$DATA` gives.
+    sizes: std::collections::HashMap<u64, u64>,
+    /// Files with an `$ATTRIBUTE_LIST` and no `$DATA` of their own, waiting for that size.
+    held: Vec<RawRecord>,
+}
+
 fn parse_file_record(
     rec: &mut [u8],
     record_no: u64,
     bytes_per_sector: u16,
     names: &mut Vec<(u64, String)>,
+    mut ext: Option<&mut Ext>,
     sink: &mut dyn FnMut(RawRecord),
 ) {
     if rec.len() < 0x30 || &rec[0..4] != b"FILE" {
@@ -389,6 +406,7 @@ fn parse_file_record(
     names.clear();
     let mut size_from_data: Option<u64> = None;
     let mut size_from_name: Option<u64> = None;
+    let mut has_list = false;
     let mut std = StdInfo::default();
 
     let mut off = first_attr;
@@ -432,8 +450,9 @@ fn parse_file_record(
                     }
                 }
             }
-            // $DATA — the unnamed stream gives the file's logical size.
-            0x80 if name_len == 0 => {
+            0x20 => has_list = true,
+            // $DATA — the unnamed stream gives the file's logical size (its first piece: a later one's reads 0).
+            0x80 if name_len == 0 && (non_resident == 0 || read_u64(rec, off + 0x10) == 0) => {
                 size_from_data = Some(data_attr_size(rec, off, non_resident));
             }
             _ => {}
@@ -441,13 +460,20 @@ fn parse_file_record(
         off += len;
     }
 
+    // an extension record (its base's number at +0x20) may hold its base's $DATA (and, for a file with many links,
+    // some of its names: those are listed as before)
+    let base = read_u64(rec, 0x20) & 0x0000_FFFF_FFFF_FFFF;
+    if let (true, Some(ext), Some(size)) = (base != 0, ext.as_deref_mut(), size_from_data) {
+        ext.sizes.insert(base, size);
+    }
     if names.is_empty() {
         return;
     }
     let size = resolve_size(is_dir, size_from_data, size_from_name);
     let seq = read_u16(rec, 0x10);
+    let hold = has_list && size_from_data.is_none() && !is_dir;
     for (parent_ref, name) in names.drain(..) {
-        sink(RawRecord {
+        let r = RawRecord {
             record_no,
             parent_no: parent_ref & 0x0000_FFFF_FFFF_FFFF,
             seq,
@@ -459,7 +485,11 @@ fn parse_file_record(
             created_ft: std.created_ft,
             accessed_ft: std.accessed_ft,
             attributes: normalize_attributes(std.attributes, is_dir),
-        });
+        };
+        match ext.as_deref_mut() {
+            Some(ext) if hold => ext.held.push(r),
+            _ => sink(r),
+        }
     }
 }
 
