@@ -154,18 +154,6 @@ impl MftReader {
         parse_record_meta(record)
     }
 
-    /// Every name the record has now, each as the full scan reads it; `None` as for [`Self::read_meta`].
-    pub fn read_links(&self, record_no: u64, expected_seq: u16) -> Option<Vec<RawRecord>> {
-        let (mut buf, pad) = self.read_record(record_no)?;
-        let record = &mut buf[pad..pad + self.record_size as usize];
-        if read_u16(record, 0x10) != expected_seq {
-            return None;
-        }
-        let mut out = Vec::new();
-        parse_file_record(record, record_no, self.bytes_per_sector, &mut Vec::new(), None, &mut |r| out.push(r));
-        Some(out)
-    }
-
     /// The sector window holding record `record_no`, and where in it the record starts.
     fn read_record(&self, record_no: u64) -> Option<(Vec<u8>, usize)> {
         let offset = self.record_offset(record_no)?;

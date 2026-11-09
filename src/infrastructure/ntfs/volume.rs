@@ -67,18 +67,8 @@ impl Volume {
     /// file system: current the moment a change closes, while the MFT record a raw read sees reaches the disk seconds
     /// later. `None` when it's gone or the record was reused (the sequence no longer matches).
     pub fn meta_by_id(&self, file_ref: u64) -> Option<RecordMeta> {
-        const FILE_READ_ATTRIBUTES: u32 = 0x80;
-        let id = FILE_ID_DESCRIPTOR {
-            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
-            Type: FileIdType,
-            Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: file_ref as i64 },
-        };
         unsafe {
-            let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-            let h = OpenFileById(self.handle, &id, FILE_READ_ATTRIBUTES, share, ptr::null(), FILE_FLAG_BACKUP_SEMANTICS);
-            if h == INVALID_HANDLE_VALUE {
-                return None;
-            }
+            let h = self.open_by_id(file_ref)?;
             let mut basic: FILE_BASIC_INFO = std::mem::zeroed();
             let mut std: FILE_STANDARD_INFO = std::mem::zeroed();
             let ok = GetFileInformationByHandleEx(h, FileBasicInfo, &mut basic as *mut _ as *mut c_void, std::mem::size_of::<FILE_BASIC_INFO>() as u32) != 0
@@ -92,6 +82,60 @@ impl Volume {
                 attributes: basic.FileAttributes,
             })
         }
+    }
+
+    /// Every name the file `file_ref` has now, as (parent reference, name), asked of the file system as
+    /// [`Self::meta_by_id`] is: the raw record lags, so a name just added or removed would read wrong there.
+    pub fn links_by_id(&self, file_ref: u64) -> Option<Vec<(u64, String)>> {
+        #[link(name = "ntdll")]
+        extern "system" {
+            fn NtQueryInformationFile(h: HANDLE, iosb: *mut [usize; 2], info: *mut c_void, len: u32, class: u32) -> i32;
+        }
+        const FILE_HARD_LINK_INFORMATION: u32 = 46;
+        unsafe {
+            let h = self.open_by_id(file_ref)?;
+            // FILE_LINKS_INFORMATION: bytes needed, entries, then entries of { next offset, parent id, name length
+            // in characters, name }; 64 KB holds hundreds of names, a larger answer is asked again at its size
+            let mut buf = vec![0u64; 8192];
+            let mut iosb = [0usize; 2];
+            let mut status = NtQueryInformationFile(h, &mut iosb, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32, FILE_HARD_LINK_INFORMATION);
+            let need = (buf[0] & 0xFFFF_FFFF) as usize;
+            if status < 0 && need > buf.len() * 8 {
+                buf = vec![0u64; need.div_ceil(8)];
+                status = NtQueryInformationFile(h, &mut iosb, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32, FILE_HARD_LINK_INFORMATION);
+            }
+            CloseHandle(h);
+            if status < 0 {
+                return None;
+            }
+            let b = std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), buf.len() * 8);
+            let u32_at = |o: usize| Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize);
+            let mut out = Vec::new();
+            let mut at = 8;
+            for _ in 0..u32_at(4)? {
+                let parent = u64::from_le_bytes(b.get(at + 8..at + 16)?.try_into().ok()?);
+                let units: Vec<u16> = b.get(at + 20..at + 20 + u32_at(at + 16)? * 2)?.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                out.push((parent, String::from_utf16_lossy(&units)));
+                match u32_at(at)? {
+                    0 => break,
+                    next => at += next,
+                }
+            }
+            Some(out)
+        }
+    }
+
+    /// The file `file_ref` on this volume, opened to read its attributes only (any sharing, folders too).
+    unsafe fn open_by_id(&self, file_ref: u64) -> Option<HANDLE> {
+        const FILE_READ_ATTRIBUTES: u32 = 0x80;
+        let id = FILE_ID_DESCRIPTOR {
+            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: file_ref as i64 },
+        };
+        let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+        let h = OpenFileById(self.handle, &id, FILE_READ_ATTRIBUTES, share, ptr::null(), FILE_FLAG_BACKUP_SEMANTICS);
+        (h != INVALID_HANDLE_VALUE).then_some(h)
     }
 
     /// Issue a `DeviceIoControl` against the volume handle. Returns the number

@@ -7743,7 +7743,7 @@ unsafe fn act(a: Act) {
                 return;
             }
             preview::release(&paths);
-            let _ = crate::infrastructure::fileops::delete_many(&paths, recycle);
+            let res = crate::infrastructure::fileops::delete_many(&paths, recycle);
             let gone: Vec<String> = paths.iter().filter(|p| !crate::infrastructure::fileops::exact(p).exists()).cloned().collect();
             if recycle && !gone.is_empty() {
                 did(Undo::Recycled(gone.clone()));
@@ -7753,7 +7753,9 @@ unsafe fn act(a: Act) {
                 u.relist_soon();
                 u.set_sel(Sel::default(), None, Some(None));
             });
-            if gone == 0 {
+            if let (0, Err(e)) = (gone, res) {
+                t("status.failed").replace("{e}", &e)
+            } else if gone == 0 {
                 t("status.nothing_deleted").into()
             } else if recycle {
                 t("status.moved_recycle").replace("{n}", &plural(gone))

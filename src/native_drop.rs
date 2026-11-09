@@ -382,7 +382,10 @@ pub(super) unsafe fn dropped(l: LPARAM) {
                     .iter()
                     .filter_map(|f| {
                         let name = std::path::Path::new(f).file_stem()?.to_string_lossy().into_owned();
-                        let lnk = format!("{}\\{name} - Shortcut.lnk", dest.trim_end_matches('\\'));
+                        // a free name, as Explorer picks one: saving over a shortcut already there would lose it (and undo
+                        // would then delete it)
+                        let base = format!("{}\\{name} - Shortcut", dest.trim_end_matches('\\'));
+                        let lnk = (1..).map(|i| if i == 1 { format!("{base}.lnk") } else { format!("{base} ({i}).lnk") }).find(|l| !std::path::Path::new(l).exists())?;
                         shell::make_link(f, &lnk).then_some(lnk)
                     })
                     .collect();

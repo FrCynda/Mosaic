@@ -403,9 +403,6 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
         // Act only on the coalesced final (close) event for each change.
         if reason & USN_REASON_CLOSE != 0 {
             let record_no = file_ref & RECORD_MASK;
-            // High 16 bits of the reference are the record's sequence number,
-            // used to detect MFT-record reuse when re-reading metadata.
-            let seq = (file_ref >> 48) as u16;
             if reason & USN_REASON_FILE_DELETE != 0 {
                 ops.push(Op::Delete(record_no));
             } else {
@@ -437,10 +434,15 @@ fn parse_records(buf: &[u8], reader: Option<&MftReader>) -> Vec<Op> {
                 };
                 // an event names one link of a file, and can't say a name went: a file with several names (or a
                 // name added or removed) is read again whole
-                let links = reader.and_then(|r| r.read_links(record_no, seq)).filter(|l| !l.is_empty() && (l.len() > 1 || reason & USN_REASON_HARD_LINK_CHANGE != 0));
+                // (asked of the file system: the raw record lags by seconds, and read mid-change can name none)
+                let links = reader.and_then(|r| r.volume().links_by_id(file_ref)).filter(|l| !l.is_empty() && (l.len() > 1 || reason & USN_REASON_HARD_LINK_CHANGE != 0));
+                let raw = enrich(raw, file_ref, reader);
                 match links {
-                    Some(links) => ops.push(Op::Relink(record_no, links)),
-                    None => ops.push(Op::Upsert(enrich(raw, file_ref, reader))),
+                    Some(links) => ops.push(Op::Relink(
+                        record_no,
+                        links.into_iter().map(|(parent, name)| RawRecord { seq: (file_ref >> 48) as u16, parent_no: parent & RECORD_MASK, parent_seq: (parent >> 48) as u16, name, ..raw.clone() }).collect(),
+                    )),
+                    None => ops.push(Op::Upsert(raw)),
                 }
             }
         }

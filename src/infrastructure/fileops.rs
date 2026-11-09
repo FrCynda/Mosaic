@@ -44,7 +44,7 @@ fn shell_op(func: u32, from: &[u16], to: Option<&[u16]>, flags: u32) -> Result<(
     // SAFETY: `op` is fully initialized and the lists outlive the call.
     let rc = unsafe { SHFileOperationW(&mut op) };
     if rc != 0 {
-        return Err(format!("failed (code {rc})"));
+        return Err(shell_err(rc));
     }
     if op.fAnyOperationsAborted != 0 {
         return Err("cancelled".into());
@@ -90,7 +90,16 @@ pub fn transfer(paths: &[String], dir: &str, copy: bool, owner: isize) -> Result
     match unsafe { SHFileOperationW(&mut op) } {
         0 if op.fAnyOperationsAborted != 0 => Err("cancelled".into()),
         0 => Ok(()),
-        rc => Err(format!("failed (code {rc})")),
+        rc => Err(shell_err(rc)),
+    }
+}
+
+/// SHFileOperation's result as words: below 0x71 it is a Windows error (32: the file is open in another program),
+/// which Windows words in the user's language; above, one of the shell's own codes.
+fn shell_err(rc: i32) -> String {
+    match rc {
+        1..0x71 => std::io::Error::from_raw_os_error(rc).to_string().split(" (os error").next().unwrap_or_default().trim().into(),
+        _ => format!("failed (code {rc})"),
     }
 }
 
@@ -149,6 +158,12 @@ pub fn restore(paths: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_errors_are_worded() {
+        assert!(!shell_err(32).contains("code") && !shell_err(32).is_empty());
+        assert_eq!(shell_err(0x7C), "failed (code 124)");
+    }
 
     #[test]
     fn names_the_shell_would_trim_are_refused_and_kept_whole() {
