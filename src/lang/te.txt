@@ -422,3 +422,4 @@ update.never=ఎప్పుడూ అప్‌డేట్‌ల కోసం �
 update.page=GitHub‌లో చూడండి
 update.current=Mosaic {v} తాజా వెర్షన్.
 update.unreachable=అప్‌డేట్‌ల కోసం GitHub‌ను చేరుకోలేకపోయాము.
+menu.find_dupes=ఇక్కడ నకిలీలను కనుగొను

@@ -421,3 +421,4 @@ update.never=Elelela mmelite ọ dịla mgbe
 update.page=Lee na GitHub
 update.current=Mosaic {v} bụ ụdị kachasị ọhụrụ.
 update.unreachable=Enweghị ike iru GitHub iji chọọ mmelite.
+menu.find_dupes=Chọta faịlụ ndị yiri onwe ha ebe a

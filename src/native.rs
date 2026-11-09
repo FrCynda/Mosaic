@@ -326,6 +326,9 @@ fn item_extras(dir: bool, acts: &mut Vec<Act>) -> Vec<MItem> {
     }
     v.push(entry(t("menu.open_folder"), false, Act::Reveal, acts));
     v.push(entry(t("menu.search_in"), false, Act::SearchIn, acts));
+    if dir {
+        v.push(entry(t("menu.find_dupes"), false, Act::Dupes, acts));
+    }
     v
 }
 
@@ -346,6 +349,7 @@ fn bg_extras(u: &Ui, acts: &mut Vec<Act>) -> Vec<MItem> {
         MItem { label: t("menubar.view").into(), sub: view, ..Default::default() },
         MItem { label: t("menu.sort_by").into(), sub: sort, ..Default::default() },
         entry(t("menu.refresh"), false, Act::Refresh, acts),
+        entry(t("menu.find_dupes"), false, Act::HereDupes, acts),
         MItem::default(),
         paste,
     ]
@@ -1112,10 +1116,12 @@ enum Act {
     Del,
     DelNow, // skip the Recycle Bin
     SearchIn,
+    Dupes, // the duplicate files in a folder
     // on the folder on screen (`Ui::here`), or the view: no selection needed
     Paste,
     NewFolder,
     HereProps,
+    HereDupes,
     Refresh,
     SelectAll,
     Undo,
@@ -4057,6 +4063,13 @@ impl Ui {
             SetFocus(self.edit);
             SendMessageW(self.edit, 0x00B1, q.encode_utf16().count(), q.encode_utf16().count() as isize); // EM_SETSEL: caret at the end
         }
+    }
+
+    /// The duplicate files in `dir` and below (`dupe:`), twins together. Back returns to before.
+    fn find_dupes(&self, dir: &str) {
+        let q = format!("dupe: descendant:\"{}\"", dir.trim_end_matches('\\'));
+        self.visit(&q);
+        unsafe { SetWindowTextW(self.edit, wz(&q).as_ptr()) };
     }
 
     fn select_all(&mut self) {
@@ -7705,6 +7718,13 @@ unsafe fn act(a: Act) {
             });
             return;
         }
+        Act::HereDupes => {
+            match with(|u| u.here()) {
+                Some(Some(dir)) => with(|u| u.find_dupes(&dir)),
+                _ => with(|u| u.flash(t("status.no_folder").into())),
+            };
+            return;
+        }
         Act::Paste | Act::NewFolder | Act::HereProps => {
             let Some(Some(dir)) = with(|u| u.here()) else {
                 with(|u| u.flash(t("status.no_folder").into()));
@@ -7731,6 +7751,7 @@ unsafe fn act(a: Act) {
     let msg = match a {
         Act::OpenHere => return with(|u| u.go_dir(&paths[0])).unwrap_or(()),
         Act::OpenTab => return with(|u| u.open_tab(&paths[0])).unwrap_or(()),
+        Act::Dupes => return with(|u| u.find_dupes(&paths[0])).unwrap_or(()),
         Act::Rename => return start_rename(),
         Act::SearchIn => {
             let dir = if std::fs::metadata(&paths[0]).is_ok_and(|m| m.is_dir()) { paths[0].clone() } else { std::path::Path::new(&paths[0]).parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()) };

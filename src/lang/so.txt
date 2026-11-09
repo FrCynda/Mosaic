@@ -422,3 +422,4 @@ update.never=Weligaa ha hubin cusboonaysiinta
 update.page=Ka eeg GitHub
 update.current=Mosaic {v} waa nooca ugu cusub.
 update.unreachable=Lama gaari karin GitHub si loo raadiyo cusboonaysiin.
+menu.find_dupes=Halkan ka raadi faylasha isku midka ah

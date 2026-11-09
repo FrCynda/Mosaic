@@ -422,3 +422,4 @@ update.never=ዝማኔዎችን በጭራሽ አትፈትሽ
 update.page=በGitHub ላይ ይመልከቱ
 update.current=Mosaic {v} የቅርብ ጊዜው ስሪት ነው።
 update.unreachable=ዝማኔዎችን ለመፈለግ GitHubን ማግኘት አልተቻለም።
+menu.find_dupes=እዚህ ተደጋጋሚ ፋይሎችን ፈልግ

@@ -421,3 +421,4 @@ update.never=Má ṣàyẹ̀wò fún ìmúdójúìwọ̀n láé
 update.page=Wò ó lórí GitHub
 update.current=Mosaic {v} ni ẹ̀yà tuntun jùlọ.
 update.unreachable=Kò ṣeé ṣe láti dé GitHub láti wá ìmúdójúìwọ̀n.
+menu.find_dupes=Wá àwọn ẹ̀dà àdáwòkọ níbí

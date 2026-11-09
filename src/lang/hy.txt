@@ -422,3 +422,4 @@ update.never=Երբեք չստուգել թարմացումները
 update.page=Դիտել GitHub-ում
 update.current=Mosaic {v}-ը վերջին տարբերակն է։
 update.unreachable=Չհաջողվեց կապ հաստատել GitHub-ի հետ՝ թարմացումները ստուգելու համար։
+menu.find_dupes=Գտնել կրկնօրինակներն այստեղ

@@ -422,3 +422,4 @@ update.never=Ära kunagi otsi värskendusi
 update.page=Vaata GitHubis
 update.current=Mosaic {v} on uusim versioon.
 update.unreachable=GitHubiga ei saanud värskenduste otsimiseks ühendust.
+menu.find_dupes=Otsi siit duplikaate

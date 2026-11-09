@@ -421,3 +421,4 @@ update.never=Huwag kailanman tumingin ng update
 update.page=Tingnan sa GitHub
 update.current=Ang Mosaic {v} ang pinakabagong bersyon.
 update.unreachable=Hindi maabot ang GitHub para maghanap ng update.
+menu.find_dupes=Maghanap ng mga duplicate dito

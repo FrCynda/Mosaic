@@ -421,3 +421,4 @@ update.never=Bul seet yeesal mukk
 update.page=Xool ci GitHub
 update.current=Mosaic {v} mooy sumb bi gën a bees.
 update.unreachable=Mënuñu jot GitHub ngir seet yeesal.
+menu.find_dupes=Seet dosiye yu niroo fii

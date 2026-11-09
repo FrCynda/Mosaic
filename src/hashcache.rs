@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
+use crate::application::index::Hit;
 use crate::application::SearchOptions;
 use crate::backend::SearchHandle;
 
@@ -219,62 +220,67 @@ pub fn extract_hash(query: &str) -> (String, Option<HashQuery>) {
 
 /// Whether `path`'s cached hash matches a `md5:`/`sha1:`/`sha256:`/`crc32:` query. A path not yet
 /// hashed by the background sync never matches (same "empty until synced" behavior as `metadata.rs`).
-fn hash_matches(path: &str, hq: &HashQuery) -> bool {
+pub fn matches(path: &str, hq: &HashQuery) -> bool {
     let Some(h) = get(path) else { return false };
     match hq {
         HashQuery::Md5(v) => &to_hex(&h.md5) == v,
         HashQuery::Sha1(v) => &to_hex(&h.sha1) == v,
         HashQuery::Sha256(v) => &to_hex(&h.sha256) == v,
         HashQuery::Crc32(v) => format!("{:08x}", h.crc32) == *v,
-        HashQuery::Dupe => false, // handled separately by `dupe_paths`, not a per-path hash compare
+        HashQuery::Dupe => false, // handled separately by `dupes_among`, not a per-path hash compare
     }
 }
 
-/// Every path that's part of a same-size, same-sha256 group of two or more, among already-hashed
-/// files. `dupe:` filters candidates down to this set.
-pub fn dupe_paths() -> std::collections::HashSet<String> {
-    let g = FILES.read();
-    let Some(files) = g.as_ref() else { return Default::default() };
-    let mut by_size: HashMap<i64, Vec<(&String, &Hashes)>> = HashMap::new();
-    for (p, (_, size, h)) in files.iter() {
-        by_size.entry(*size).or_default().push((p, h));
-    }
-    let mut out = std::collections::HashSet::new();
-    for members in by_size.into_values() {
-        if members.len() < 2 {
-            continue;
-        }
-        let mut by_hash: HashMap<[u8; 32], Vec<&String>> = HashMap::new();
-        for (p, h) in members {
-            by_hash.entry(h.sha256).or_default().push(p);
-        }
-        for group in by_hash.into_values().filter(|g| g.len() > 1) {
-            out.extend(group.into_iter().cloned());
+/// The files among `hits` with an identical twin there (same size, same SHA-256), each set of twins together, the
+/// biggest first. Only files whose size another one shares are read, so it needs no full sync: a hash cached for the
+/// same mtime is reused, a new one cached for the next search. Empty files are left out (all alike, none a copy).
+/// ponytail: hashes made here live until the app closes (the sync saves its own); save them too if reruns get slow.
+pub fn dupes_among(hits: Vec<Hit>) -> Vec<Hit> {
+    use rayon::prelude::*;
+    {
+        let mut g = FILES.write();
+        if g.is_none() {
+            *g = Some(crate::kvlog::load(&store()));
         }
     }
-    out
-}
-
-/// Whether `path` (any case) should be kept for a hash/dupe query.
-pub fn matches(path: &str, hq: &HashQuery) -> bool {
-    match hq {
-        HashQuery::Dupe => {
-            // grouped once per cache generation, not once per candidate (that was every hashed file, per row)
-            static DUPES: Mutex<Option<(usize, std::sync::Arc<std::collections::HashSet<String>>)>> = Mutex::new(None);
-            let gen = generation();
-            let set = {
-                let mut d = DUPES.lock();
-                match d.as_ref().filter(|d| d.0 == gen) {
-                    Some(d) => d.1.clone(),
-                    None => d.insert((gen, std::sync::Arc::new(dupe_paths()))).1.clone(),
+    let mut by_size: HashMap<i64, Vec<Hit>> = HashMap::new();
+    for h in hits.into_iter().filter(|h| !h.is_dir && h.size > 0) {
+        by_size.entry(h.size).or_default().push(h);
+    }
+    let todo: Vec<Hit> = by_size.into_values().filter(|g| g.len() > 1).flatten().collect();
+    let hashed: Vec<(Hit, [u8; 32])> = todo
+        .into_par_iter()
+        .filter_map(|h| {
+            let key = h.path.to_lowercase();
+            let cached = FILES.read().as_ref().and_then(|f| f.get(&key).filter(|e| e.0 == h.modified && e.1 == h.size).map(|e| e.2.sha256));
+            let sha = match cached {
+                Some(sha) => sha,
+                None => {
+                    let hashes = hash_file(&h.path)?;
+                    let sha = hashes.sha256;
+                    if let Some(f) = FILES.write().as_mut() {
+                        f.insert(key, (h.modified, h.size, hashes));
+                    }
+                    sha
                 }
             };
-            set.contains(&path.to_lowercase())
-        }
-        _ => hash_matches(path, hq),
+            Some((h, sha))
+        })
+        .collect();
+    let mut groups: HashMap<(i64, [u8; 32]), Vec<Hit>> = HashMap::new();
+    for (h, sha) in hashed {
+        groups.entry((h.size, sha)).or_default().push(h);
     }
+    let mut groups: Vec<_> = groups.into_iter().filter(|g| g.1.len() > 1).collect();
+    groups.sort_by(|a, b| b.0 .0.cmp(&a.0 .0).then(a.0 .1.cmp(&b.0 .1)));
+    groups
+        .into_iter()
+        .flat_map(|(_, mut g)| {
+            g.sort_by_cached_key(|h| h.path.to_lowercase());
+            g
+        })
+        .collect()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -313,18 +319,26 @@ mod tests {
     }
 
     #[test]
-    fn dupe_paths_groups_by_size_then_hash() {
-        *FILES.write() = Some(HashMap::from([
-            ("c:\\a.txt".into(), (0, 100, Hashes { sha256: [1; 32], ..Default::default() })),
-            ("c:\\b.txt".into(), (0, 100, Hashes { sha256: [1; 32], ..Default::default() })), // same size+hash as a
-            ("c:\\c.txt".into(), (0, 100, Hashes { sha256: [2; 32], ..Default::default() })), // same size, different hash
-            ("c:\\d.txt".into(), (0, 200, Hashes { sha256: [1; 32], ..Default::default() })), // different size
-        ]));
-        let dupes = dupe_paths();
-        assert!(dupes.contains("c:\\a.txt"));
-        assert!(dupes.contains("c:\\b.txt"));
-        assert!(!dupes.contains("c:\\c.txt"));
-        assert!(!dupes.contains("c:\\d.txt"));
-        *FILES.write() = None;
+    fn dupes_among_groups_twins_by_content_biggest_first() {
+        let dir = std::env::temp_dir().join(format!("rn-dupes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mk = |name: &str, data: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, data).unwrap();
+            Hit { name: name.into(), path: p.to_string_lossy().into_owned(), size: data.len() as i64, modified: 1, created: 0, accessed: 0, attributes: 0, is_dir: false }
+        };
+        let hits = vec![
+            mk("small_b.txt", b"abc"),
+            mk("big_a.txt", b"0123456789"),
+            mk("decoy.txt", b"0123456780"), // same size as big_*, other bytes
+            mk("small_a.txt", b"abc"),
+            mk("big_b.txt", b"0123456789"),
+            mk("alone.txt", b"xyzw"),
+            mk("empty_a.txt", b""),
+            mk("empty_b.txt", b""), // alike, but empty: not a copy worth listing
+        ];
+        let names: Vec<String> = dupes_among(hits).into_iter().map(|h| h.name).collect();
+        assert_eq!(names, ["big_a.txt", "big_b.txt", "small_a.txt", "small_b.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

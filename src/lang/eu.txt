@@ -422,3 +422,4 @@ update.never=Ez bilatu inoiz eguneraketarik
 update.page=Ikusi GitHub-en
 update.current=Mosaic {v} da bertsiorik berriena.
 update.unreachable=Ezin izan da GitHub-era konektatu eguneraketak bilatzeko.
+menu.find_dupes=Bilatu bikoiztuak hemen

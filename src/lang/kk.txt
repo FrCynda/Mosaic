@@ -422,3 +422,4 @@ update.never=Жаңартуларды ешқашан тексермеу
 update.page=GitHub-та қарау
 update.current=Mosaic {v} — ең соңғы нұсқа.
 update.unreachable=Жаңартуларды тексеру үшін GitHub-қа қосылу мүмкін болмады.
+menu.find_dupes=Осы жерден көшірмелерді табу

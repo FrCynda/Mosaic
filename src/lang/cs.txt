@@ -423,3 +423,4 @@ update.never=Nikdy nekontrolovat aktualizace
 update.page=Zobrazit na GitHubu
 update.current=Mosaic {v} je nejnovější verze.
 update.unreachable=Nepodařilo se spojit s GitHubem a zkontrolovat aktualizace.
+menu.find_dupes=Najít duplicity zde

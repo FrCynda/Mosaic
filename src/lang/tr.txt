@@ -422,3 +422,4 @@ update.never=Güncellemeleri asla denetleme
 update.page=GitHub'da görüntüle
 update.current=Mosaic {v} en son sürüm.
 update.unreachable=Güncellemeleri denetlemek için GitHub'a ulaşılamadı.
+menu.find_dupes=Burada yinelenenleri bul

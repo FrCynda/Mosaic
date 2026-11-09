@@ -422,3 +422,4 @@ update.never=არასოდეს შეამოწმო განახ�
 update.page=ნახვა GitHub-ზე
 update.current=Mosaic {v} უახლესი ვერსიაა.
 update.unreachable=განახლებების შესამოწმებლად GitHub-თან დაკავშირება ვერ მოხერხდა.
+menu.find_dupes=დუბლიკატების ძებნა აქ

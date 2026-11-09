@@ -422,3 +422,4 @@ update.never=هرگز به‌روزرسانی بررسی نشود
 update.page=مشاهده در GitHub
 update.current=Mosaic {v} جدیدترین نسخه است.
 update.unreachable=اتصال به GitHub برای یافتن به‌روزرسانی ممکن نشد.
+menu.find_dupes=یافتن فایل‌های تکراری در اینجا

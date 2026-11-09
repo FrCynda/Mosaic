@@ -422,3 +422,4 @@ update.never=Usiangalie masasisho kamwe
 update.page=Tazama kwenye GitHub
 update.current=Mosaic {v} ndilo toleo jipya zaidi.
 update.unreachable=Imeshindwa kufikia GitHub ili kutafuta masasisho.
+menu.find_dupes=Tafuta nakala rudufu hapa

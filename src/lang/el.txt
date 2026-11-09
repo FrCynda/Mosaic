@@ -422,3 +422,4 @@ update.never=Να μην γίνεται ποτέ έλεγχος για ενημ�
 update.page=Προβολή στο GitHub
 update.current=Το Mosaic {v} είναι η πιο πρόσφατη έκδοση.
 update.unreachable=Δεν ήταν δυνατή η σύνδεση με το GitHub για έλεγχο ενημερώσεων.
+menu.find_dupes=Εύρεση διπλότυπων εδώ

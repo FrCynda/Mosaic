@@ -423,3 +423,4 @@ update.never=Nu căuta niciodată actualizări
 update.page=Vezi pe GitHub
 update.current=Mosaic {v} este cea mai nouă versiune.
 update.unreachable=GitHub nu a putut fi contactat pentru căutarea actualizărilor.
+menu.find_dupes=Găsește duplicate aici

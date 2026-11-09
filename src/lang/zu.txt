@@ -422,3 +422,4 @@ update.never=Ungalokothi uhlole izibuyekezo
 update.page=Buka ku-GitHub
 update.current=I-Mosaic {v} iyinguqulo yakamuva.
 update.unreachable=Ayikwazanga ukufinyelela ku-GitHub ukuze ifune izibuyekezo.
+menu.find_dupes=Thola amakhophi lapha

@@ -421,3 +421,4 @@ update.never=Jangan pernah periksa pembaruan
 update.page=Lihat di GitHub
 update.current=Mosaic {v} adalah versi terbaru.
 update.unreachable=Tidak dapat menghubungi GitHub untuk mencari pembaruan.
+menu.find_dupes=Cari duplikat di sini

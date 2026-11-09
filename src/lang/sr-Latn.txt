@@ -423,3 +423,4 @@ update.never=Nikad ne proveravaj ažuriranja
 update.page=Pogledaj na GitHub-u
 update.current=Mosaic {v} je najnovija verzija.
 update.unreachable=Nije moguće povezati se sa GitHub-om radi provere ažuriranja.
+menu.find_dupes=Pronađi duplikate ovde

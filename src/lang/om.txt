@@ -422,3 +422,4 @@ update.never=Gonkumaa haaromsa hin ilaaliin
 update.page=GitHub irratti ilaali
 update.current=Mosaic {v} isa haaraa dha.
 update.unreachable=Haaromsa barbaaduuf GitHub argachuun hin danda'amne.
+menu.find_dupes=Faayilota walfakkaatan asitti barbaadi

@@ -422,3 +422,4 @@ update.never=No buscar nunca actualizaciones
 update.page=Ver en GitHub
 update.current=Mosaic {v} es la versión más reciente.
 update.unreachable=No se pudo conectar con GitHub para buscar actualizaciones.
+menu.find_dupes=Buscar duplicados aquí

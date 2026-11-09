@@ -422,3 +422,4 @@ update.never=কখনো আপডেট দেখবেন না
 update.page=GitHub-এ দেখুন
 update.current=Mosaic {v} সর্বশেষ সংস্করণ।
 update.unreachable=আপডেট খুঁজতে GitHub-এ পৌঁছানো যায়নি।
+menu.find_dupes=এখানে ডুপ্লিকেট খুঁজুন

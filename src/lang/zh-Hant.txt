@@ -421,3 +421,4 @@ update.never=永不檢查更新
 update.page=在 GitHub 上檢視
 update.current=Mosaic {v} 是最新版本。
 update.unreachable=無法連線至 GitHub 檢查更新。
+menu.find_dupes=在此尋找重複檔案

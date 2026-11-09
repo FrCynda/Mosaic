@@ -422,3 +422,4 @@ update.never=Soha ne keressen frissítéseket
 update.page=Megtekintés a GitHubon
 update.current=A Mosaic {v} a legújabb verzió.
 update.unreachable=Nem sikerült elérni a GitHubot a frissítések kereséséhez.
+menu.find_dupes=Ismétlődések keresése itt

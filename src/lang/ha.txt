@@ -422,3 +422,4 @@ update.never=Kada a taɓa duba sabuntawa
 update.page=Duba a GitHub
 update.current=Mosaic {v} ita ce sabuwar siga.
 update.unreachable=Ba a iya kaiwa GitHub don neman sabuntawa ba.
+menu.find_dupes=Nemo kwafi iri ɗaya a nan

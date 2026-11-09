@@ -426,3 +426,4 @@ update.never=Never check for updates
 update.page=View on GitHub
 update.current=Mosaic {v} is the latest version.
 update.unreachable=Couldn't reach GitHub to look for updates.
+menu.find_dupes=Find duplicates here

@@ -421,3 +421,4 @@ update.never=更新を確認しない
 update.page=GitHub で見る
 update.current=Mosaic {v} は最新バージョンです。
 update.unreachable=更新を確認するために GitHub に接続できませんでした。
+menu.find_dupes=ここで重複ファイルを検索

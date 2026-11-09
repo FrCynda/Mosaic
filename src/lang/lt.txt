@@ -423,3 +423,4 @@ update.never=Niekada neieškoti naujinimų
 update.page=Žiūrėti GitHub
 update.current=Mosaic {v} yra naujausia versija.
 update.unreachable=Nepavyko susisiekti su GitHub ieškant naujinimų.
+menu.find_dupes=Ieškoti dublikatų čia

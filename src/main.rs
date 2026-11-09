@@ -364,14 +364,14 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
     // a folder listing (Browse, or typed child:/descendant:) is a name search: the content index has no such field
     let q = a.q.trim_start().to_ascii_lowercase();
     let folder_listing = q.starts_with("child:") || q.starts_with("descendant:");
-    if folder_listing || (!a.tags && !a.content && hashq.is_none() && fieldq.is_none()) {
+    if (folder_listing || (!a.tags && !a.content)) && hashq.is_none() && fieldq.is_none() {
         return h.search(&options(a, offset, limit));
     }
     if a.tags || fieldq.is_some() {
         metadata::sync(h.clone());
     }
-    if hashq.is_some() {
-        hashcache::sync(h.clone());
+    if hashq.as_ref().is_some_and(|q| *q != hashcache::HashQuery::Dupe) {
+        hashcache::sync(h.clone()); // `dupe:` hashes just the files it needs (`dupes_among`)
     }
     let hq_key = hashq.as_ref().map_or(String::new(), |q| format!("{q:?}"));
     let fq_key = fieldq.as_ref().map_or(String::new(), |(t, f)| format!("{t}{f:?}"));
@@ -408,13 +408,17 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
                 v.retain(|h| ext_of(&h.name).is_some_and(|e| exts.split(' ').any(|x| x == e)));
             }
         }
-        if let Some(hq) = &hashq {
-            v.retain(|h| hashcache::matches(&h.path, hq));
+        let dupes = hashq == Some(hashcache::HashQuery::Dupe);
+        match &hashq {
+            Some(hashcache::HashQuery::Dupe) => v = hashcache::dupes_among(v),
+            Some(hq) => v.retain(|h| hashcache::matches(&h.path, hq)),
+            None => {}
         }
         if let Some((tag, filter)) = &fieldq {
             v.retain(|h| metadata::field_matches(&h.path, tag, filter));
         }
         match a.sort.as_str() {
+            _ if dupes => {} // twins kept together, the biggest first
             "path" => v.sort_by_cached_key(|h| h.path.to_lowercase()),
             "size" => v.sort_by_key(|h| h.size),
             "mtime" => v.sort_by_key(|h| h.modified),
@@ -424,7 +428,7 @@ fn find(a: &SearchArgs, offset: usize, limit: usize, h: &backend::SearchHandle) 
             "accessed" => v.sort_by_key(|h| h.accessed),
             _ => v.sort_by_cached_key(|h| application::index::NameKey(h.name.to_lowercase())),
         }
-        if a.dir == "desc" {
+        if a.dir == "desc" && !dupes {
             v.reverse();
         }
         v.sort_by_key(|h| !h.is_dir); // stable: folders first, as the name index does
@@ -546,7 +550,28 @@ mod cli {
             let _ = writeln!(out, "{}\t{}\t{}", s.state, s.count, s.message);
             return 0;
         }
-        let res = backend.search(&opts);
+        let res = match crate::hashcache::extract_hash(&opts.query).1 {
+            // worked out here, over the name search's hits, as the window does
+            Some(crate::hashcache::HashQuery::Dupe) => {
+                let a = crate::SearchArgs {
+                    q: opts.query.clone(),
+                    cat: String::new(),
+                    sort: String::new(),
+                    dir: String::new(),
+                    meta: String::new(),
+                    tags: false,
+                    content: false,
+                    match_case: opts.match_case,
+                    whole_word: opts.whole_word,
+                    regex: opts.regex,
+                    diacritics: false,
+                    hidden: opts.show_hidden,
+                    system: opts.show_system,
+                };
+                crate::find(&a, 0, opts.limit, &backend.handle())
+            }
+            _ => backend.search(&opts),
+        };
         for h in &res.hits {
             let _ = writeln!(out, "{}", h.path);
         }

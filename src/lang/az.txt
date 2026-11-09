@@ -422,3 +422,4 @@ update.never=Yeniləmələri heç vaxt yoxlama
 update.page=GitHub-da bax
 update.current=Mosaic {v} ən son versiyadır.
 update.unreachable=Yeniləmələri yoxlamaq üçün GitHub-a qoşulmaq alınmadı.
+menu.find_dupes=Burada dublikatları tap

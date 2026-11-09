@@ -422,3 +422,4 @@ update.never=Aldrei leita að uppfærslum
 update.page=Skoða á GitHub
 update.current=Mosaic {v} er nýjasta útgáfan.
 update.unreachable=Ekki náðist samband við GitHub til að leita að uppfærslum.
+menu.find_dupes=Finna tvítök hér
