@@ -196,11 +196,11 @@ mod tests {
         assert_eq!(recycled_from(&[3, 0, 0]), None);
     }
 
-    /// Recycles 1000 files in the test folder and times putting them back (`cargo test -- --ignored restore_many`).
+    /// Recycles 1000 temp files and times putting them back (`cargo test -- --ignored restore_many`).
     #[test]
     #[ignore]
     fn restore_many_is_quick() {
-        let dir = Path::new(r"C:\Users\frenc\Desktop\foldericon\test\stress\undo");
+        let dir = &std::env::temp_dir().join("mosaic-restore-test");
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
         let paths: Vec<String> = (0..1000).map(|i| dir.join(format!("u{i}.txt")).to_string_lossy().into_owned()).collect();
