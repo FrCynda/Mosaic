@@ -172,8 +172,9 @@ pub fn start(main: isize, msg: u32) {
             let (mut seen, mut last) = (false, None::<SystemTime>);
             loop {
                 if prefs().check && last.is_none_or(|t| t.elapsed().unwrap_or_default() >= EVERY) {
-                    check();
-                    last = Some(SystemTime::now());
+                    // offline (a start before the network is up): asked again in 5 minutes, not in six hours
+                    let wait = if matches!(check(), Found::Failed) { EVERY.saturating_sub(Duration::from_secs(300)) } else { Duration::ZERO };
+                    last = SystemTime::now().checked_sub(wait);
                 }
                 let now_seen = pending().is_some();
                 if now_seen != seen {
