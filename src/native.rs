@@ -805,6 +805,7 @@ enum Hit {
     Menu(usize), // the File/Edit/View/Search strip above the tab row
     Back,        // toolbar: previous folder / search (Alt+Left, mouse back button)
     Fwd,         // toolbar: next one (Alt+Right, mouse forward button)
+    Up,          // toolbar: the listed folder's parent (Alt+Up)
     Tab(usize),  // the tabs, along the menu strip
     TabClose(usize), // … the × on one
     NewTab,      // … the + after them
@@ -4101,11 +4102,16 @@ impl Ui {
 
     /// Alt+Up while browsing a folder: its parent. False when the search box isn't showing a folder listing.
     fn browse_up(&self) -> bool {
-        let Some(dir) = self.args.q.trim().strip_prefix("child:\"").or_else(|| self.args.q.trim().strip_prefix("descendant:\"")).and_then(|d| d.strip_suffix('"')) else { return false };
-        // already at a drive's top, or a share's (\\server alone is no folder)
-        let Some((parent, _)) = dir.rsplit_once('\\').filter(|(p, _)| !p.is_empty() && !(p.starts_with(r"\\") && !p[2..].contains('\\'))) else { return false };
+        let Some(parent) = self.up_dir() else { return false };
         self.browse_to(parent);
         true
+    }
+
+    /// The listed folder's parent: None without a folder listing, or already at a drive's top, or a share's.
+    fn up_dir(&self) -> Option<&str> {
+        let dir = self.args.q.trim().strip_prefix("child:\"").or_else(|| self.args.q.trim().strip_prefix("descendant:\"")).and_then(|d| d.strip_suffix('"'))?;
+        // \\server alone is no folder
+        dir.rsplit_once('\\').map(|(p, _)| p).filter(|p| !p.is_empty() && !(p.starts_with(r"\\") && !p[2..].contains('\\')))
     }
 
     fn run(&mut self, keep: bool) {
@@ -4253,6 +4259,15 @@ impl Ui {
         }
         self.invalidate();
         self.want_preview();
+        // Explorer's New > … made something in the folder: that's the item to rename
+        if let Some((dir, had, until)) = NEW_IN.take() {
+            let made = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).find(|p| !had.contains(&p.file_name().unwrap_or_default().to_string_lossy().to_lowercase()));
+            match made {
+                Some(p) => LISTED.set(Some((p.to_string_lossy().into_owned(), true, until))),
+                None if Instant::now() < until => NEW_IN.set(Some((dir, had, until))),
+                None => {}
+            }
+        }
         // a renamed or new item: selected once it's listed (the new one then renamed, as in Explorer)
         if let Some((p, rename, until)) = LISTED.with(|l| l.borrow().clone()) {
             if Instant::now() > until {
@@ -4772,6 +4787,7 @@ impl Ui {
             Hit::Browse(_) => t("tip.browse").into(),
             Hit::Back => t("tip.back").into(),
             Hit::Fwd => t("tip.forward").into(),
+            Hit::Up => t("tip.up").into(),
             Hit::Side => t("tip.sidebar").into(),
             Hit::Tags => t("tip.tags").into(),
             Hit::Content => t("tip.content").into(),
@@ -5451,7 +5467,7 @@ impl Ui {
             let mut x = side;
             let select = |opts: &[(&str, &str)]| opts.iter().map(|o| g.width(o.0, &g.f.reg)).max().unwrap_or(0) + px(8) + px(26) + 2; // widest option + padding + arrow
             let top = self.menu_h + (self.head_h - 1 - self.menu_h - box_h) / 2;
-            for h in [Hit::Back, Hit::Fwd] {
+            for h in [Hit::Back, Hit::Fwd, Hit::Up] {
                 hits.push((RECT { left: x, top, right: x + box_h + px(6), bottom: top + box_h }, h));
                 x += box_h + px(8);
             }
@@ -5873,6 +5889,9 @@ impl Ui {
             Hit::SaveType | Hit::SaveOk | Hit::SaveCancel | Hit::SaveWin => return Some(hit),
             Hit::SaveName => save::focus(),
             Hit::Back | Hit::Fwd => self.go_hist(hit == Hit::Back),
+            Hit::Up => {
+                self.browse_up();
+            }
             Hit::Tab(k) => self.switch_tab(k),
             Hit::TabClose(k) => self.drop_tab(k, true),
             Hit::Pane(id) => self.activate(id),
@@ -6040,13 +6059,21 @@ impl Ui {
                     let name = filters().iter().find(|m| m.1 == self.args.cat).map_or("", |m| m.0);
                     put_mid(g, cv, name, &g.f.reg, &r, ty, theme().accent);
                 }
-                Hit::Back | Hit::Fwd => {
-                    let on = self.can_go(h == Hit::Back);
+                Hit::Back | Hit::Fwd | Hit::Up => {
+                    let on = if h == Hit::Up { self.up_dir().is_some() } else { self.can_go(h == Hit::Back) };
                     if hot(h) && on {
                         cv.rrect(&r, rad(6.0), Some(theme().hl), None);
                     }
                     let c = if !on { theme().line } else if hot(h) { theme().accent } else { theme().text };
-                    cv.arrow((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0, rad(8.0), h == Hit::Fwd, c, rad(2.0));
+                    let (cx, cy, half) = ((r.left + r.right) as f32 / 2.0, (r.top + r.bottom) as f32 / 2.0, rad(8.0));
+                    if h == Hit::Up {
+                        // `arrow` turned upward: shaft, then head
+                        let head = half * 0.62;
+                        cv.lines(&[(cx, cy + half), (cx, cy - half)], c, rad(2.0));
+                        cv.lines(&[(cx - head, cy - half + head), (cx, cy - half), (cx + head, cy - half + head)], c, rad(2.0));
+                    } else {
+                        cv.arrow(cx, cy, half, h == Hit::Fwd, c, rad(2.0));
+                    }
                 }
                 Hit::Fold => {
                     // › folds the buttons away to the right, ‹ brings them back
@@ -7280,6 +7307,8 @@ thread_local! {
     /// An item to select once the list shows it (a rename's new name, a new folder), whether to rename it then, and
     /// until when to keep looking.
     static LISTED: RefCell<Option<(String, bool, Instant)>> = const { RefCell::new(None) };
+    /// Explorer's New > … just picked: the folder, the names in it before (lowercased), until when to look for the new one.
+    static NEW_IN: RefCell<Option<(String, HashSet<String>, Instant)>> = const { RefCell::new(None) };
     /// What Ctrl+Z takes back, newest last.
     static UNDO: RefCell<Vec<Undo>> = const { RefCell::new(Vec::new()) };
     /// The text field open now (one at a time).
@@ -7598,7 +7627,23 @@ unsafe fn explorer_menu(paths: Vec<String>, bg: bool, extras: Vec<MItem>, acts: 
     let Some(main) = with(|u| u.main) else { return };
     let shell = if paths.is_empty() { None } else { shell::menu_items(&paths, bg) };
     let had = shell.is_some();
+    // ponytail: "New" is told apart as a verb-less entry of a submenu (its entries report no verb); a site
+    // answering the shell's own SelectItem(SVSI_EDIT) would be exact
+    fn verbless(v: &[shell::MenuItem], deep: bool, out: &mut Vec<usize>) {
+        for i in v {
+            if deep && i.verb.is_empty() && i.sub.is_empty() {
+                out.push(i.id as usize);
+            }
+            verbless(&i.sub, true, out);
+        }
+    }
+    let mut news = Vec::new();
+    verbless(shell.as_deref().unwrap_or_default(), false, &mut news);
     let pick = cascade(main, x, y, y, 0, false, merge(shell_entries(shell.unwrap_or_default()), extras, bg), false);
+    if let Some(dir) = paths.first().filter(|_| bg && pick.is_some_and(|k| news.contains(&k))) {
+        let names = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect();
+        NEW_IN.set(Some((dir.clone(), names, Instant::now() + Duration::from_secs(10))));
+    }
     if had {
         shell::menu_pick(pick.filter(|&k| k < EXTRA).map(|k| k as u32), x, y); // runs it, or lets the menu go
     }

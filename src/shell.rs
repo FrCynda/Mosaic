@@ -283,13 +283,24 @@ pub unsafe fn global(data: &[u8]) -> *mut c_void {
 
 /// `path` opened as a double-click in Explorer would (its default verb), off this thread.
 pub fn open(path: &str) {
+    run(path, &[]);
+}
+
+/// `path` run with `args` (each quoted), in its own folder, off this thread: files dropped onto a program or script.
+pub fn run(path: &str, args: &[String]) {
     let file = wide(path);
+    let params = wide(&args.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(" "));
+    let dir = wide(&std::path::Path::new(path).parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()));
+    let none = args.is_empty();
     std::thread::spawn(move || unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let mut sei: SHELLEXECUTEINFOW = zeroed();
         sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
         sei.fMask = SEE_MASK_NOASYNC;
         sei.lpFile = file.as_ptr();
+        if !none {
+            (sei.lpParameters, sei.lpDirectory) = (params.as_ptr(), dir.as_ptr());
+        }
         sei.nShow = SW_SHOW;
         ShellExecuteExW(&mut sei);
     });

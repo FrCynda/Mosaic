@@ -2,7 +2,8 @@
 //! (folders open in new tabs), a pane (its folder), or a folder in a pane. No zone is drawn: the dragged image
 //! says where it goes ("Move to Documents").
 //! Copied or moved by the shell (`fileops::transfer`, its progress and questions), never through the clipboard.
-//! A tab held over for a moment opens, a folder held over opens in its pane.
+//! A tab held over for a moment opens, a folder held over opens in its pane. Onto a program or script (.exe, .bat…)
+//! runs it with the files as its arguments, as Explorer does.
 
 use super::*;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -18,6 +19,7 @@ enum Spot {
     NewTab,
     Pane(usize, String),
     Item(usize, String),
+    Run(String), // a program or script in a pane: run with the files
     Mark, // the sidebar's Bookmarks: bookmarked, never moved into one
 }
 pub(super) struct Dropped {
@@ -184,10 +186,11 @@ impl Ui {
         let &(id, _) = self.areas.iter().find(|(_, r)| inside(r, x, y))?;
         let item = self.with_pane(id, |u| {
             let row = u.get(u.item_at(x - u.org.x, y - u.org.y)?)?;
-            row.is_dir.then(|| row.path.clone())
+            (row.is_dir || runnable(&row.path)).then(|| (row.path.clone(), row.is_dir))
         });
         match item {
-            Some(d) => Some(Spot::Item(id, d)),
+            Some((f, false)) => (!files.iter().any(|d| same(d, &f))).then_some(Spot::Run(f)),
+            Some((d, _)) => Some(Spot::Item(id, d)),
             None => Some(Spot::Pane(id, self.pane_dir(id)?)),
         }
     }
@@ -226,12 +229,14 @@ impl Ui {
             Some(Spot::NewTab | Spot::Mark) => {
                 if allowed & DROPEFFECT_LINK != 0 { DROPEFFECT_LINK } else { DROPEFFECT_COPY & allowed }
             }
+            Some(Spot::Run(_)) => DROPEFFECT_COPY & allowed,
             Some(s) => self.spot_dir(s).map_or(DROPEFFECT_NONE, |d| effect(keys, &o.files, &d, allowed)),
         };
         let say = match (&spot, eff) {
             (None, _) | (_, DROPEFFECT_NONE) => None,
             (Some(Spot::NewTab), _) => Some((6, t("drop.new_tab").to_string(), String::new())), // DROPIMAGE_LABEL: words only
             (Some(Spot::Mark), _) => Some((4, t("drop.bookmark").to_string(), String::new())), // DROPIMAGE_LINK
+            (Some(Spot::Run(f)), _) => Some((1, t("drop.open").replace("{name}", "%1"), std::path::Path::new(f).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()))),
             (Some(s), e) => {
                 let name = self.spot_dir(s).map_or(String::new(), |d| place_name(&self.browse_q(&d)));
                 let (img, key) = match e {
@@ -249,6 +254,12 @@ impl Ui {
 }
 fn is_dir_path(p: &str) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_dir())
+}
+/// A file Windows runs as a program (its extension in PATHEXT: .exe, .bat, .cmd…).
+fn runnable(p: &str) -> bool {
+    let Some(ext) = std::path::Path::new(p).extension() else { return false };
+    let ext = format!(".{}", ext.to_string_lossy());
+    std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').any(|e| e.eq_ignore_ascii_case(&ext))
 }
 
 fn wpt(pt: Pointl) -> windows::Win32::Foundation::POINT {
@@ -367,6 +378,7 @@ pub(super) unsafe fn dropped(l: LPARAM) {
     let dirs: Vec<String> = d.files.iter().filter(|f| is_dir_path(f)).cloned().collect();
     match d.spot {
         Spot::Mark => side::bookmark(&d.files),
+        Spot::Run(f) => shell::run(&f, &d.files),
         Spot::NewTab => {
             with(|u| {
                 for f in &dirs {

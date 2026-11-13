@@ -10,6 +10,7 @@ tip.grid_view=Muestra los resultados como íconos en miniatura en una cuadrícul
 side.videos=Videos
 tip.back=Atrás (Alt+Izquierda o el botón Atrás del mouse)
 tip.forward=Adelante (Alt+Derecha o el botón Adelante del mouse)
+tip.up=Subir a la carpeta principal (Alt+↑)
 theme.apply=Aplicar
 theme.cancel=Cancelar
 menu.explorer=Usar Mosaic en lugar del Explorador
